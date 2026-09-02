@@ -9,6 +9,25 @@ from ..schemas import Citation
 log = logging.getLogger(__name__)
 
 
+def _clean_answer(text: str) -> str:
+    import re
+    if not text:
+        return text
+    text = re.sub(r"<unused\d+>", "", text)
+    text = re.sub(r"<\|?tool_call\|?>", "", text)
+    text = re.sub(r"<\|?tool_response\|?>", "", text)
+    text = re.sub(r"tool_response\|>", "", text)
+    text = re.sub(r"tool_call\|>", "", text)
+    text = re.sub(r"\[multimodal\]", "", text)
+    text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<\|think\|>", "", text)
+    text = re.sub(r"<\|turn>.*?<turn\|>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<bos>", "", text)
+    text = re.sub(r"<eos>", "", text)
+    text = re.sub(r"<\|?tool\|?>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 async def format_response(state: RAGState) -> RAGState:
     """
     Return OpenAI-compatible output with citation metadata.
@@ -17,13 +36,16 @@ async def format_response(state: RAGState) -> RAGState:
     If allowed, returns answer with citations from retrieved chunks.
     """
     request_id = state["request_id"]
-    answer = state["answer"]
+    answer = _clean_answer(state["answer"])
+    # Fallback if cleaning left empty (model only emitted control tokens)
+    if not answer or not answer.strip():
+        answer = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
     blocked = state.get("blocked", False)
     refusal_message = state.get("refusal_message")
     chunks = state["retrieved_chunks"]
     
     if blocked:
-        content = refusal_message or "I cannot comply with that request."
+        content = _clean_answer(refusal_message) or "I cannot comply with that request."
         finish_reason = "content_filter"
         citations = []
     else:
