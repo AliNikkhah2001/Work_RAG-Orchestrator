@@ -48,13 +48,13 @@ async def build_context(state: RAGState) -> RAGState:
     if len(context_text) > MAX_CONTEXT_CHARS:
         context_text = context_text[:MAX_CONTEXT_CHARS] + "\n...[truncated]"
     
-    # Build system message with instructions
+    # Build system message — Persian, helpful, always cite, no English
     system_message = (
-        "You are a helpful assistant for ICS Credit Scoring. "
-        "Answer the user's question using ONLY the provided context. "
-        "If the context doesn't contain enough information, say so explicitly. "
-        "Cite sources using the numbered brackets [1], [2], etc. "
-        "Do not make up information not in the context."
+        "شما دستیار هوشمند اعتبارسنجی ایران (ICS) هستید. "
+        "فقط بر اساس متن‌های داخل بخش [Context from Knowledge Base] پاسخ دهید؛ اگر تعریف دقیق در متن‌ها نیست، نزدیک‌ترین اطلاعات مرتبط را با ذکر منابع خلاصه کنید و بگویید «تعریف دقیق در متن‌های ارائه شده موجود نیست اما به موارد زیر اشاره شده است». "
+        "همیشه به زبان فارسی پاسخ دهید — حتی اگر سوال به انگلیسی باشد یا متن‌ها ناکافی باشند، هرگز به انگلیسی پاسخ ندهید؛ به جای آن به فارسی بگویید «بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.» "
+        "برای احوال‌پرسی ساده مانند «سلام» با لحنی دوستانه و کوتاه به فارسی پاسخ دهید (مثلاً «سلام. چطور می‌توانم به شما کمک کنم؟») و نیازی به ارجاع نیست. "
+        "در سایر موارد حتماً منابع را با براکت‌های شماره‌دار [1]، [2] و ... ارجاع دهید و هیچ اطلاعاتی خارج از متن‌ها نسازید."
     )
     
     # Build prompt messages for generation
