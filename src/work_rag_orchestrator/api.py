@@ -95,6 +95,17 @@ def create_app() -> FastAPI:
             dependencies=deps,
         )
 
+    @app.get("/v1/models")
+    async def list_models():
+        # Open WebUI discovery — returns configured Vast model + legacy alias
+        return {
+            "object": "list",
+            "data": [
+                {"id": settings.upstream_llm_model, "object": "model", "created": 0, "owned_by": "vast"},
+                {"id": "gemma-4-31b", "object": "model", "created": 0, "owned_by": "vast"},
+            ],
+        }
+
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
     async def chat_completions(
         request: ChatCompletionRequest,
@@ -180,10 +191,12 @@ def main():
     uvicorn.run(
         "work_rag_orchestrator.api:create_app",
         factory=True,
-        host="127.0.0.1",
+        host=settings.orchestrator_host,
         port=settings.orchestrator_port,
         log_level="info",
     )
+
+
 
 
 app = create_app()

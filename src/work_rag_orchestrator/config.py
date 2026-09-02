@@ -15,7 +15,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Server
+    # Server — bind host configurable for Docker (0.0.0.0) vs local (127.0.0.1)
+    orchestrator_host: str = "0.0.0.0"
     orchestrator_port: int = 8100
 
     # Dependencies
