@@ -25,6 +25,9 @@ def _clean_answer(text: str) -> str:
     text = re.sub(r"<bos>", "", text)
     text = re.sub(r"<eos>", "", text)
     text = re.sub(r"<\|?tool\|?>", "", text)
+    text = re.sub(r"<\|\s*\"\s*\|>", "", text)
+    text = re.sub(r"<\|\s*'\s*\|>", "", text)
+    text = re.sub(r"<\|[^>]*\|>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
