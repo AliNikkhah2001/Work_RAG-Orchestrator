@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Retrieval
     retrieval_top_k: int = 5
 
+    # Upstream LLM model (Vast Gemma)
+    upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
+
     @property
     def kb_search_url(self) -> str:
         return f"{self.kb_base_url.rstrip('/')}/search/api"

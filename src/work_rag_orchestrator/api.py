@@ -104,9 +104,9 @@ def create_app() -> FastAPI:
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
         
-        # Validate model
-        if request.model != "gemma-4-31b":
-            # For MVP, only support gemma-4-31b
+        # Validate model — accept Vast Gemma and legacy alias
+        allowed_models = {"gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
+        if request.model not in allowed_models:
             log.warning("Unsupported model requested: %s", request.model)
         
         # Prepare initial state

@@ -23,11 +23,18 @@ async def guarded_generate(state: RAGState) -> RAGState:
     
     # Prepare request for Guardrails
     # Guardrails will enforce output rails and call upstream Gemma
+    # Use configured Vast Gemma model; preserve backwards compat with gemma-4-31b
+    req_model = settings.upstream_llm_model
+    # If state carries original model (future), prefer it; else config
+    if state.get("messages"):
+        orig = state["messages"][-1] if state["messages"] else {}
+        # keep config as source of truth for Vast
+        req_model = settings.upstream_llm_model
     request = GuardrailsChatRequest(
-        model="gemma-4-31b",  # MVP model
+        model=req_model,
         messages=prompt_messages,
-        max_tokens=4000,
-        temperature=0.0,
+        max_tokens=512,
+        temperature=0.2,
     )
     
     async with GuardrailsClient() as client:

@@ -7,9 +7,9 @@ from ..state import RAGState
 
 log = logging.getLogger(__name__)
 
-# Max context size (roughly tokens * 4 for chars)
-MAX_CONTEXT_CHARS = 8000
-MAX_CHUNKS = 5
+# Max context size (roughly tokens * 4 for chars) — Vast: reduced for RTX 6000 + faster Gemma
+MAX_CONTEXT_CHARS = 4000
+MAX_CHUNKS = 3
 
 
 async def build_context(state: RAGState) -> RAGState:
