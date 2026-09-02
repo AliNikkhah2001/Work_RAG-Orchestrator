@@ -1,0 +1,12 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Logs and debug artifacts
+*.log
+src/*.json
+
+# Environment
+.env
+.env.local
