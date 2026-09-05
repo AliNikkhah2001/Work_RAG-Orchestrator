@@ -19,11 +19,15 @@ async def retrieve(state: RAGState) -> RAGState:
     """
     request_id = state["request_id"]
     query = state["query"]
+    # Normalize informal Persian: چیه -> چیست for KB search (improves BM25 on short definition queries)
+    norm_query = query.replace("چیه", "چیست").replace("چيه", "چیست")
+    # Keep original query in state for audit, but search with normalized
+    search_query = norm_query
     settings = get_settings()
     top_k = settings.retrieval_top_k
     
     async with KnowledgebaseClient() as client:
-        chunks = await client.retrieve(query, top_k, request_id)
+        chunks = await client.retrieve(search_query, top_k, request_id)
     
     # Normalize to dict format for state
     state["retrieved_chunks"] = [

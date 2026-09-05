@@ -29,10 +29,12 @@ async def validate_input(state: RAGState) -> RAGState:
     
     query = user_messages[-1]["content"]
     state["query"] = query
+    log.info("validate_input query=%r request_id=%s", query[:200], request_id)
     
     # Call Guardrails input check
     async with GuardrailsClient() as client:
         decision = await client.check_rails("input", query, request_id)
+    log.info("validate_input decision allowed=%s categories=%s reason=%r", decision.allowed, decision.categories, decision.reason)
     
     state["guardrail_decision"] = decision.model_dump()
     

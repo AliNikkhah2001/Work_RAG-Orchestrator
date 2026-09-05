@@ -43,8 +43,25 @@ class RAGMetadata(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
 
 
+class AuditTrail(BaseModel):
+    """Full audit trail for transparency — shown in OpenWebUI rag agent."""
+
+    request_id: str
+    query: str
+    guardrail_input: Optional[Dict[str, Any]] = None
+    retrieved_chunks: List[Dict[str, Any]] = Field(default_factory=list)
+    reranker_scores: List[float] = Field(default_factory=list)
+    context_sent_to_gemma: str = ""
+    raw_model_output: str = ""
+    guardrail_output: Optional[Dict[str, Any]] = None
+    final_answer: str = ""
+    citations: List[Citation] = Field(default_factory=list)
+    latency_ms: Optional[Dict[str, float]] = None
+    model: str = ""
+
+
 class ChatCompletionResponse(BaseModel):
-    """OpenAI-compatible chat completion response with RAG metadata."""
+    """OpenAI-compatible chat completion response with RAG metadata + audit."""
 
     id: str = Field(default_factory=lambda: f"chatcmpl-{uuid4().hex[:29]}")
     object: str = "chat.completion"
@@ -52,6 +69,7 @@ class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionChoice]
     usage: Optional[Dict[str, int]] = None
     rag: Optional[RAGMetadata] = None
+    audit: Optional[AuditTrail] = None
 
 
 class HealthResponse(BaseModel):

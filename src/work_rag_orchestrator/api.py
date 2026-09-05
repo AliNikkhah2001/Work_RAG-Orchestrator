@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -97,12 +98,13 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/models")
     async def list_models():
-        # Open WebUI discovery — returns configured Vast model + legacy alias
+        # Open WebUI discovery — single RAG Agent (self-hosted)
+        # Hides internal model IDs; WebUI shows only this name
         return {
             "object": "list",
             "data": [
-                {"id": settings.upstream_llm_model, "object": "model", "created": 0, "owned_by": "vast"},
-                {"id": "gemma-4-31b", "object": "model", "created": 0, "owned_by": "vast"},
+                {"id": "work-rag-agent", "object": "model", "created": 0, "owned_by": "vast", "name": "Work RAG Agent"},
+                {"id": "gemma-4-31b", "object": "model", "created": 0, "owned_by": "vast", "name": "Work RAG Agent"},
             ],
         }
 
@@ -114,9 +116,17 @@ def create_app() -> FastAPI:
     ):
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
+        t0 = time.monotonic()
+        # Langfuse trace (self-hosted) — non-blocking, direct HTTP fallback
+        try:
+            from .tracing import start_trace
+            input_text = request.messages[-1].get("content", "")[:1000] if request.messages else ""
+            start_trace(request_id, "rag", input_text, {"model": request.model, "request_id": request_id})
+        except Exception as e:
+            log.warning("Langfuse trace init failed: %s", e)
         
-        # Validate model — accept Vast Gemma and legacy alias
-        allowed_models = {"gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
+        # Validate model — accept RAG Agent alias + Vast Gemma
+        allowed_models = {"work-rag-agent", "gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
         if request.model not in allowed_models:
             log.warning("Unsupported model requested: %s", request.model)
         
@@ -154,7 +164,73 @@ def create_app() -> FastAPI:
         finish_reason = formatted.get("finish_reason", "error")
         citations = formatted.get("citations", [])
         
+        # Build audit trail for transparency (shown in OpenWebUI rag agent)
+        # This exposes the whole pipeline: guardrails, retrieval, generation
+        try:
+            from .schemas import AuditTrail
+            # Get raw model output and guardrail decisions from state
+            raw_output = final_state.get("answer", "") or final_state.get("refusal_message", "") or content
+            # Build context string (first 2000 chars)
+            prompt_msgs = final_state.get("prompt_messages", [])
+            context_str = ""
+            if prompt_msgs and len(prompt_msgs) > 1:
+                # The user message contains the context + question
+                context_str = prompt_msgs[1].get("content", "")[:2000]
+            # Get retrieved chunks with scores
+            retrieved = final_state.get("retrieved_chunks", [])
+            # Build audit
+            audit = AuditTrail(
+                request_id=request_id,
+                query=final_state.get("query", ""),
+                guardrail_input=final_state.get("guardrail_decision"),
+                retrieved_chunks=[
+                    {
+                        "chunk_id": c.get("chunk_id", ""),
+                        "title": c.get("title", ""),
+                        "heading": c.get("heading", ""),
+                        "content": c.get("content", "")[:500],
+                        "score": c.get("score", 0),
+                    }
+                    for c in retrieved[:5]
+                ],
+                reranker_scores=[c.get("score", 0) for c in retrieved[:5]],
+                context_sent_to_gemma=context_str,
+                raw_model_output=raw_output[:2000],
+                guardrail_output={"blocked": final_state.get("blocked", False), "refusal": final_state.get("refusal_message")},
+                final_answer=content,
+                citations=[Citation(**c) for c in citations],
+                model=request.model,
+            )
+        except Exception as e:
+            log.warning(f"Failed to build audit trail: {e}")
+            audit = None
+        
         # Build response
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        # Populate audit latency
+        if audit is not None:
+            try:
+                audit.latency_ms = latency_ms
+            except Exception:
+                pass
+        # Update Langfuse trace
+        try:
+            from .tracing import update_trace
+            retrieved = final_state.get("retrieved_chunks", [])
+            update_trace(
+                request_id,
+                content[:2000],
+                {
+                    "finish_reason": finish_reason,
+                    "citations": len(citations),
+                    "retrieved": len(retrieved),
+                    "blocked": final_state.get("blocked", False),
+                    "latency_ms": latency_ms,
+                },
+            )
+        except Exception as e:
+            log.warning("Langfuse trace update failed: %s", e)
+
         response = ChatCompletionResponse(
             model=request.model,
             choices=[
@@ -168,6 +244,7 @@ def create_app() -> FastAPI:
                 request_id=request_id,
                 citations=[Citation(**c) for c in citations],
             ),
+            audit=audit,
         )
         
         return response
