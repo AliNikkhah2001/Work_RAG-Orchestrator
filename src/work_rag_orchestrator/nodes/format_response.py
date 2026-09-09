@@ -31,6 +31,24 @@ def _clean_answer(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+
+MAX_CITATIONS = 2
+
+
+def _parse_cited_indices(text: str) -> list[int]:
+    """Extract ordered, unique [n] source numbers referenced in the answer."""
+    import re
+    if not text:
+        return []
+    indices: list[int] = []
+    seen: set[int] = set()
+    for m in re.finditer(r"\[(\d+)\]", text):
+        idx = int(m.group(1))
+        if idx not in seen:
+            seen.add(idx)
+            indices.append(idx)
+    return indices
+
 async def format_response(state: RAGState) -> RAGState:
     """
     Return OpenAI-compatible output with citation metadata.
@@ -54,7 +72,14 @@ async def format_response(state: RAGState) -> RAGState:
     else:
         content = answer
         finish_reason = "stop"
-        # Build citations from retrieved chunks
+        # Only cite the chunks the model actually referenced in its answer (max 2).
+        # Fall back to the single best-ranked chunk when no [n] reference is present.
+        cited = _parse_cited_indices(content)
+        if cited:
+            chosen = [chunks[i - 1] for i in cited if 1 <= i <= len(chunks)]
+        else:
+            chosen = chunks[:1]
+        chosen = chosen[:MAX_CITATIONS]
         citations = [
             Citation(
                 chunk_id=c.get("chunk_id", ""),
@@ -62,7 +87,7 @@ async def format_response(state: RAGState) -> RAGState:
                 title=c.get("title", ""),
                 heading=c.get("heading", ""),
             )
-            for c in chunks
+            for c in chosen
             if c.get("chunk_id")
         ]
     

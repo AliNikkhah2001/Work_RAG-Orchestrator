@@ -21,6 +21,24 @@ async def retrieve(state: RAGState) -> RAGState:
     query = state["query"]
     # Normalize informal Persian: چیه -> چیست for KB search (improves BM25 on short definition queries)
     norm_query = query.replace("چیه", "چیست").replace("چيه", "چیست")
+    # Light Persian normalization + boilerplate strip for reworded/conversational
+    # queries: unify ZWNJ/space and ي/ك variants so BM25 matches KB wording,
+    # and drop politeness filler that dilutes lexical scores.
+    norm_query = norm_query.replace("‌", " ").replace("ي", "ی").replace("ك", "ک")
+    for filler in (
+        "ممکن است توضیح دهید",
+        "لطفا دقیق توضیح دهید",
+        "لطفاً دقیق توضیح دهید",
+        "در عمل",
+        "راستی",
+        "یه سوال داشتم",
+        "یک سوال داشتم",
+        "ببخشید",
+    ):
+        norm_query = norm_query.replace(filler, " ")
+    norm_query = " ".join(norm_query.split())
+    if not norm_query:
+        norm_query = query
     # Keep original query in state for audit, but search with normalized
     search_query = norm_query
     settings = get_settings()
