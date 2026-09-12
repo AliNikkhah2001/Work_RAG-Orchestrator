@@ -58,4 +58,17 @@ async def guarded_generate(state: RAGState) -> RAGState:
         state["blocked"] = False
     
     log.info("Generation completed for request %s (finish_reason: %s)", request_id, finish_reason)
+
+    try:
+        from ..tracing import trace_span
+        trace_span(
+            request_id,
+            "guarded_generate",
+            span_input={"model": req_model, "max_tokens": 512, "temperature": 0.2},
+            span_output={"finish_reason": finish_reason, "answer": answer},
+            clip=3000,
+        )
+    except Exception:
+        pass
+
     return state

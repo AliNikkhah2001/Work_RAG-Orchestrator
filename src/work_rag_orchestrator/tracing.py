@@ -99,6 +99,62 @@ def _direct_update(request_id: str, output: str, metadata: dict | None = None):
         pass
 
 
+def trace_span(
+    request_id: str,
+    name: str,
+    span_input: Any = None,
+    span_output: Any = None,
+    metadata: dict | None = None,
+    clip: int = 2000,
+) -> None:
+    """Post one Langfuse v2 span-create for a graph node (fire-and-forget).
+
+    Makes the whole pipeline visible in the Langfuse UI: each node appears
+    under the request trace with its input/output. Never raises.
+    """
+    try:
+        host = os.getenv("LANGFUSE_HOST", "http://127.0.0.1:3000")
+        url = f"{host.rstrip('/')}/api/public/ingestion"
+
+        def _clip(v: Any, n: int = clip) -> Any:
+            if v is None:
+                return None
+            s = v if isinstance(v, str) else str(v)
+            try:
+                import json as _json
+
+                return _json.dumps(v, ensure_ascii=False)[:n] if not isinstance(v, str) else s[:n]
+            except Exception:
+                return s[:n]
+
+        payload = {
+            "batch": [
+                _envelope(
+                    "span-create",
+                    {
+                        "id": f"{request_id}-{name}",
+                        "traceId": request_id,
+                        "name": name,
+                        "startTime": _now_iso(),
+                        "input": _clip(span_input),
+                        "output": _clip(span_output),
+                        "metadata": metadata or {},
+                    },
+                )
+            ]
+        }
+
+        def _post():
+            try:
+                httpx.post(url, json=payload, auth=_auth(), timeout=2.0)
+            except Exception:
+                pass
+
+        threading.Thread(target=_post, daemon=True).start()
+    except Exception:
+        pass
+
+
 # SDK wrapper — try to use Langfuse SDK v4 if available, else fallback
 @lru_cache
 def get_langfuse():

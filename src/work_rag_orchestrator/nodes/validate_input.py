@@ -37,7 +37,18 @@ async def validate_input(state: RAGState) -> RAGState:
     log.info("validate_input decision allowed=%s categories=%s reason=%r", decision.allowed, decision.categories, decision.reason)
     
     state["guardrail_decision"] = decision.model_dump()
-    
+
+    try:
+        from ..tracing import trace_span
+        trace_span(
+            request_id,
+            "validate_input",
+            span_input=query,
+            span_output={"allowed": decision.allowed, "categories": decision.categories, "reason": decision.reason},
+        )
+    except Exception:
+        pass
+
     if not decision.allowed:
         log.info("Input blocked by guardrails: %s", decision.reason)
         state["blocked"] = True

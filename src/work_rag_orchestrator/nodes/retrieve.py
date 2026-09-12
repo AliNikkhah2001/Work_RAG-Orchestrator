@@ -61,4 +61,19 @@ async def retrieve(state: RAGState) -> RAGState:
     ]
     
     log.info("Retrieved %d chunks for request %s", len(chunks), request_id)
+
+    try:
+        from ..tracing import trace_span
+        trace_span(
+            request_id,
+            "retrieve",
+            span_input={"query": query, "search_query": search_query, "top_k": top_k},
+            span_output=[
+                {"chunk_id": c.get("chunk_id"), "title": c.get("title"), "score": c.get("score")}
+                for c in state["retrieved_chunks"][:5]
+            ],
+        )
+    except Exception:
+        pass
+
     return state
