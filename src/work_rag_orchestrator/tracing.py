@@ -18,29 +18,48 @@ log = logging.getLogger(__name__)
 _fallback_host = os.getenv("LANGFUSE_HOST", "http://127.0.0.1:3000")
 
 
+def _auth():
+    """Basic auth for real Langfuse (public key = username). Fallback ignores it."""
+    pk = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    sk = os.getenv("LANGFUSE_SECRET_KEY", "")
+    return (pk, sk) if pk and sk else None
+
+
+def _now_iso() -> str:
+    """UTC ISO-8601 with Z suffix (what Langfuse v2 ingestion expects)."""
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _envelope(ev_type: str, body: dict) -> dict:
+    """Langfuse v2 ingestion envelope: top-level id + ISO timestamp + type + body."""
+    return {"id": uuid.uuid4().hex, "timestamp": _now_iso(), "type": ev_type, "body": body}
+
+
 def _direct_trace(request_id: str, name: str, input_text: str, metadata: dict | None = None):
-    """Direct POST to collector's /api/public/ingestion (no auth needed for fallback)."""
+    """Direct POST to /api/public/ingestion (works for fallback collector and real Langfuse v2)."""
     try:
         host = os.getenv("LANGFUSE_HOST", "http://127.0.0.1:3000")
         url = f"{host.rstrip('/')}/api/public/ingestion"
         payload = {
             "batch": [
-                {
-                    "type": "trace-create",
-                    "body": {
+                _envelope(
+                    "trace-create",
+                    {
                         "id": request_id,
                         "name": name,
                         "input": input_text[:2000],
                         "metadata": metadata or {},
-                        "timestamp": int(time.time() * 1000),
+                        "timestamp": _now_iso(),
                     },
-                }
+                )
             ]
         }
         # Fire-and-forget with short timeout, don't block request
         def _post():
             try:
-                httpx.post(url, json=payload, timeout=2.0)
+                httpx.post(url, json=payload, auth=_auth(), timeout=2.0)
             except Exception:
                 pass
 
@@ -50,25 +69,28 @@ def _direct_trace(request_id: str, name: str, input_text: str, metadata: dict | 
 
 
 def _direct_update(request_id: str, output: str, metadata: dict | None = None):
+    # NOTE: Langfuse v2 has no "trace-update" event; re-sending trace-create
+    # with the same id upserts (input preserved, output set).
     try:
         host = os.getenv("LANGFUSE_HOST", "http://127.0.0.1:3000")
         url = f"{host.rstrip('/')}/api/public/ingestion"
         payload = {
             "batch": [
-                {
-                    "type": "trace-update",
-                    "body": {
+                _envelope(
+                    "trace-create",
+                    {
                         "id": request_id,
                         "output": output[:2000],
                         "metadata": metadata or {},
+                        "timestamp": _now_iso(),
                     },
-                }
+                )
             ]
         }
 
         def _post():
             try:
-                httpx.post(url, json=payload, timeout=2.0)
+                httpx.post(url, json=payload, auth=_auth(), timeout=2.0)
             except Exception:
                 pass
 
