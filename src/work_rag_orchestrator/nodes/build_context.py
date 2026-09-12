@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from ..state import RAGState
+from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
 
 log = logging.getLogger(__name__)
 
@@ -48,9 +49,23 @@ async def build_context(state: RAGState) -> RAGState:
         context_parts.append(context_entry)
     
     context_text = "\n\n".join(context_parts)
-    
-    # Truncate if too long
-    if len(context_text) > MAX_CONTEXT_CHARS:
+
+    # Stateless memory: last 2 exchanges (prior turns only, not the current
+    # question) as a plain-text block, capped at HISTORY_MAX_CHARS.
+    history_excerpt = last_exchanges_text(messages, include_current=False, max_chars=HISTORY_MAX_CHARS)
+    history_block = f"[Conversation history]\n{history_excerpt}" if history_excerpt else ""
+    question_part = f"Question: {query}"
+
+    # Keep everything within MAX_CONTEXT_CHARS — truncate KB context first,
+    # history is already capped above.
+    if history_block:
+        budget = MAX_CONTEXT_CHARS - len(history_block) - len(question_part) - 4  # separators
+        if budget < 0:  # pathological: drop history rather than the question
+            history_block = ""
+            budget = MAX_CONTEXT_CHARS - len(question_part) - 2
+        if len(context_text) > budget:
+            context_text = context_text[: max(budget, 0)] + "\n...[truncated]"
+    elif len(context_text) > MAX_CONTEXT_CHARS:
         context_text = context_text[:MAX_CONTEXT_CHARS] + "\n...[truncated]"
     
     # Build system message — Persian, helpful, professional, grounded, v7-optimized
@@ -84,9 +99,13 @@ async def build_context(state: RAGState) -> RAGState:
         )
     
     # Build prompt messages for generation
+    if history_block:
+        user_content = f"{context_text}\n\n{history_block}\n\n{question_part}"
+    else:
+        user_content = f"{context_text}\n\n{question_part}"
     prompt_messages = [
         {"role": "system", "content": system_message},
-        {"role": "user", "content": f"{context_text}\n\nQuestion: {query}"},
+        {"role": "user", "content": user_content},
     ]
     
     state["prompt_messages"] = prompt_messages
@@ -97,7 +116,7 @@ async def build_context(state: RAGState) -> RAGState:
         trace_span(
             request_id,
             "build_context",
-            span_input={"query": query, "chunks": len(chunks), "is_new_chat": is_new_chat},
+            span_input={"query": query, "chunks": len(chunks), "is_new_chat": is_new_chat, "history_chars": len(history_block)},
             span_output="\n---\n".join(m.get("content", "") for m in prompt_messages),
             metadata={"max_chunks": MAX_CHUNKS, "max_chars": MAX_CONTEXT_CHARS},
             clip=6000,

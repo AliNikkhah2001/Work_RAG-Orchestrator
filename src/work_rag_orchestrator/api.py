@@ -135,6 +135,7 @@ def create_app() -> FastAPI:
             "request_id": request_id,
             "messages": request.messages,
             "query": "",
+            "rewritten_query": "",
             "guardrail_decision": None,
             "retrieved_chunks": [],
             "prompt_messages": [],

@@ -6,21 +6,43 @@ import logging
 from ..state import RAGState
 from ..config import get_settings
 from ..clients.knowledgebase import KnowledgebaseClient
+from ..rewrite import rewrite_query, last_exchanges_text
 
 log = logging.getLogger(__name__)
 
 
 async def retrieve(state: RAGState) -> RAGState:
     """
-    Call KB POST /search/api with top_k=5, normalize final_results.
-    
-    Uses the query from state["query"] (latest user message).
-    Stores normalized chunks in state["retrieved_chunks"].
+    Rewrite the last user message against history, then call KB search.
+
+    The standalone rewritten query is normalized and used for KB search;
+    the original latest user message stays in state["query"] for audit,
+    the rewritten form is stored in state["rewritten_query"].
     """
     request_id = state["request_id"]
     query = state["query"]
+    messages = state.get("messages", [])
+
+    # Stateless memory: resolve coreference ("او", "کجا بوده", ...) against
+    # the last 2 exchanges. Falls back to the raw query on any error.
+    rewritten = await rewrite_query(messages)
+    if not rewritten:
+        rewritten = query
+    state["rewritten_query"] = rewritten
+
+    try:
+        from ..tracing import trace_span
+        trace_span(
+            request_id,
+            "query-rewrite",
+            span_input=last_exchanges_text(messages, include_current=True),
+            span_output=rewritten,
+        )
+    except Exception:
+        pass
+
     # Normalize informal Persian: چیه -> چیست for KB search (improves BM25 on short definition queries)
-    norm_query = query.replace("چیه", "چیست").replace("چيه", "چیست")
+    norm_query = rewritten.replace("چیه", "چیست").replace("چيه", "چیست")
     # Light Persian normalization + boilerplate strip for reworded/conversational
     # queries: unify ZWNJ/space and ي/ك variants so BM25 matches KB wording,
     # and drop politeness filler that dilutes lexical scores.
@@ -67,7 +89,13 @@ async def retrieve(state: RAGState) -> RAGState:
         trace_span(
             request_id,
             "retrieve",
-            span_input={"query": query, "search_query": search_query, "top_k": top_k},
+            span_input={
+                "query": query,
+                "rewritten_query": rewritten,
+                "search_query": search_query,
+                "top_k": top_k,
+                "history": last_exchanges_text(messages, include_current=True),
+            },
             span_output=[
                 {"chunk_id": c.get("chunk_id"), "title": c.get("title"), "score": c.get("score")}
                 for c in state["retrieved_chunks"][:5]

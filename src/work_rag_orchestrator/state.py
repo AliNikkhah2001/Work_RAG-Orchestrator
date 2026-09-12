@@ -17,6 +17,10 @@ class RAGState(TypedDict):
     
     # Extracted query (latest user message)
     query: str
+
+    # Standalone rewritten query (coreference-resolved via history rewrite;
+    # used for KB search; "" until retrieve runs)
+    rewritten_query: str
     
     # Guardrails input check decision
     guardrail_decision: Optional[Dict[str, Any]]
