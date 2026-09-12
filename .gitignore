@@ -10,3 +10,6 @@ src/*.json
 # Environment
 .env
 .env.local
+
+# LangGraph Studio runtime
+.langgraph_api/
