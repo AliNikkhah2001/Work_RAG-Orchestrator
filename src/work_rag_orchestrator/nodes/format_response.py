@@ -54,7 +54,67 @@ def _to_plain_text(text: str) -> str:
     return text.strip()
 
 
-MAX_CITATIONS = 2
+MAX_CITATIONS = 5
+
+GROUND_TRUTH_HEADER = "\n\nمنابع بازیابی‌شده:\n"
+MAX_GROUND_TRUTH_LINES = 20
+
+
+def _source_label(chunk: dict, fallback_idx: int) -> str:
+    """Source-set label with the relevant rank, e.g. [RRF-3], [CE-2], [BOTH-1]."""
+    src = str(chunk.get("source") or "").lower()
+    rank_rrf = chunk.get("rank_rrf")
+    rank_ce = chunk.get("rank_ce")
+    if src == "rrf":
+        n = rank_rrf if isinstance(rank_rrf, int) else fallback_idx
+        return f"[RRF-{n}]"
+    if src == "ce":
+        n = rank_ce if isinstance(rank_ce, int) else fallback_idx
+        return f"[CE-{n}]"
+    if src == "both":
+        if isinstance(rank_rrf, int):
+            n = rank_rrf
+        elif isinstance(rank_ce, int):
+            n = rank_ce
+        else:
+            n = fallback_idx
+        return f"[BOTH-{n}]"
+    return f"[{fallback_idx}]"
+
+
+def _chunk_score(chunk: dict) -> float | None:
+    for key in ("hybrid_score", "rerank_score", "score"):
+        v = chunk.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
+def _ground_truth_block(chunks: list) -> str:
+    """Plain-text block listing retrieved sources (no markdown)."""
+    lines = []
+    for i, c in enumerate(chunks[:MAX_GROUND_TRUTH_LINES], 1):
+        title = str(c.get("title") or "").strip()
+        heading = str(c.get("heading") or "").strip()
+        if not title and not heading:
+            continue
+        label = _source_label(c, i)
+        score = _chunk_score(c)
+        score_txt = f" — امتیاز {round(score, 3)}" if score is not None else ""
+        if title and heading:
+            lines.append(f"{label} {title} — {heading}{score_txt}")
+        elif title:
+            lines.append(f"{label} {title}{score_txt}")
+        else:
+            lines.append(f"{label} {heading}{score_txt}")
+    if not lines:
+        return ""
+    return GROUND_TRUTH_HEADER + "\n".join(lines)
+
+
+def _citation_priority(chunk: dict) -> int:
+    src = str(chunk.get("source") or "").lower()
+    return {"both": 0, "ce": 1, "rrf": 2}.get(src, 3)
 
 
 def _parse_cited_indices(text: str) -> list[int]:
@@ -95,12 +155,14 @@ async def format_response(state: RAGState) -> RAGState:
         content = answer
         finish_reason = "stop"
         # Plain-text answers carry no [n] markers, so cite the top-ranked
-        # chunks (max 2) as metadata; still honor explicit [n] if present.
+        # chunks (max 5) as metadata, preferring "both" > "ce" > "rrf";
+        # still honor explicit [n] if present.
         cited = _parse_cited_indices(content)
         if cited:
             chosen = [chunks[i - 1] for i in cited if 1 <= i <= len(chunks)]
         else:
-            chosen = chunks[:MAX_CITATIONS]
+            ranked = sorted(enumerate(chunks), key=lambda t: (_citation_priority(t[1]), t[0]))
+            chosen = [c for _, c in ranked[:MAX_CITATIONS]]
         chosen = chosen[:MAX_CITATIONS]
         citations = [
             Citation(
@@ -112,6 +174,11 @@ async def format_response(state: RAGState) -> RAGState:
             for c in chosen
             if c.get("chunk_id")
         ]
+        # Append the ground-truth block AFTER cleaning so _to_plain_text /
+        # _clean_answer never strip it; the block itself is plain text.
+        block = _ground_truth_block(chunks)
+        if block:
+            content = content + block
     
     # Store formatted response data in state for API layer
     state["formatted_response"] = {

@@ -33,7 +33,7 @@ async def guarded_generate(state: RAGState) -> RAGState:
     request = GuardrailsChatRequest(
         model=req_model,
         messages=prompt_messages,
-        max_tokens=512,
+        max_tokens=1024,
         temperature=0.2,
     )
     
@@ -64,7 +64,7 @@ async def guarded_generate(state: RAGState) -> RAGState:
         trace_span(
             request_id,
             "guarded_generate",
-            span_input={"model": req_model, "max_tokens": 512, "temperature": 0.2},
+            span_input={"model": req_model, "max_tokens": 1024, "temperature": 0.2},
             span_output={"finish_reason": finish_reason, "answer": answer},
             clip=3000,
         )

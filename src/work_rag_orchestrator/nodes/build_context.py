@@ -8,9 +8,10 @@ from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
 
 log = logging.getLogger(__name__)
 
-# Max context size — increased for v7 (2077 chunks, more diverse) to improve recall for IVA questions
-MAX_CONTEXT_CHARS = 6000
-MAX_CHUNKS = 5
+# Max context size — 20-chunk generation upgrade: wider recall window for
+# hybrid (RRF + CE rerank) retrieval; KB context capped at 9000 chars.
+MAX_CONTEXT_CHARS = 9000
+MAX_CHUNKS = 20
 
 
 async def build_context(state: RAGState) -> RAGState:
@@ -29,14 +30,36 @@ async def build_context(state: RAGState) -> RAGState:
     # message also counts as new). New chats get greeting + company intro.
     is_new_chat = not any(m.get("role") == "assistant" for m in messages)
     
-    # Limit chunks
+    # Limit chunks (retrieval agent guarantees up to 20 items with
+    # chunk_id/document_id/title/heading/content/score/source/rank_rrf/
+    # rank_ce/hybrid_score/rerank_score keys; be defensive anyway).
     chunks = chunks[:MAX_CHUNKS]
-    
-    # Build context with numbered sources
+
+    def _section_label(chunk: dict, fallback_idx: int) -> str:
+        src = str(chunk.get("source") or "").lower()
+        rank_rrf = chunk.get("rank_rrf")
+        rank_ce = chunk.get("rank_ce")
+        if src == "rrf":
+            n = rank_rrf if isinstance(rank_rrf, int) else fallback_idx
+            return f"[RRF-{n}]"
+        if src == "ce":
+            n = rank_ce if isinstance(rank_ce, int) else fallback_idx
+            return f"[CE-{n}]"
+        if src == "both":
+            if isinstance(rank_rrf, int):
+                n = rank_rrf
+            elif isinstance(rank_ce, int):
+                n = rank_ce
+            else:
+                n = fallback_idx
+            return f"[BOTH-{n}]"
+        return f"[{fallback_idx}]"
+
+    # Build context with source-set-labelled sections
     context_parts = ["[Context from Knowledge Base]"]
-    
+
     for i, chunk in enumerate(chunks, 1):
-        source_id = f"[{i}]"
+        source_id = _section_label(chunk, i)
         title = chunk.get("title", "Unknown")
         heading = chunk.get("heading", "")
         content = chunk.get("content", "")
@@ -51,8 +74,8 @@ async def build_context(state: RAGState) -> RAGState:
     context_text = "\n\n".join(context_parts)
 
     # Stateless memory: last 2 exchanges (prior turns only, not the current
-    # question) as a plain-text block, capped at HISTORY_MAX_CHARS.
-    history_excerpt = last_exchanges_text(messages, include_current=False, max_chars=HISTORY_MAX_CHARS)
+    # question) as a plain-text block, capped at 1000 chars.
+    history_excerpt = last_exchanges_text(messages, include_current=False, max_chars=1000)
     history_block = f"[Conversation history]\n{history_excerpt}" if history_excerpt else ""
     question_part = f"Question: {query}"
 
@@ -68,22 +91,25 @@ async def build_context(state: RAGState) -> RAGState:
     elif len(context_text) > MAX_CONTEXT_CHARS:
         context_text = context_text[:MAX_CONTEXT_CHARS] + "\n...[truncated]"
     
-    # Build system message — Persian, helpful, professional, grounded, v7-optimized
+    # Build system message — Persian, helpful, professional, grounded.
+    # Long/detailed generation: multi-paragraph answers covering all relevant
+    # aspects from the (up to 20) retrieved sources.
     system_message = (
         "شما دستیار هوشمند رسمی شرکت اعتبارسنجی ایران (Iranian Credit Scoring Company AI Agent) هستید — "
         "نمایندهٔ هوشمندِ پاسخگویی مشتریان شرکت اعتبارسنجی ایران می‌باشید و لحنی محترمانه، دقیق و کاربردی دارید. "
-        "پاسخ را بر اساس بخش [Context from Knowledge Base] به صورت خلاصه و مفید بنویسید؛ متن‌ها را کپی نکنید، بلکه آن‌ها را با زبان خودتان بازنویسی کنید و نکتهٔ اصلی را واضح توضیح دهید. "
-        "از میان منابع ارائه‌شده فقط ۱ یا ۲ منبعی را در نظر بگیرید که بیشترین ارتباط را با پرسش دارند و پاسخ را فقط بر اساس همان یک یا دو منبع بسازید؛ "
-        "فقط اطلاعاتی را در پاسخ بیاورید که مستقیماً به پرسش کاربر پاسخ می‌دهد؛ از افزودن نکات حاشیه‌ای و عمومی که در منابع هست ولی به پرسش ربطی ندارد خودداری کنید. "
-        "مستقیم و دقیق به خودِ سوال پاسخ دهید؛ مقدمهٔ کلیشه‌ای (مثل «موارد زیر را یافتم») ننویسید و فهرست بلند از نکات کم‌ربط نیاورید؛ یک پاسخ متمرکز و کاربردی بدهید. "
+        "پاسخ را بر اساس بخش [Context from Knowledge Base] به صورت طولانی، مفصل و چندپاراگرافی بنویسید؛ همهٔ جنبه‌های مرتبط با پرسش را که در منابع آمده پوشش دهید و متن‌ها را کپی نکنید، بلکه آن‌ها را با زبان خودتان بازنویسی کنید. "
+        "از میان حداکثر ۲۰ منبع ارائه‌شده، همهٔ منابع مرتبط را در نظر بگیرید و نکته‌ای را از قلم نیندازید؛ تعریف‌ها، مراحل و رویه‌ها، شرایط و مدارک لازم، و مثال‌های موجود در منابع را در پاسخ بیاورید. "
+        "در متن پاسخ با زبان طبیعی مشخص کنید هر نکته از کدام دسته منابع آمده است؛ برای منابعی با برچسب CE بنویسید «در منابع رتبه‌بندی معنایی آمده…»، "
+        "برای منابعی با برچسب RRF بنویسید «در منابع رتبه‌بندی اولیه آمده…» و برای منابعی با برچسب BOTH بنویسید «در منابعی که هر دو روش بازیابی تأیید کرده‌اند آمده…». "
+        "مستقیم و دقیق به خودِ سوال پاسخ دهید؛ مقدمهٔ کلیشه‌ای (مثل «موارد زیر را یافتم») ننویسید و پاسخ را در چند پاراگراف منسجم و کاربردی سازمان دهید. "
         "قالب پاسخ متن سادهٔ فارسی است — از هیچ قالب‌بندی مارک‌داون استفاده نکنید: نه ستاره (*)، نه بولد (**)، نه هشتگ (#)، نه خط تیره در ابتدای خط، نه بک‌تیک؛ فقط جمله‌های ساده در قالب پاراگراف بنویسید. "
         "هیچ شمارهٔ ارجاعی مثل [1] یا [2] در متن پاسخ نیاورید. "
         "اگر پاسخ مستقیم در متن‌ها نیست، از میان نزدیک‌ترین اطلاعات مرتبط یک پاسخ مفید بسازید و تفاوت ظریف را توضیح دهید؛ "
         "جملهٔ «بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.» را فقط وقتی بگویید که هیچ‌یک از منابع ارائه‌شده هیچ ارتباطی با پرسش ندارند؛ "
-        "اگر حتی یک منبع به پرسش مرتبط است، بر اساس همان منبع پاسخ دهید و از گفتن «یافت نشد» خودداری کنید. "
+        "اگر حتی یک منبع به پرسش مرتبط است، بر اساس همان منبع‌ها پاسخ کامل دهید و از گفتن «یافت نشد» خودداری کنید. "
         "اگر کاربر درباره آسیب به خود یا خودکشی صحبت کرد، با همدلی پاسخ دهید، او را تشویق به صحبت با فرد مورد اعتماد یا متخصص کنید و اطلاعات تماس اورژانس ۱۱۵ و اورژانس اجتماعی ۱۲۳ را پیشنهاد دهید؛ هرگز به عنوان محتوای نفرت‌انگیز مسدود نکنید. "
         "همیشه فارسی پاسخ دهید — حتی اگر سوال انگلیسی باشد. "
-        "از تکرار عین جملات طولانی متن‌ها خودداری کنید؛ اطلاعات را خلاصه، روان و کاربردی ارائه دهید."
+        "از تکرار عین جملات طولانی متن‌ها خودداری کنید؛ اطلاعات را روان، دقیق و کاربردی ارائه دهید."
     )
 
     if is_new_chat:

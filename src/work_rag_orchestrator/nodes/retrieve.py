@@ -67,22 +67,94 @@ async def retrieve(state: RAGState) -> RAGState:
     top_k = settings.retrieval_top_k
     
     async with KnowledgebaseClient() as client:
-        chunks = await client.retrieve(search_query, top_k, request_id)
-    
-    # Normalize to dict format for state
-    state["retrieved_chunks"] = [
-        {
-            "chunk_id": c.chunk_id,
-            "document_id": c.document_id,
-            "title": c.title,
-            "heading": c.heading,
-            "content": c.content,
-            "score": c.score,
+        result = await client.retrieve(search_query, top_k, request_id)
+
+    # Client returns {"rrf": [...top10...], "ce": [...top10...]}; be
+    # defensive if an older client shape (plain list) is ever returned.
+    if isinstance(result, dict):
+        rrf_chunks = result.get("rrf", [])
+        ce_chunks = result.get("ce", [])
+    else:  # pragma: no cover - legacy fallback
+        rrf_chunks = []
+        ce_chunks = list(result)
+
+    def _item_dict(c, default_source: str) -> dict:
+        d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
+        get = d.get
+        return {
+            "chunk_id": get("chunk_id"),
+            "document_id": get("document_id"),
+            "title": get("title"),
+            "heading": get("heading"),
+            "content": get("content"),
+            "score": get("score"),
+            "source": get("source") or default_source,
+            "rank_rrf": get("rank_rrf"),
+            "rank_ce": get("rank_ce"),
+            "hybrid_score": get("hybrid_score"),
+            "rerank_score": get("rerank_score"),
         }
-        for c in chunks
-    ]
-    
-    log.info("Retrieved %d chunks for request %s", len(chunks), request_id)
+
+    # UNION of top-10 RRF + top-10 CE, deduped by chunk_id. A chunk in both
+    # sets becomes a single entry with source="both" + both ranks/scores.
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for c in rrf_chunks:
+        d = _item_dict(c, "rrf")
+        key = d.get("chunk_id") or f"__rrf_{len(order)}"
+        if key not in merged:
+            merged[key] = d
+            order.append(key)
+    for c in ce_chunks:
+        d = _item_dict(c, "ce")
+        key = d.get("chunk_id") or f"__ce_{len(order)}"
+        if key in merged:
+            existing = merged[key]
+            existing["source"] = "both"
+            if existing.get("rank_ce") is None:
+                existing["rank_ce"] = d.get("rank_ce")
+            if existing.get("rerank_score") is None:
+                existing["rerank_score"] = d.get("rerank_score")
+            if existing.get("hybrid_score") is None:
+                existing["hybrid_score"] = d.get("hybrid_score")
+            # Prefer the cross-encoder score for the merged entry; fall back
+            # to whichever score is present.
+            existing["score"] = (
+                existing.get("rerank_score")
+                if existing.get("rerank_score") is not None
+                else d.get("score", existing.get("score"))
+            )
+            # Fill any missing display fields from the CE copy.
+            for k in ("document_id", "title", "heading", "content"):
+                if not existing.get(k) and d.get(k):
+                    existing[k] = d[k]
+        else:
+            merged[key] = d
+            order.append(key)
+
+    def _best_rank(d: dict) -> int:
+        ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+        return min(ranks) if ranks else 10**9
+
+    both = sorted(
+        (merged[k] for k in order if merged[k].get("source") == "both"),
+        key=_best_rank,
+    )
+    ce_only = sorted(
+        (merged[k] for k in order if merged[k].get("source") == "ce"),
+        key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9,
+    )
+    rrf_only = sorted(
+        (merged[k] for k in order if merged[k].get("source") == "rrf"),
+        key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9,
+    )
+    # Normalize to dict format for state
+    state["retrieved_chunks"] = (both + ce_only + rrf_only)[:20]
+
+    log.info(
+        "Retrieved %d chunks (rrf=%d, ce=%d, both=%d) for request %s",
+        len(state["retrieved_chunks"]), len(rrf_chunks), len(ce_chunks), len(both), request_id,
+    )
 
     try:
         from ..tracing import trace_span
@@ -96,10 +168,16 @@ async def retrieve(state: RAGState) -> RAGState:
                 "top_k": top_k,
                 "history": last_exchanges_text(messages, include_current=True),
             },
-            span_output=[
-                {"chunk_id": c.get("chunk_id"), "title": c.get("title"), "score": c.get("score")}
-                for c in state["retrieved_chunks"][:5]
-            ],
+            span_output={
+                "rrf_count": len(rrf_chunks),
+                "ce_count": len(ce_chunks),
+                "both_count": len(both),
+                "total": len(state["retrieved_chunks"]),
+                "chunks": [
+                    {"chunk_id": c.get("chunk_id"), "title": c.get("title"), "score": c.get("score"), "source": c.get("source")}
+                    for c in state["retrieved_chunks"][:5]
+                ],
+            },
         )
     except Exception:
         pass

@@ -12,6 +12,7 @@ from ..schemas import (
     KBRetrievalResponse,
     KBRetrievalResult,
 )
+from typing import Dict
 
 log = logging.getLogger(__name__)
 
@@ -59,8 +60,16 @@ class KnowledgebaseClient:
 
     async def retrieve(
         self, query: str, top_k: int, request_id: str
-    ) -> List[KBRetrievalResult]:
-        """Call KB POST /search/api endpoint and normalize results."""
+    ) -> Dict[str, List[KBRetrievalResult]]:
+        """Call KB POST /search/api and return top-10 RRF + top-10 CE sets.
+
+        The KB truncates BOTH ``merged_candidates`` (RRF-ranked by
+        ``hybrid_score``) and ``final_results`` (cross-encoder order,
+        ``rerank_score``) to the requested ``top_k``. Callers request
+        ``top_k=20`` and this method slices each list to its first 10
+        entries. RRF items score by ``hybrid_score``, CE items by
+        ``rerank_score``.
+        """
         client = self._get_client()
         request = KBRetrievalRequest(query=query, top_k=top_k)
 
@@ -75,23 +84,49 @@ class KnowledgebaseClient:
             response.raise_for_status()
             data = response.json()
 
-            # The KB returns SearchSteps with final_results
-            # We need to normalize to our KBRetrievalResult format
+            # The KB returns SearchSteps with merged_candidates (RRF-ranked by
+            # hybrid_score) and final_results (cross-encoder order, rerank_score),
+            # BOTH truncated to the requested top_k. Take top 10 of each.
+            merged_candidates = data.get("merged_candidates", [])
             final_results = data.get("final_results", [])
 
-            normalized = []
-            for item in final_results:
-                # KB returns content_preview (300 chars) - we use that as content for MVP
-                normalized.append(KBRetrievalResult(
+            rrf: List[KBRetrievalResult] = []
+            for rank, item in enumerate(merged_candidates[:10], start=1):
+                hybrid = item.get("hybrid_score", 0.0)
+                rrf.append(KBRetrievalResult(
                     chunk_id=item.get("chunk_id", ""),
                     document_id=item.get("doc_id", ""),
                     title=item.get("doc_title", ""),
                     heading=item.get("heading_path", ""),
+                    # KB returns content_preview (300 chars) - we use that as content for MVP
                     content=item.get("content_preview", ""),
-                    score=item.get("rerank_score", item.get("hybrid_score", 0.0)),
+                    score=hybrid if hybrid is not None else 0.0,
+                    source="rrf",
+                    rank_rrf=rank,
+                    rank_ce=None,
+                    hybrid_score=hybrid,
+                    rerank_score=item.get("rerank_score"),
                 ))
 
-            return normalized
+            ce: List[KBRetrievalResult] = []
+            for rank, item in enumerate(final_results[:10], start=1):
+                rerank = item.get("rerank_score", item.get("hybrid_score", 0.0))
+                ce.append(KBRetrievalResult(
+                    chunk_id=item.get("chunk_id", ""),
+                    document_id=item.get("doc_id", ""),
+                    title=item.get("doc_title", ""),
+                    heading=item.get("heading_path", ""),
+                    # KB returns content_preview (300 chars) - we use that as content for MVP
+                    content=item.get("content_preview", ""),
+                    score=rerank if rerank is not None else 0.0,
+                    source="ce",
+                    rank_rrf=None,
+                    rank_ce=rank,
+                    hybrid_score=item.get("hybrid_score"),
+                    rerank_score=item.get("rerank_score"),
+                ))
+
+            return {"rrf": rrf, "ce": ce}
 
         except httpx.HTTPStatusError as e:
             log.error("KB retrieval failed: %s", e)

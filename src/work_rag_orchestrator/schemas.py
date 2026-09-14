@@ -129,6 +129,11 @@ class KBRetrievalResult(BaseModel):
     heading: str
     content: str
     score: float
+    source: Optional[str] = None
+    rank_rrf: Optional[int] = None
+    rank_ce: Optional[int] = None
+    hybrid_score: Optional[float] = None
+    rerank_score: Optional[float] = None
 
 
 class KBRetrievalResponse(BaseModel):

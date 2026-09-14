@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = 120
 
     # Retrieval
-    retrieval_top_k: int = 5
+    retrieval_top_k: int = 20
 
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
