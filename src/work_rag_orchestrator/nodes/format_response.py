@@ -151,6 +151,12 @@ async def format_response(state: RAGState) -> RAGState:
         content = _to_plain_text(_clean_answer(refusal_message)) or "I cannot comply with that request."
         finish_reason = "content_filter"
         citations = []
+    elif state.get("greeting_only"):
+        # Smalltalk: brief reply as-is — no sources retrieved, so no truth
+        # block and no citations. Citing nothing is correct here.
+        content = answer
+        finish_reason = "stop"
+        citations = []
     else:
         content = answer
         finish_reason = "stop"

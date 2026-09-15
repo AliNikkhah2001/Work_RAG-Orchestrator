@@ -10,6 +10,37 @@ from ..rewrite import rewrite_query, last_exchanges_text
 
 log = logging.getLogger(__name__)
 
+# Messages that need no retrieval: exact match after normalization.
+# Checked against the RAW last user message BEFORE history rewrite, so a bare
+# "سلام" can never be rewritten into an older question and RAG-fabricated.
+_GREETING = {
+    "سلام", "سلام وقت بخیر", "سلام صبح بخیر", "سلام عصر بخیر", "سلام شب بخیر",
+    "درود", "درود بر شما", "هی", "هیلو", "hello", "hi", "hey", "hey there",
+    "صبح بخیر", "عصر بخیر", "شب بخیر", "روز بخیر", "وقت بخیر",
+}
+_FAREWELL = {"خداحافظ", "خدا حافظ", "بای", "bye", "goodbye", "فعلا", "فعلاً"}
+_THANKS = {
+    "ممنون", "ممنونم", "مرسی", "تشکر", "متشکرم", "متشکرم", "تشکر میکنم",
+    "دست شما درد نکند", "دستت درد نکند", "عالی", "باشه", "اوکی", "ok", "thanks", "thank you",
+}
+
+
+def detect_greeting_kind(text: str) -> str | None:
+    """Return 'greeting'/'farewell'/'thanks' for standalone smalltalk, else None."""
+    t = (text or "").strip().lower()
+    for ch in "؟?!.,،؛:؛\"'«»()…-":
+        t = t.replace(ch, "")
+    t = " ".join(t.replace("‌", " ").split())
+    if not t:
+        return None
+    if t in _FAREWELL:
+        return "farewell"
+    if t in _THANKS:
+        return "thanks"
+    if t in _GREETING:
+        return "greeting"
+    return None
+
 
 async def retrieve(state: RAGState) -> RAGState:
     """
@@ -22,6 +53,18 @@ async def retrieve(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     query = state["query"]
     messages = state.get("messages", [])
+
+    # Smalltalk short-circuit: greetings/farewell/thanks get a brief reply
+    # with NO retrieval and NO history rewrite (a bare سلام must never be
+    # rewritten into an older question and answered with cited fabrication).
+    kind = detect_greeting_kind(query)
+    if kind:
+        state["greeting_only"] = kind
+        state["rewritten_query"] = query
+        state["retrieved_chunks"] = []
+        log.info("Greeting-only (%s) for request %s — skipping retrieval", kind, request_id)
+        return state
+    state["greeting_only"] = None
 
     # Stateless memory: resolve coreference ("او", "کجا بوده", ...) against
     # the last 2 exchanges. Falls back to the raw query on any error.
