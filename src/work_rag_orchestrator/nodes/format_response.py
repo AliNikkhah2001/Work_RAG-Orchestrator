@@ -28,8 +28,12 @@ def _clean_answer(text: str) -> str:
     text = re.sub(r"<\|\s*\"\s*\|>", "", text)
     text = re.sub(r"<\|\s*'\s*\|>", "", text)
     text = re.sub(r"<\|[^>]*\|>", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    # Collapse horizontal whitespace but PRESERVE paragraph breaks: 3+ newlines
+    # become a blank line separator; single newlines inside a paragraph join.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", text)
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    return text.strip()
 
 
 def _to_plain_text(text: str) -> str:
