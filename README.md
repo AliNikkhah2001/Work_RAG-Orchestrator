@@ -225,6 +225,17 @@ If blocked: `finish_reason: "content_filter"`, `rag.citations: 0`
 | `LANGFUSE_SECRET_KEY` | `sk-lf-mvp-local` | from `/tmp/opencode/langfuse.env` |
 | `TRACE_ENABLED` | `true` | `true` |
 | `UPSTREAM_LLM_MODEL` | `gemma-4-31b` | `unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL` |
+| `RETRIEVAL_TOP_K` | `20` | `20` (10 RRF + 10 cross-encoder union) |
+| `RESPONSE_DETAIL` | `production` | `production` hides the `منابع بازیابی‌شده:` retrieval block from user text; `verbose` appends it (citations metadata + traces always full) |
+
+## Smalltalk & honest sourcing
+
+- `retrieve` short-circuits greetings/farewell/thanks (exact-match on the raw
+  message, before history rewrite): no KB call, no rewrite, no citations —
+  a bare سلام can never be rewritten into an older question.
+- Long-answer system prompt: cite a source-set only for facts actually used;
+  lexically-similar-but-answerless passages are ignored; truly nothing
+  relevant → one short یافت-نشد sentence, no padding.
 
 ## Graph Nodes
 
