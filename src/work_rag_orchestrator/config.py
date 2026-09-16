@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Retrieval
     retrieval_top_k: int = 20
 
+    # Response detail: "production" hides the ground-truth retrieval block
+    # (source labels, titles, scores) from user-visible text; "verbose" appends
+    # it for debugging. Citations metadata + traces always keep full detail.
+    response_detail: str = "production"
+
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
 

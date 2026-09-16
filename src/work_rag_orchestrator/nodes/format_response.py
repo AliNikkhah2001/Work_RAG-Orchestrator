@@ -182,9 +182,16 @@ async def format_response(state: RAGState) -> RAGState:
         ]
         # Append the ground-truth block AFTER cleaning so _to_plain_text /
         # _clean_answer never strip it; the block itself is plain text.
-        block = _ground_truth_block(chunks)
-        if block:
-            content = content + block
+        # Production responses hide it (response_detail setting); verbose shows.
+        from ..config import get_settings as _get_settings
+        try:
+            _verbose = _get_settings().response_detail.strip().lower() == "verbose"
+        except Exception:
+            _verbose = False
+        if _verbose:
+            block = _ground_truth_block(chunks)
+            if block:
+                content = content + block
     
     # Store formatted response data in state for API layer
     state["formatted_response"] = {
