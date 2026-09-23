@@ -6,7 +6,9 @@ import logging
 from ..state import RAGState
 from ..config import get_settings
 from ..clients.knowledgebase import KnowledgebaseClient
+from ..clients.faq_verifier import verify_faq_answer
 from ..rewrite import rewrite_query, last_exchanges_text
+from ..faq_direct import find_direct_answer
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +55,27 @@ async def retrieve(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     query = state["query"]
     messages = state.get("messages", [])
+
+    faq_answer = find_direct_answer(query)
+    if faq_answer:
+        state["direct_faq_answer"] = faq_answer
+        state["faq_matched"] = True
+        state["greeting_only"] = None
+        state["rewritten_query"] = query
+        # Verify FAQ answer is relevant before using it as context
+        try:
+            verified = await verify_faq_answer(query, faq_answer)
+        except Exception:
+            verified = False
+        state["faq_verified"] = verified
+        if verified:
+            log.info("FAQ verified for request %s (query=%r)", request_id, query[:120])
+        else:
+            log.info("FAQ rejected by verifier for request %s — falling back to retrieval (query=%r)", request_id, query[:120])
+    else:
+        state["direct_faq_answer"] = None
+        state["faq_matched"] = False
+        state["faq_verified"] = False
 
     # Smalltalk short-circuit: greetings/farewell/thanks get a brief reply
     # with NO retrieval and NO history rewrite (a bare سلام must never be
@@ -109,8 +132,18 @@ async def retrieve(state: RAGState) -> RAGState:
     settings = get_settings()
     top_k = settings.retrieval_top_k
     
-    async with KnowledgebaseClient() as client:
-        result = await client.retrieve(search_query, top_k, request_id)
+    try:
+        async with KnowledgebaseClient() as client:
+            result = await client.retrieve(search_query, top_k, request_id)
+    except Exception as e:
+        log.error("KB retrieval failed for request %s: %s — continuing with empty context", request_id, e)
+        try:
+            from ..tracing import trace_span
+            trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query}, span_output={"error": str(e), "fallback": "empty"})
+        except Exception:
+            pass
+        state["retrieved_chunks"] = []
+        return state
 
     # Client returns {"rrf": [...top10...], "ce": [...top10...]}; be
     # defensive if an older client shape (plain list) is ever returned.
@@ -192,7 +225,23 @@ async def retrieve(state: RAGState) -> RAGState:
         key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9,
     )
     # Normalize to dict format for state
-    state["retrieved_chunks"] = (both + ce_only + rrf_only)[:20]
+    retrieved = (both + ce_only + rrf_only)[:20]
+    # Prepend FAQ candidate as top-priority context chunk if verified
+    if state.get("faq_verified") and state.get("direct_faq_answer"):
+        retrieved.insert(0, {
+            "chunk_id": "__faq_direct__",
+            "document_id": "__faq_direct__",
+            "title": "FAQ Direct Answer",
+            "heading": "FAQ",
+            "content": state["direct_faq_answer"],
+            "score": 1.0,
+            "source": "faq_direct",
+            "rank_rrf": 0,
+            "rank_ce": 0,
+            "hybrid_score": 1.0,
+            "rerank_score": None,
+        })
+    state["retrieved_chunks"] = retrieved
 
     log.info(
         "Retrieved %d chunks (rrf=%d, ce=%d, both=%d) for request %s",

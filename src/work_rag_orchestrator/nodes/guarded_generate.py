@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from ..state import RAGState
 from ..clients.guardrails import GuardrailsClient
+from ..clients.faq_verifier import verify_faq_answer
 from ..schemas import GuardrailsChatRequest
 from ..config import get_settings
 
