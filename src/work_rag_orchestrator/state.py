@@ -55,3 +55,8 @@ class RAGState(TypedDict):
     graded_chunks: List[Dict[str, Any]]
     hallucination_spans: List[str]
     grounded: bool
+
+    # FAQ direct-answer short-circuit (bypass retrieval, answer from canned FAQ via LLM)
+    direct_faq_answer: Optional[str]
+    faq_matched: bool
+    greeting_only: Optional[str]

@@ -161,6 +161,12 @@ async def format_response(state: RAGState) -> RAGState:
         content = answer
         finish_reason = "stop"
         citations = []
+    elif state.get("direct_faq_answer") or state.get("faq_matched"):
+        # FAQ direct-answer: curated content, no KB retrieval happened,
+        # so return answer as-is with no citations and no ground-truth block.
+        content = answer
+        finish_reason = "stop"
+        citations = []
     else:
         content = answer
         finish_reason = "stop"
