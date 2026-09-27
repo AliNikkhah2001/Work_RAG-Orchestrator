@@ -142,8 +142,7 @@ class KnowledgebaseClient:
         """Check if KB service is healthy."""
         client = self._get_client()
         try:
-            # KB doesn't have /health, try root
-            response = await client.get(f"{self.base_url}/", timeout=5.0)
+            response = await client.get(f"{self.base_url}/health", timeout=5.0)
             return response.status_code == 200
         except Exception:
             return False
