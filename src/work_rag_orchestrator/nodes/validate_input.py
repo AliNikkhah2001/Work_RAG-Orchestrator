@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from ..state import RAGState
 from ..clients.guardrails import GuardrailsClient
 
@@ -16,6 +17,7 @@ async def validate_input(state: RAGState) -> RAGState:
     If blocked, set blocked=True and refusal_message.
     If allowed, continue to retrieve node.
     """
+    t0 = time.monotonic()
     request_id = state["request_id"]
     messages = state["messages"]
     
@@ -25,6 +27,10 @@ async def validate_input(state: RAGState) -> RAGState:
         state["error"] = "No user message found"
         state["blocked"] = True
         state["refusal_message"] = "No user message in request"
+        elapsed = round((time.monotonic() - t0) * 1000, 1)
+        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+            state["stage_timing_ms"] = {}
+        state["stage_timing_ms"]["validate_input"] = elapsed
         return state
     
     query = user_messages[-1]["content"]
@@ -55,5 +61,10 @@ async def validate_input(state: RAGState) -> RAGState:
         state["refusal_message"] = decision.reason or "I cannot comply with that request."
     else:
         state["blocked"] = False
-    
+
+    elapsed = round((time.monotonic() - t0) * 1000, 1)
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"]["validate_input"] = elapsed
+
     return state

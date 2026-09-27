@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import httpx
 import logging
-from typing import Optional
+import json
+from typing import Optional, AsyncGenerator
 
 from ..config import get_settings
 from ..schemas import (
@@ -15,6 +17,30 @@ from ..schemas import (
 )
 
 log = logging.getLogger(__name__)
+
+# Module-level shared HTTP client — persists across all GuardrailsClient
+# instances so connection pool/keep-alive is reused between requests.
+_shared_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_shared_client(timeout: float) -> httpx.AsyncClient:
+    """Return a module-level shared AsyncClient (created once, reused forever)."""
+    global _shared_client
+    if _shared_client is not None:
+        return _shared_client
+    _shared_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=10.0, read=timeout, write=timeout, pool=30.0),
+        trust_env=False,
+        limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+    )
+    return _shared_client
+
+
+async def _aclose_shared_client() -> None:
+    global _shared_client
+    if _shared_client is not None:
+        await _shared_client.aclose()
+        _shared_client = None
 
 
 class GuardrailsClient:
@@ -29,34 +55,15 @@ class GuardrailsClient:
         self._client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self) -> "GuardrailsClient":
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                self.timeout,
-                connect=10.0,
-                read=self.timeout,
-                write=self.timeout,
-                pool=10.0,
-            ),
-            trust_env=False,  # Critical: bypass proxy for localhost
-        )
+        self._client = _get_shared_client(self.timeout)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._client:
-            await self._client.aclose()
+        pass  # shared client stays alive for reuse
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    self.timeout,
-                    connect=10.0,
-                    read=self.timeout,
-                    write=self.timeout,
-                    pool=10.0,
-                ),
-                trust_env=False,
-            )
+            self._client = _get_shared_client(self.timeout)
         return self._client
 
     async def check_rails(
@@ -131,6 +138,35 @@ class GuardrailsClient:
         except Exception as e:
             log.exception("Guardrails chat completion error: %s", e)
             raise
+
+    async def chat_completion_stream(
+        self, request: GuardrailsChatRequest, request_id: str
+    ) -> AsyncGenerator[str, None]:
+        """Real streaming via Guardrails SSE — yields content deltas as they arrive (no artificial delay)."""
+        headers = {"X-Request-ID": request_id}
+        stream_client = _get_shared_client(self.timeout)
+        async with stream_client.stream(
+            "POST",
+            self.chat_url,
+            json={**request.model_dump(exclude_none=True), "stream": True},
+            headers=headers,
+        ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(payload)
+                        # Guardrails streams as {"choices":[{"delta":{"content":"..."}}]}
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    except Exception:
+                        continue
 
     async def health_check(self) -> bool:
         """Check if Guardrails service is healthy."""

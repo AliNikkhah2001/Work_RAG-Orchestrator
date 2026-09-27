@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from ..state import RAGState
 from ..schemas import Citation
 
@@ -142,6 +143,7 @@ async def format_response(state: RAGState) -> RAGState:
     If blocked, returns refusal with content_filter finish_reason.
     If allowed, returns answer with citations from retrieved chunks.
     """
+    t0 = time.monotonic()
     request_id = state["request_id"]
     answer = _to_plain_text(_clean_answer(state["answer"]))
     # Fallback if cleaning left empty (model only emitted control tokens)
@@ -158,6 +160,12 @@ async def format_response(state: RAGState) -> RAGState:
     elif state.get("greeting_only"):
         # Smalltalk: brief reply as-is — no sources retrieved, so no truth
         # block and no citations. Citing nothing is correct here.
+        content = answer
+        finish_reason = "stop"
+        citations = []
+    elif state.get("direct_faq_answer") or state.get("faq_matched"):
+        # FAQ direct-answer: curated content, no KB retrieval happened,
+        # so return answer as-is with no citations and no ground-truth block.
         content = answer
         finish_reason = "stop"
         citations = []
@@ -217,5 +225,10 @@ async def format_response(state: RAGState) -> RAGState:
         )
     except Exception:
         pass
+
+    elapsed = round((time.monotonic() - t0) * 1000, 1)
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"]["format_response"] = elapsed
 
     return state

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from ..state import RAGState
 from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
 
@@ -21,6 +22,7 @@ async def build_context(state: RAGState) -> RAGState:
     Uses retrieved_chunks to build context. Limits total size and chunk count.
     Stores prompt_messages in state for the generation step.
     """
+    t0 = time.monotonic()
     request_id = state["request_id"]
     query = state["query"]
     chunks = state["retrieved_chunks"]
@@ -57,6 +59,10 @@ async def build_context(state: RAGState) -> RAGState:
             {"role": "user", "content": query},
         ]
         log.info("Built greeting-only context (%s) for request %s", greeting_kind, request_id)
+        elapsed = round((time.monotonic() - t0) * 1000, 1)
+        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+            state["stage_timing_ms"] = {}
+        state["stage_timing_ms"]["build_context"] = elapsed
         return state
 
     # Limit chunks (retrieval agent guarantees up to 20 items with
@@ -181,5 +187,10 @@ async def build_context(state: RAGState) -> RAGState:
         )
     except Exception:
         pass
+
+    elapsed = round((time.monotonic() - t0) * 1000, 1)
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"]["build_context"] = elapsed
 
     return state

@@ -33,7 +33,7 @@ flowchart TD
 |--------|------|---------|
 | `GET` | `/health` | Process health |
 | `GET` | `/ready` | Dependency readiness (KB + Guardrails) |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible non-streaming chat entry point |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat entry point (streaming + non-streaming) |
 
 ### Request
 Request path:
@@ -123,7 +123,7 @@ Compiled with MemorySaver (dev checkpointer); exports `rag_graph` and `graph` (S
 |---|---|---|
 | `GET` | `/health` | Process liveness `{"status":"ok"}` |
 | `GET` | `/ready` | Dependency readiness for KB + Guardrails → `{status, dependencies[]}`; ready only when both ready |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible non-streaming chat; graph runs; returns `ChatCompletionResponse` + `rag` metadata |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat; graph runs; returns `ChatCompletionResponse` + `rag` metadata; supports `stream=true` for SSE token streaming |
 
 ### Chat request / response
 
@@ -133,10 +133,11 @@ Compiled with MemorySaver (dev checkpointer); exports `rag_graph` and `graph` (S
   "model": "gemma-4-31b",
   "messages": [{"role":"user","content":"چگونه می‌توانم گزارش اعتباری خود را دریافت کنم؟"}],
   "max_tokens": 500,
-  "temperature": 0.0
+  "temperature": 0.0,
+  "stream": true   // optional: enables SSE token streaming
 }
 
-// Response
+// Non-streaming Response
 {
   "id": "chatcmpl-...",
   "object": "chat.completion",
@@ -148,6 +149,11 @@ Compiled with MemorySaver (dev checkpointer); exports `rag_graph` and `graph` (S
     "citations": [{"chunk_id":"...","document_id":"...","title":"...","heading":"..."}]
   }
 }
+
+// Streaming Response (stream=true)
+// SSE format: data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"delta":{"content":"token"}}]}
+// Final chunk includes rag metadata: {"choices":[{"delta":{},"finish_reason":"stop"}],"rag":{"request_id":"...","citations":[...]}}
+// End marker: data: [DONE]
 ```
 
 Behavior notes:
@@ -242,11 +248,19 @@ If blocked: `finish_reason: "content_filter"`, `rag.citations: 0`
 | Node | File | Purpose |
 |------|------|---------|
 | `validate_input` | `nodes/validate_input.py` | Guardrails input check |
-| `retrieve` | `nodes/retrieve.py` | KB search + query rewrite |
+| `retrieve` | `nodes/retrieve.py` | KB search + query rewrite + FAQ verification |
 | `build_context` | `nodes/build_context.py` | Context construction (MAX_CHUNKS=5, MAX_CONTEXT_CHARS=6000) |
 | `guarded_generate` | `nodes/guarded_generate.py` | Guardrails generation gateway |
 | `format_response` | `nodes/format_response.py` | Citation shaping, refusal handling |
 | `format_refusal` | `nodes/format_response.py` | Reuses format_response for blocked |
+
+## Clients
+
+| Client | File | Purpose |
+|--------|------|---------|
+| `GuardrailsClient` | `clients/guardrails.py` | HTTP client for Guardrails (chat, rails check, streaming) |
+| `KnowledgebaseClient` | `clients/knowledgebase.py` | HTTP client for KB Manager |
+| `faq_verifier` | `clients/faq_verifier.py` | LLM verification of FAQ direct-answer candidates |
 
 ## State Schema (RAGState)
 
@@ -263,6 +277,12 @@ class RAGState(TypedDict):
     citations: list[dict]
     blocked: bool
     error: str | None
+    # FAQ verifier
+    direct_faq_answer: str | None        # canned FAQ answer if matched
+    faq_matched: bool                    # True if find_direct_answer hit
+    faq_verified: bool                   # True if LLM verified FAQ is relevant
+    # Streaming
+    greeting_only: str | None            # "greeting"|"farewell"|"thanks"|None
 ```
 
 ## Tracing (Langfuse)
@@ -309,22 +329,24 @@ components/orchestrator/
 ├── pyproject.toml
 ├── langgraph.json            # Studio config: {"graphs": {"rag": "./studio_graph.py:graph"}}
 ├── src/work_rag_orchestrator/
-│   ├── api.py                # FastAPI app, /health, /ready, /v1/chat/completions
+│   ├── api.py                # FastAPI app, /health, /ready, /v1/chat/completions (streaming)
 │   ├── config.py             # Pydantic settings
 │   ├── graph.py              # LangGraph definition (5 nodes + conditional)
 │   ├── state.py              # RAGState TypedDict
 │   ├── schemas.py            # Request/Response Pydantic models
 │   ├── tracing.py            # Langfuse direct-HTTP + SDK fallback
 │   ├── rewrite.py            # Query rewrite + history helpers
+│   ├── faq_direct.py         # FAQ direct-answer shortlist (curated Q→A)
 │   ├── nodes/
 │   │   ├── validate_input.py
-│   │   ├── retrieve.py
+│   │   ├── retrieve.py       # KB search + FAQ verification
 │   │   ├── build_context.py
 │   │   ├── guarded_generate.py
 │   │   └── format_response.py
 │   └── clients/
-│       ├── guardrails.py     # HTTP client for Guardrails
-│       └── knowledgebase.py  # HTTP client for KB Manager
+│       ├── guardrails.py     # HTTP client for Guardrails (chat + streaming)
+│       ├── knowledgebase.py  # HTTP client for KB Manager
+│       └── faq_verifier.py   # LLM verification of FAQ candidates
 └── tests/
     ├── test_memory_coref.py
     └── ...
@@ -413,7 +435,7 @@ pytest tests/ -v
 
 - [x] Deterministic RAG graph with conditional refusal branch
 - [x] `validate_input` → Guardrails input rail check (fail-closed upstream behaviour)
-- [x] `retrieve` → KB `/search/api` with field normalization
+- [x] `retrieve` → KB `/search/api` with field normalization + FAQ verification
 - [x] `build_context` → bounded numbered context (≤5 chunks, 8000 chars)
 - [x] `guarded_generate` → Guardrails chat gateway (modal `gemma-4-31b`)
 - [x] `format_response` → citations + `finish_reason`; refusal path reuses node
@@ -421,6 +443,8 @@ pytest tests/ -v
 - [x] `/health`, `/ready` with dependency checks
 - [x] LangGraph Studio integration (`studio_graph.py`, `langgraph.json`)
 - [x] Dockerfile, `.env.example`, node unit tests
+- [x] Streaming responses (`stream=true`) — real token streaming via Guardrails SSE
+- [x] FAQ verifier — LLM gate before serving cached answers (clients/faq_verifier.py)
 
 ### Next / open
 
@@ -430,7 +454,6 @@ pytest tests/ -v
 - [ ] Retrieval retry loop with graded chunks (`grade_docs`)
 - [ ] Hallucination span detection (ISSUP/ISUSE-style nodes)
 - [ ] Query rewriting / multi-query generation wired end-to-end
-- [ ] Streaming responses (`stream=true`)
 - [ ] Reconcile STUDIO.md reference (`graph.py:graph`) with actual `studio_graph.py:graph`
 
 ---

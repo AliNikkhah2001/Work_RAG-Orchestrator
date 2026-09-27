@@ -56,8 +56,19 @@ class AuditTrail(BaseModel):
     guardrail_output: Optional[Dict[str, Any]] = None
     final_answer: str = ""
     citations: List[Citation] = Field(default_factory=list)
-    latency_ms: Optional[Dict[str, float]] = None
+    latency_ms: Optional[Any] = None
     model: str = ""
+    stage_timing_ms: Optional[Dict[str, float]] = None
+    original_query: str = ""
+    rewritten_query: str = ""
+    guardrail_input_signals: List[Dict[str, Any]] = Field(default_factory=list)
+    guardrail_output_signals: List[Dict[str, Any]] = Field(default_factory=list)
+    retrieval_method: str = ""
+    retrieval_chunks_total: int = 0
+    retrieval_chunks_used: int = 0
+    reranker_applied: bool = False
+    context_preview: str = ""
+    prompt_messages_preview: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class ChatCompletionResponse(BaseModel):

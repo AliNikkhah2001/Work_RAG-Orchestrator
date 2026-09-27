@@ -9,7 +9,10 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+import json
+import asyncio
+import re
 
 from .config import get_settings
 from .schemas import (
@@ -71,6 +74,8 @@ async def lifespan(app: FastAPI):
     log.info("Starting Orchestrator service...")
     yield
     log.info("Shutting down Orchestrator service...")
+    from .clients.guardrails import _aclose_shared_client
+    await _aclose_shared_client()
 
 
 def create_app() -> FastAPI:
@@ -78,7 +83,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     
     app = FastAPI(
-        title="Work RAG Orchestrator",
+        title="ICS Helper Agent",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -98,15 +103,17 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/models")
     async def list_models():
-        # Open WebUI discovery — single RAG Agent (self-hosted)
-        # Hides internal model IDs; WebUI shows only this name
+        # Open WebUI discovery — single ICS Helper Agent (self-hosted)
+        # Exposes only ICS Helper Agent; internal aliases hidden from UI but still accepted for backward compat
         return {
             "object": "list",
             "data": [
-                {"id": "work-rag-agent", "object": "model", "created": 0, "owned_by": "vast", "name": "Work RAG Agent"},
-                {"id": "gemma-4-31b", "object": "model", "created": 0, "owned_by": "vast", "name": "Work RAG Agent"},
+                {"id": "ics-helper-agent", "object": "model", "created": 0, "owned_by": "ics", "name": "ICS Helper Agent"},
             ],
         }
+
+    # /rate command pattern: /rate 5 comment #tag1 #tag2
+    _RATE_RE = re.compile(r"^\s*/rate\s+([1-5])\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
     async def chat_completions(
@@ -114,6 +121,59 @@ def create_app() -> FastAPI:
         x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
         authorization: Optional[str] = Header(None),
     ):
+        # --- /rate command: save evaluation without calling LLM ---
+        try:
+            last_content = request.messages[-1].get("content", "") if request.messages else ""
+            m = _RATE_RE.match(last_content.strip())
+            if m:
+                import httpx as _httpx
+                rating = int(m.group(1))
+                comment = (m.group(2) or "").strip()
+                tags_raw = (m.group(3) or "").strip()
+                tags = re.findall(r"#([^\s#]+)", tags_raw) if tags_raw else []
+                # Use chat-level correlation: try X-Request-ID, else generate
+                rate_request_id = x_request_id or str(uuid.uuid4())
+                # Try to save to observability store (best-effort, fail-silent for chat)
+                stars = "★" * rating + "☆" * (5 - rating)
+                tag_str = f"  Tags: {', '.join('#'+t for t in tags)}" if tags else ""
+                cmt_str = f"\n> {comment}" if comment else ""
+                # Fire-and-forget POST to observability
+                try:
+                    import os as _os
+                    obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+                    # Also try Docker service name
+                    for base in [obs_url, "http://rag-tracing-fallback:3000"]:
+                        try:
+                            async with _httpx.AsyncClient(timeout=3.0) as _client:
+                                await _client.post(
+                                    f"{base.rstrip('/')}/api/observability/evaluations",
+                                    json={
+                                        "request_id": rate_request_id,
+                                        "rating": rating,
+                                        "comment": comment,
+                                        "tags": tags,
+                                        "user_query": last_content[:500],
+                                        "model": request.model,
+                                    },
+                                )
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                msg = (
+                    f"Rating saved: {stars} ({rating}/5){cmt_str}{tag_str}\n\n"
+                    f"View in dashboard: http://127.0.0.1:3000/dashboard/observability"
+                )
+                return ChatCompletionResponse(
+                    model=request.model,
+                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg}, finish_reason="stop")],
+                    rag=RAGMetadata(request_id=rate_request_id, citations=[]),
+                    audit=None,
+                )
+        except Exception:
+            pass  # fall through to normal RAG flow on any error
+
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
         t0 = time.monotonic()
@@ -125,8 +185,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             log.warning("Langfuse trace init failed: %s", e)
         
-        # Validate model — accept RAG Agent alias + Vast Gemma
-        allowed_models = {"work-rag-agent", "gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
+        # Validate model — primary is ICS Helper Agent; keep legacy aliases for backward compat
+        allowed_models = {"ics-helper-agent", "work-rag-agent", "gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
         if request.model not in allowed_models:
             log.warning("Unsupported model requested: %s", request.model)
         
@@ -149,9 +209,153 @@ def create_app() -> FastAPI:
             "graded_chunks": [],
             "hallucination_spans": [],
             "grounded": False,
+            "direct_faq_answer": None,
+            "faq_matched": False,
+            "greeting_only": None,
+            "stage_timing_ms": {},
         }
         
-        # Run the graph
+        # --- Streaming branch: REAL token streaming (no artificial delay) ---
+        # Multi-agent progress via SSE comments + OpenAI delta chunks.
+        # Non-LLM nodes (validate/retrieve/build_context) run buffered (~300ms),
+        # then LLM tokens are proxied as they arrive from Guardrails->Gemma (30-50ms/token).
+        if request.stream:
+            async def event_generator():
+                # 1) Role preamble (required by OpenAI spec)
+                preamble = {
+                    "id": f"chatcmpl-{request_id}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(preamble, ensure_ascii=False)}\n\n"
+                try:
+                    from .nodes.validate_input import validate_input as node_validate
+                    from .nodes.retrieve import retrieve as node_retrieve
+                    from .nodes.build_context import build_context as node_build
+                    from .nodes.format_response import format_response as node_format
+                    from .clients.guardrails import GuardrailsClient
+                    from .schemas import GuardrailsChatRequest
+
+                    # Validate + Retrieve in PARALLEL (query set upfront; retrieve doesn't need validate output)
+                    # Saves ~30ms overlap since retrieve (11s) dwarfs check_rails (30ms).
+                    query = initial_state["messages"][-1]["content"] if initial_state.get("messages") else ""
+                    initial_state["query"] = query
+                    yield ": agent validate_input + retrieve running\n\n"
+                    t_retrieve = time.monotonic()
+                    v_task = asyncio.create_task(node_validate(initial_state))
+                    r_task = asyncio.create_task(node_retrieve(initial_state))
+                    state = await v_task
+                    await r_task
+                    if state.get("blocked"):
+                        content = state.get("refusal_message") or "متأسفم، نمی‌توانم پاسخ دهم."
+                        yield ": agent validate_input done blocked=true\n\n"
+                        for tok in re.findall(r"\S+\s*", content):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'content_filter'}]}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    retrieved = state.get("retrieved_chunks", [])
+                    yield f": agent retrieve done chunks={len(retrieved)} latency_ms={int((time.monotonic()-t_retrieve)*1000)}\n\n"
+
+                    # Greeting shortcut — no LLM, stream directly
+                    if state.get("greeting_only"):
+                        state = await node_format(state)
+                        content = state.get("formatted_response", {}).get("content", "")
+                        yield ": agent format_response greeting\n\n"
+                        for tok in re.findall(r"\S+\s*", content):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}]}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    # Build context
+                    yield ": agent build_context running\n\n"
+                    state = await node_build(state)
+                    prompt_messages = state.get("prompt_messages", [])
+                    yield f": agent build_context done prompt_tokens={len(str(prompt_messages))}\n\n"
+
+                    # FAQ direct — stream canned answer directly (no LLM latency) OR via LLM rewrite
+                    # Only use verified FAQ answers; unverified ones fall through to retrieval
+                    if state.get("faq_verified") and state.get("direct_faq_answer"):
+                        # Option A: direct canned (instant) — uncomment to use LLM rewrite instead
+                        content = state.get("direct_faq_answer")
+                        # For LLM rewrite, comment above and use Guardrails streaming below with prompt_messages
+                        yield ": agent guarded_generate faq_direct streaming\n\n"
+                        # Stream without artificial sleep — just chunk by words for UI, no delay
+                        for tok in re.findall(r"\S+\s*", content):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                            # No sleep — real streaming speed is LLM speed; for canned we can yield immediately
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[]}}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        try:
+                            from .tracing import update_trace
+                            update_trace(request_id, content[:2000], {"finish_reason":"stop","faq":True,"stream":True})
+                        except Exception:
+                            pass
+                        return
+
+                    # Normal RAG — REAL streaming from Guardrails->Gemma (no sleep, tokens arrive as LLM generates)
+                    yield ": agent guarded_generate streaming\n\n"
+                    settings = get_settings()
+                    req = GuardrailsChatRequest(
+                        model=settings.upstream_llm_model,
+                        messages=prompt_messages,
+                        max_tokens=1024,
+                        temperature=0.2,
+                    )
+                    full_answer = []
+                    async with GuardrailsClient() as gclient:
+                        async for token in gclient.chat_completion_stream(req, request_id):
+                            full_answer.append(token)
+                            chunk = {
+                                "id": f"chatcmpl-{request_id}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": request.model,
+                                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                            }
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            # No sleep — real LLM pacing (~30ms/token) is the animation
+
+                    # Finalize state for citations/audit
+                    answer_text = "".join(full_answer)
+                    state["answer"] = answer_text
+                    # Format citations (same as format_response)
+                    state = await node_format(state)
+                    formatted = state.get("formatted_response", {}) or {}
+                    citations = formatted.get("citations", [])
+                    finish_reason = formatted.get("finish_reason", "stop")
+                    final_chunk = {
+                        "id": f"chatcmpl-{request_id}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                        "rag": {"request_id": request_id, "citations": citations},
+                    }
+                    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    try:
+                        from .tracing import update_trace
+                        update_trace(request_id, answer_text[:2000], {"finish_reason":finish_reason,"citations":len(citations),"retrieved":len(retrieved),"stream":True,"real_stream":True})
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log.exception("Streaming failed: %s", e)
+                    err = {"id":f"chatcmpl-{request_id}","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"خطا در پردازش درخواست."},"finish_reason":"error"}]}
+                    yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+            return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Request-ID": request_id,
+            })
+
+        # --- Non-streaming (buffered) branch ---
         try:
             config = {"configurable": {"thread_id": request_id}}
             final_state = await rag_graph.ainvoke(initial_state, config=config)
@@ -167,6 +371,8 @@ def create_app() -> FastAPI:
         
         # Build audit trail for transparency (shown in OpenWebUI rag agent)
         # This exposes the whole pipeline: guardrails, retrieval, generation
+        # Compute latency first so it can be included in enriched audit
+        latency_ms = int((time.monotonic() - t0) * 1000)
         try:
             from .schemas import AuditTrail
             # Get raw model output and guardrail decisions from state
@@ -179,11 +385,33 @@ def create_app() -> FastAPI:
                 context_str = prompt_msgs[1].get("content", "")[:2000]
             # Get retrieved chunks with scores
             retrieved = final_state.get("retrieved_chunks", [])
+            # Enriched audit fields
+            guardrail_decision = final_state.get("guardrail_decision")
+            if isinstance(guardrail_decision, dict):
+                guardrail_input_signals = guardrail_decision.get("signals", []) or []
+            else:
+                guardrail_input_signals = []
+            # Detect retrieval method from chunk sources
+            sources = {str(c.get("source", "")).lower() for c in retrieved}
+            if "both" in sources or ({"rrf", "ce"} & sources):
+                retrieval_method = "rrf+ce"
+            elif "rrf" in sources:
+                retrieval_method = "rrf"
+            elif "ce" in sources:
+                retrieval_method = "ce"
+            elif retrieved:
+                retrieval_method = "rrf+ce"
+            else:
+                retrieval_method = ""
             # Build audit
             audit = AuditTrail(
                 request_id=request_id,
                 query=final_state.get("query", ""),
-                guardrail_input=final_state.get("guardrail_decision"),
+                original_query=final_state.get("query", ""),
+                rewritten_query=final_state.get("rewritten_query", ""),
+                guardrail_input=guardrail_decision,
+                guardrail_input_signals=guardrail_input_signals,
+                guardrail_output_signals=[],
                 retrieved_chunks=[
                     {
                         "chunk_id": c.get("chunk_id", ""),
@@ -191,25 +419,38 @@ def create_app() -> FastAPI:
                         "heading": c.get("heading", ""),
                         "content": c.get("content", "")[:500],
                         "score": c.get("score", 0),
+                        "source": c.get("source", ""),
+                        "rank_rrf": c.get("rank_rrf"),
+                        "rank_ce": c.get("rank_ce"),
+                        "hybrid_score": c.get("hybrid_score"),
+                        "rerank_score": c.get("rerank_score"),
                     }
-                    for c in retrieved[:5]
+                    for c in retrieved[:10]
                 ],
-                reranker_scores=[c.get("score", 0) for c in retrieved[:5]],
+                reranker_scores=[c.get("score", 0) for c in retrieved[:10]],
                 context_sent_to_gemma=context_str,
+                context_preview=context_str[:500],
+                prompt_messages_preview=[{"role": m.get("role", ""), "content": m.get("content", "")[:500]} for m in prompt_msgs[:2]],
                 raw_model_output=raw_output[:2000],
                 guardrail_output={"blocked": final_state.get("blocked", False), "refusal": final_state.get("refusal_message")},
                 final_answer=content,
                 citations=[Citation(**c) for c in citations],
                 model=request.model,
+                stage_timing_ms=final_state.get("stage_timing_ms", {}),
+                retrieval_method=retrieval_method,
+                retrieval_chunks_total=len(retrieved),
+                retrieval_chunks_used=len(citations),
+                reranker_applied=len(retrieved) > 0,
+                latency_ms=latency_ms,
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")
             audit = None
-        
+
         # Build response
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        # Populate audit latency
-        if audit is not None:
+        # latency_ms already computed above
+        # Populate audit latency if not already set
+        if audit is not None and audit.latency_ms is None:
             try:
                 audit.latency_ms = latency_ms
             except Exception:
@@ -231,6 +472,44 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             log.warning("Langfuse trace update failed: %s", e)
+
+        # Auto-save to observability dashboard (fire-and-forget)
+        try:
+            import os as _os
+            obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+            if obs_url and audit is not None:
+                import httpx as _httpx
+                import threading as _threading
+                _audit_dict = audit.model_dump()
+                def _post_observability(audit_data=_audit_dict, req_id=request_id, obs=obs_url, cid=citations):
+                    try:
+                        import httpx as _hx
+                        payload = {
+                            "request_id": req_id,
+                            "user_query": audit_data.get("query", ""),
+                            "rewritten_query": audit_data.get("rewritten_query", ""),
+                            "response": audit_data.get("final_answer", ""),
+                            "stage_timing": audit_data.get("stage_timing_ms", {}),
+                            "guardrail_input": audit_data.get("guardrail_input"),
+                            "guardrail_output": audit_data.get("guardrail_output"),
+                            "retrieved_chunks": audit_data.get("retrieved_chunks", []),
+                            "citations": [dict(c) for c in cid] if cid else [],
+                            "context_preview": audit_data.get("context_preview", ""),
+                            "model": audit_data.get("model", ""),
+                            "latency_ms": latency_ms,
+                        }
+                        for base in [obs, "http://rag-tracing-fallback:3000"]:
+                            try:
+                                with _hx.Client(timeout=3.0) as _cl:
+                                    _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                _threading.Thread(target=_post_observability, daemon=True).start()
+        except Exception:
+            pass
 
         response = ChatCompletionResponse(
             model=request.model,
@@ -276,8 +555,6 @@ def main():
 
 
 
-
-app = create_app()
 
 if __name__ == "__main__":
     main()
