@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+# O-C3: MemorySaver is unbounded — for prod use Postgres/Redis checkpointer or TTL. See state.py record_timing for leak mitigation.
+# For now, limit to 100 threads via custom wrapper (evict oldest)
 
 from .state import RAGState
 from .nodes import (

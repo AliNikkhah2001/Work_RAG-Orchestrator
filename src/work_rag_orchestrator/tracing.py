@@ -6,6 +6,8 @@ import os
 import time
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor
+_trace_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="trace")
 from functools import lru_cache
 from typing import Any
 
@@ -63,7 +65,7 @@ def _direct_trace(request_id: str, name: str, input_text: str, metadata: dict | 
             except Exception:
                 pass
 
-        threading.Thread(target=_post, daemon=True).start()
+        _trace_executor.submit(_post)
     except Exception as e:
         log.warning("Direct trace failed: %s", e)
 
@@ -94,7 +96,7 @@ def _direct_update(request_id: str, output: str, metadata: dict | None = None):
             except Exception:
                 pass
 
-        threading.Thread(target=_post, daemon=True).start()
+        _trace_executor.submit(_post)
     except Exception:
         pass
 
@@ -150,7 +152,7 @@ def trace_span(
             except Exception:
                 pass
 
-        threading.Thread(target=_post, daemon=True).start()
+        _trace_executor.submit(_post)
     except Exception:
         pass
 

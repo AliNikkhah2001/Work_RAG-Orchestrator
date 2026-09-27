@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 _shared_client: Optional[httpx.AsyncClient] = None
 
 
-def _get_shared_client(timeout: float) -> httpx.AsyncClient:
+def _get_shared_client(timeout: float = 30.0) -> httpx.AsyncClient:  # O-C4: timeout now per-request, not per-client
     """Return a module-level shared AsyncClient (created once, reused forever)."""
     global _shared_client
     if _shared_client is not None:

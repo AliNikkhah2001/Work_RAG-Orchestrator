@@ -244,10 +244,33 @@ def create_app() -> FastAPI:
                     initial_state["query"] = query
                     yield ": agent validate_input + retrieve running\n\n"
                     t_retrieve = time.monotonic()
-                    v_task = asyncio.create_task(node_validate(initial_state))
-                    r_task = asyncio.create_task(node_retrieve(initial_state))
+                    # O-C2: clone state to avoid race on shared dict
+                    v_state = dict(initial_state)
+                    r_state = dict(initial_state)
+                    v_task = asyncio.create_task(node_validate(v_state))
+                    r_task = asyncio.create_task(node_retrieve(r_state))
                     state = await v_task
-                    await r_task
+                    if state.get("blocked"):
+                        r_task.cancel()
+                        try:
+                            await r_task
+                        except asyncio.CancelledError:
+                            pass
+                        # merge non-conflicting fields from r_state if needed
+                    else:
+                        r_result = await r_task
+                        # merge retrieved chunks and FAQ fields from r_state
+                        state["retrieved_chunks"] = r_result.get("retrieved_chunks", [])
+                        state["direct_faq_answer"] = r_result.get("direct_faq_answer")
+                        state["faq_matched"] = r_result.get("faq_matched", False)
+                        state["faq_verified"] = r_result.get("faq_verified", False)
+                        state["greeting_only"] = r_result.get("greeting_only")
+                        state["rewritten_query"] = r_result.get("rewritten_query", "")
+                        # merge stage_timing
+                        if "stage_timing_ms" in r_result:
+                            if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                state["stage_timing_ms"] = {}
+                            state["stage_timing_ms"].update(r_result.get("stage_timing_ms", {}))
                     if state.get("blocked"):
                         content = state.get("refusal_message") or "متأسفم، نمی‌توانم پاسخ دهم."
                         yield ": agent validate_input done blocked=true\n\n"
@@ -522,6 +545,13 @@ def create_app() -> FastAPI:
         )
         
         return response
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

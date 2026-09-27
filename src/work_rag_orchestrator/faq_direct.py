@@ -105,7 +105,7 @@ def _try_load_embed_model():
         import os
         from sentence_transformers import SentenceTransformer
         candidates = [
-            "/splunk-data/v1/Work_RAG-Server-Setup/offline-prep/models/huggingface/sentence-transformers_paraphrase-multilingual-MiniLM-L12-v2",
+            os.getenv("FAQ_EMBED_MODEL_PATH", "/tmp/hf_clean/sentence-transformers_paraphrase-multilingual-MiniLM-L12-v2"),
             "/splunk-data/v1/Work_RAG-Server-Setup/offline-prep/models/huggingface/sentence-transformers_all-MiniLM-L6-v2",
         ]
         model_path = next((p for p in candidates if os.path.isdir(p)), None)

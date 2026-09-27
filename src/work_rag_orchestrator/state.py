@@ -59,6 +59,7 @@ class RAGState(TypedDict):
     # FAQ direct-answer short-circuit (bypass retrieval, answer from canned FAQ via LLM)
     direct_faq_answer: Optional[str]
     faq_matched: bool
+    faq_verified: bool
     greeting_only: Optional[str]
 
     stage_timing_ms: Dict[str, float]
