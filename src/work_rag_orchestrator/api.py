@@ -473,41 +473,35 @@ def create_app() -> FastAPI:
         except Exception as e:
             log.warning("Langfuse trace update failed: %s", e)
 
-        # Auto-save to observability dashboard (fire-and-forget)
+        # Auto-save to observability dashboard (fire-and-forget, non-blocking)
         try:
             import os as _os
             obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
             if obs_url and audit is not None:
-                import httpx as _httpx
-                import threading as _threading
                 _audit_dict = audit.model_dump()
-                def _post_observability(audit_data=_audit_dict, req_id=request_id, obs=obs_url, cid=citations):
-                    try:
-                        import httpx as _hx
-                        payload = {
-                            "request_id": req_id,
-                            "user_query": audit_data.get("query", ""),
-                            "rewritten_query": audit_data.get("rewritten_query", ""),
-                            "response": audit_data.get("final_answer", ""),
-                            "stage_timing": audit_data.get("stage_timing_ms", {}),
-                            "guardrail_input": audit_data.get("guardrail_input"),
-                            "guardrail_output": audit_data.get("guardrail_output"),
-                            "retrieved_chunks": audit_data.get("retrieved_chunks", []),
-                            "citations": [dict(c) for c in cid] if cid else [],
-                            "context_preview": audit_data.get("context_preview", ""),
-                            "model": audit_data.get("model", ""),
-                            "latency_ms": latency_ms,
-                        }
-                        for base in [obs, "http://rag-tracing-fallback:3000"]:
-                            try:
-                                with _hx.Client(timeout=3.0) as _cl:
-                                    _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
-                                break
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-                _threading.Thread(target=_post_observability, daemon=True).start()
+                _payload = {
+                    "request_id": request_id,
+                    "user_query": _audit_dict.get("query", ""),
+                    "rewritten_query": _audit_dict.get("rewritten_query", ""),
+                    "response": _audit_dict.get("final_answer", ""),
+                    "stage_timing": _audit_dict.get("stage_timing_ms", {}),
+                    "guardrail_input": _audit_dict.get("guardrail_input"),
+                    "guardrail_output": _audit_dict.get("guardrail_output"),
+                    "retrieved_chunks": _audit_dict.get("retrieved_chunks", []),
+                    "citations": [dict(c) for c in citations] if citations else [],
+                    "context_preview": _audit_dict.get("context_preview", ""),
+                    "model": _audit_dict.get("model", ""),
+                    "latency_ms": latency_ms,
+                }
+                async def _post_observability_async(payload=_payload, obs=obs_url):
+                    for base in [obs, "http://rag-tracing-fallback:3000"]:
+                        try:
+                            async with httpx.AsyncClient(timeout=3.0, trust_env=False) as _cl:
+                                await _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
+                            break
+                        except Exception:
+                            continue
+                asyncio.create_task(_post_observability_async())
         except Exception:
             pass
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from ..state import RAGState
+from ..state import RAGState, record_timing
 from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
 
 log = logging.getLogger(__name__)
@@ -60,9 +60,7 @@ async def build_context(state: RAGState) -> RAGState:
         ]
         log.info("Built greeting-only context (%s) for request %s", greeting_kind, request_id)
         elapsed = round((time.monotonic() - t0) * 1000, 1)
-        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-            state["stage_timing_ms"] = {}
-        state["stage_timing_ms"]["build_context"] = elapsed
+        record_timing(state, "build_context", elapsed)
         return state
 
     # Limit chunks (retrieval agent guarantees up to 20 items with

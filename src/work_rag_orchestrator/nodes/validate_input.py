@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from ..state import RAGState
+from ..state import RAGState, record_timing
 from ..clients.guardrails import GuardrailsClient
 
 log = logging.getLogger(__name__)
@@ -28,9 +28,7 @@ async def validate_input(state: RAGState) -> RAGState:
         state["blocked"] = True
         state["refusal_message"] = "No user message in request"
         elapsed = round((time.monotonic() - t0) * 1000, 1)
-        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-            state["stage_timing_ms"] = {}
-        state["stage_timing_ms"]["validate_input"] = elapsed
+        record_timing(state, "validate_input", elapsed)
         return state
     
     query = user_messages[-1]["content"]

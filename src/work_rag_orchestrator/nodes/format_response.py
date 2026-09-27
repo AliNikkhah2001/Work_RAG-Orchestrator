@@ -3,37 +3,41 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from ..state import RAGState
+from ..state import RAGState, record_timing
 from ..schemas import Citation
 
 log = logging.getLogger(__name__)
 
 
+_CLEAN_PATTERNS = [
+    (re.compile(r"<unused\d+>"), ""),
+    (re.compile(r"<\|?tool_call\|?>"), ""),
+    (re.compile(r"<\|?tool_response\|?>"), ""),
+    (re.compile(r"tool_response\|>"), ""),
+    (re.compile(r"tool_call\|>"), ""),
+    (re.compile(r"\[multimodal\]"), ""),
+    (re.compile(r"<\|channel>thought.*?<channel\|>", re.DOTALL), ""),
+    (re.compile(r"<\|think\|>"), ""),
+    (re.compile(r"<\|turn>.*?<turn\|>", re.DOTALL), ""),
+    (re.compile(r"<bos>"), ""),
+    (re.compile(r"<eos>"), ""),
+    (re.compile(r"<\|?tool\|?>"), ""),
+    (re.compile(r"<\|\s*\"\s*\|>"), ""),
+    (re.compile(r"<\|\s*'\s*\|>"), ""),
+    (re.compile(r"<\|[^>]*\|>"), ""),
+    (re.compile(r"[ \t]+"), " "),
+    (re.compile(r"\n[ \t]*\n[ \t]*\n+"), "\n\n"),
+    (re.compile(r"(?<!\n)\n(?!\n)"), " "),
+]
+
+
 def _clean_answer(text: str) -> str:
-    import re
     if not text:
         return text
-    text = re.sub(r"<unused\d+>", "", text)
-    text = re.sub(r"<\|?tool_call\|?>", "", text)
-    text = re.sub(r"<\|?tool_response\|?>", "", text)
-    text = re.sub(r"tool_response\|>", "", text)
-    text = re.sub(r"tool_call\|>", "", text)
-    text = re.sub(r"\[multimodal\]", "", text)
-    text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<\|think\|>", "", text)
-    text = re.sub(r"<\|turn>.*?<turn\|>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<bos>", "", text)
-    text = re.sub(r"<eos>", "", text)
-    text = re.sub(r"<\|?tool\|?>", "", text)
-    text = re.sub(r"<\|\s*\"\s*\|>", "", text)
-    text = re.sub(r"<\|\s*'\s*\|>", "", text)
-    text = re.sub(r"<\|[^>]*\|>", "", text)
-    # Collapse horizontal whitespace but PRESERVE paragraph breaks: 3+ newlines
-    # become a blank line separator; single newlines inside a paragraph join.
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", text)
-    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    for pat, repl in _CLEAN_PATTERNS:
+        text = pat.sub(repl, text)
     return text.strip()
 
 
@@ -227,8 +231,6 @@ async def format_response(state: RAGState) -> RAGState:
         pass
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
-    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-        state["stage_timing_ms"] = {}
-    state["stage_timing_ms"]["format_response"] = elapsed
+    record_timing(state, "format_response", elapsed)
 
     return state

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from ..state import RAGState
+from ..state import RAGState, record_timing
 from ..clients.guardrails import GuardrailsClient
 from ..clients.faq_verifier import verify_faq_answer
 from ..schemas import GuardrailsChatRequest
@@ -75,8 +75,6 @@ async def guarded_generate(state: RAGState) -> RAGState:
         pass
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
-    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-        state["stage_timing_ms"] = {}
-    state["stage_timing_ms"]["guarded_generate"] = elapsed
+    record_timing(state, "guarded_generate", elapsed)
 
     return state
