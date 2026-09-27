@@ -62,3 +62,10 @@ class RAGState(TypedDict):
     greeting_only: Optional[str]
 
     stage_timing_ms: Dict[str, float]
+
+
+def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:
+    """Record stage timing — replaces 6-line boilerplate in every node."""
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"][stage] = round(float(elapsed_ms), 1)

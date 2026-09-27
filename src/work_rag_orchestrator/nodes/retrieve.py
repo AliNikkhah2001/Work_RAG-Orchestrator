@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from ..state import RAGState
+from ..state import RAGState, record_timing
 from ..config import get_settings
 from ..clients.knowledgebase import KnowledgebaseClient
 from ..clients.faq_verifier import verify_faq_answer
@@ -89,9 +89,7 @@ async def retrieve(state: RAGState) -> RAGState:
         state["retrieved_chunks"] = []
         log.info("Greeting-only (%s) for request %s — skipping retrieval", kind, request_id)
         elapsed = round((time.monotonic() - t0) * 1000, 1)
-        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-            state["stage_timing_ms"] = {}
-        state["stage_timing_ms"]["retrieve"] = elapsed
+        record_timing(state, "retrieve", elapsed)
         return state
     state["greeting_only"] = None
 
@@ -150,9 +148,7 @@ async def retrieve(state: RAGState) -> RAGState:
             pass
         state["retrieved_chunks"] = []
         elapsed = round((time.monotonic() - t0) * 1000, 1)
-        if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-            state["stage_timing_ms"] = {}
-        state["stage_timing_ms"]["retrieve"] = elapsed
+        record_timing(state, "retrieve", elapsed)
         return state
 
     # Client returns {"rrf": [...top10...], "ce": [...top10...]}; be
