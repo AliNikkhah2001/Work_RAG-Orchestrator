@@ -60,3 +60,5 @@ class RAGState(TypedDict):
     direct_faq_answer: Optional[str]
     faq_matched: bool
     greeting_only: Optional[str]
+
+    stage_timing_ms: Dict[str, float]

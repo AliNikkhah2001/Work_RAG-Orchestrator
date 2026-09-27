@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from ..state import RAGState
 from ..clients.guardrails import GuardrailsClient
 from ..clients.faq_verifier import verify_faq_answer
@@ -18,6 +19,7 @@ async def guarded_generate(state: RAGState) -> RAGState:
     
     Uses prompt_messages from state. Stores answer in state["answer"].
     """
+    t0 = time.monotonic()
     request_id = state["request_id"]
     prompt_messages = state["prompt_messages"]
     settings = get_settings()
@@ -71,5 +73,10 @@ async def guarded_generate(state: RAGState) -> RAGState:
         )
     except Exception:
         pass
+
+    elapsed = round((time.monotonic() - t0) * 1000, 1)
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"]["guarded_generate"] = elapsed
 
     return state

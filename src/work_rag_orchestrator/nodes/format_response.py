@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from ..state import RAGState
 from ..schemas import Citation
 
@@ -142,6 +143,7 @@ async def format_response(state: RAGState) -> RAGState:
     If blocked, returns refusal with content_filter finish_reason.
     If allowed, returns answer with citations from retrieved chunks.
     """
+    t0 = time.monotonic()
     request_id = state["request_id"]
     answer = _to_plain_text(_clean_answer(state["answer"]))
     # Fallback if cleaning left empty (model only emitted control tokens)
@@ -223,5 +225,10 @@ async def format_response(state: RAGState) -> RAGState:
         )
     except Exception:
         pass
+
+    elapsed = round((time.monotonic() - t0) * 1000, 1)
+    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+        state["stage_timing_ms"] = {}
+    state["stage_timing_ms"]["format_response"] = elapsed
 
     return state

@@ -112,12 +112,68 @@ def create_app() -> FastAPI:
             ],
         }
 
+    # /rate command pattern: /rate 5 comment #tag1 #tag2
+    _RATE_RE = re.compile(r"^\s*/rate\s+([1-5])\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
+
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
     async def chat_completions(
         request: ChatCompletionRequest,
         x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
         authorization: Optional[str] = Header(None),
     ):
+        # --- /rate command: save evaluation without calling LLM ---
+        try:
+            last_content = request.messages[-1].get("content", "") if request.messages else ""
+            m = _RATE_RE.match(last_content.strip())
+            if m:
+                import httpx as _httpx
+                rating = int(m.group(1))
+                comment = (m.group(2) or "").strip()
+                tags_raw = (m.group(3) or "").strip()
+                tags = re.findall(r"#([^\s#]+)", tags_raw) if tags_raw else []
+                # Use chat-level correlation: try X-Request-ID, else generate
+                rate_request_id = x_request_id or str(uuid.uuid4())
+                # Try to save to observability store (best-effort, fail-silent for chat)
+                stars = "★" * rating + "☆" * (5 - rating)
+                tag_str = f"  Tags: {', '.join('#'+t for t in tags)}" if tags else ""
+                cmt_str = f"\n> {comment}" if comment else ""
+                # Fire-and-forget POST to observability
+                try:
+                    import os as _os
+                    obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+                    # Also try Docker service name
+                    for base in [obs_url, "http://rag-tracing-fallback:3000"]:
+                        try:
+                            async with _httpx.AsyncClient(timeout=3.0) as _client:
+                                await _client.post(
+                                    f"{base.rstrip('/')}/api/observability/evaluations",
+                                    json={
+                                        "request_id": rate_request_id,
+                                        "rating": rating,
+                                        "comment": comment,
+                                        "tags": tags,
+                                        "user_query": last_content[:500],
+                                        "model": request.model,
+                                    },
+                                )
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                msg = (
+                    f"Rating saved: {stars} ({rating}/5){cmt_str}{tag_str}\n\n"
+                    f"View in dashboard: http://127.0.0.1:3000/dashboard/observability"
+                )
+                return ChatCompletionResponse(
+                    model=request.model,
+                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg}, finish_reason="stop")],
+                    rag=RAGMetadata(request_id=rate_request_id, citations=[]),
+                    audit=None,
+                )
+        except Exception:
+            pass  # fall through to normal RAG flow on any error
+
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
         t0 = time.monotonic()
@@ -156,6 +212,7 @@ def create_app() -> FastAPI:
             "direct_faq_answer": None,
             "faq_matched": False,
             "greeting_only": None,
+            "stage_timing_ms": {},
         }
         
         # --- Streaming branch: REAL token streaming (no artificial delay) ---
@@ -314,6 +371,8 @@ def create_app() -> FastAPI:
         
         # Build audit trail for transparency (shown in OpenWebUI rag agent)
         # This exposes the whole pipeline: guardrails, retrieval, generation
+        # Compute latency first so it can be included in enriched audit
+        latency_ms = int((time.monotonic() - t0) * 1000)
         try:
             from .schemas import AuditTrail
             # Get raw model output and guardrail decisions from state
@@ -326,11 +385,33 @@ def create_app() -> FastAPI:
                 context_str = prompt_msgs[1].get("content", "")[:2000]
             # Get retrieved chunks with scores
             retrieved = final_state.get("retrieved_chunks", [])
+            # Enriched audit fields
+            guardrail_decision = final_state.get("guardrail_decision")
+            if isinstance(guardrail_decision, dict):
+                guardrail_input_signals = guardrail_decision.get("signals", []) or []
+            else:
+                guardrail_input_signals = []
+            # Detect retrieval method from chunk sources
+            sources = {str(c.get("source", "")).lower() for c in retrieved}
+            if "both" in sources or ({"rrf", "ce"} & sources):
+                retrieval_method = "rrf+ce"
+            elif "rrf" in sources:
+                retrieval_method = "rrf"
+            elif "ce" in sources:
+                retrieval_method = "ce"
+            elif retrieved:
+                retrieval_method = "rrf+ce"
+            else:
+                retrieval_method = ""
             # Build audit
             audit = AuditTrail(
                 request_id=request_id,
                 query=final_state.get("query", ""),
-                guardrail_input=final_state.get("guardrail_decision"),
+                original_query=final_state.get("query", ""),
+                rewritten_query=final_state.get("rewritten_query", ""),
+                guardrail_input=guardrail_decision,
+                guardrail_input_signals=guardrail_input_signals,
+                guardrail_output_signals=[],
                 retrieved_chunks=[
                     {
                         "chunk_id": c.get("chunk_id", ""),
@@ -338,25 +419,38 @@ def create_app() -> FastAPI:
                         "heading": c.get("heading", ""),
                         "content": c.get("content", "")[:500],
                         "score": c.get("score", 0),
+                        "source": c.get("source", ""),
+                        "rank_rrf": c.get("rank_rrf"),
+                        "rank_ce": c.get("rank_ce"),
+                        "hybrid_score": c.get("hybrid_score"),
+                        "rerank_score": c.get("rerank_score"),
                     }
-                    for c in retrieved[:5]
+                    for c in retrieved[:10]
                 ],
-                reranker_scores=[c.get("score", 0) for c in retrieved[:5]],
+                reranker_scores=[c.get("score", 0) for c in retrieved[:10]],
                 context_sent_to_gemma=context_str,
+                context_preview=context_str[:500],
+                prompt_messages_preview=[{"role": m.get("role", ""), "content": m.get("content", "")[:500]} for m in prompt_msgs[:2]],
                 raw_model_output=raw_output[:2000],
                 guardrail_output={"blocked": final_state.get("blocked", False), "refusal": final_state.get("refusal_message")},
                 final_answer=content,
                 citations=[Citation(**c) for c in citations],
                 model=request.model,
+                stage_timing_ms=final_state.get("stage_timing_ms", {}),
+                retrieval_method=retrieval_method,
+                retrieval_chunks_total=len(retrieved),
+                retrieval_chunks_used=len(citations),
+                reranker_applied=len(retrieved) > 0,
+                latency_ms=latency_ms,
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")
             audit = None
-        
+
         # Build response
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        # Populate audit latency
-        if audit is not None:
+        # latency_ms already computed above
+        # Populate audit latency if not already set
+        if audit is not None and audit.latency_ms is None:
             try:
                 audit.latency_ms = latency_ms
             except Exception:
@@ -378,6 +472,44 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             log.warning("Langfuse trace update failed: %s", e)
+
+        # Auto-save to observability dashboard (fire-and-forget)
+        try:
+            import os as _os
+            obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+            if obs_url and audit is not None:
+                import httpx as _httpx
+                import threading as _threading
+                _audit_dict = audit.model_dump()
+                def _post_observability(audit_data=_audit_dict, req_id=request_id, obs=obs_url, cid=citations):
+                    try:
+                        import httpx as _hx
+                        payload = {
+                            "request_id": req_id,
+                            "user_query": audit_data.get("query", ""),
+                            "rewritten_query": audit_data.get("rewritten_query", ""),
+                            "response": audit_data.get("final_answer", ""),
+                            "stage_timing": audit_data.get("stage_timing_ms", {}),
+                            "guardrail_input": audit_data.get("guardrail_input"),
+                            "guardrail_output": audit_data.get("guardrail_output"),
+                            "retrieved_chunks": audit_data.get("retrieved_chunks", []),
+                            "citations": [dict(c) for c in cid] if cid else [],
+                            "context_preview": audit_data.get("context_preview", ""),
+                            "model": audit_data.get("model", ""),
+                            "latency_ms": latency_ms,
+                        }
+                        for base in [obs, "http://rag-tracing-fallback:3000"]:
+                            try:
+                                with _hx.Client(timeout=3.0) as _cl:
+                                    _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                _threading.Thread(target=_post_observability, daemon=True).start()
+        except Exception:
+            pass
 
         response = ChatCompletionResponse(
             model=request.model,
