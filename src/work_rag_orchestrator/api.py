@@ -114,8 +114,6 @@ def create_app() -> FastAPI:
 
     # /rate command pattern: /rate 5 comment #tag1 #tag2
     _RATE_RE = re.compile(r"^\s*/rate\s+([1-5])\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
-    _REPORT_RE = re.compile(r"^\s*/(?:report|problem)\s+(\w+)\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
-    _REPORT_CATEGORIES = {"inaccurate","incomplete","hallucination","wrong_source","off_topic","other"}
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
     async def chat_completions(
@@ -171,58 +169,6 @@ def create_app() -> FastAPI:
                     model=request.model,
                     choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg}, finish_reason="stop")],
                     rag=RAGMetadata(request_id=rate_request_id, citations=[]),
-                    audit=None,
-                )
-            m2 = _REPORT_RE.match(last_content.strip())
-            if m2:
-                import httpx as _httpx2
-                category = (m2.group(1) or "").lower().strip()
-                if category not in _REPORT_CATEGORIES:
-                    category = "other"
-                comment2 = (m2.group(2) or "").strip()
-                tags_raw2 = (m2.group(3) or "").strip()
-                tags2 = re.findall(r"#([^\s#]+)", tags_raw2) if tags_raw2 else []
-                rate_request_id2 = x_request_id or str(uuid.uuid4())
-                # Try to extract rating if combined "/rate N ... /report ..."
-                rating_val = None
-                try:
-                    _rm = _RATE_RE.search(last_content)
-                    if _rm:
-                        rating_val = int(_rm.group(1))
-                except Exception:
-                    rating_val = None
-                try:
-                    import os as _os2
-                    obs_url2 = _os2.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
-                    for base in [obs_url2, "http://rag-tracing-fallback:3000"]:
-                        try:
-                            async with _httpx2.AsyncClient(timeout=3.0) as _client:
-                                await _client.post(
-                                    f"{base.rstrip('/')}/api/observability/evaluations",
-                                    json={
-                                        "request_id": rate_request_id2,
-                                        "rating": rating_val,
-                                        "comment": f"[REPORT:{category}] {comment2}".strip(),
-                                        "tags": tags2 + [f"report:{category}"],
-                                        "user_query": last_content[:500],
-                                        "model": request.model,
-                                    },
-                                )
-                            break
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-                cmt_str2 = f"\n> {comment2}" if comment2 else ""
-                tag_str2 = f"  Tags: {', '.join('#'+t for t in (tags2 + [f'report:{category}']))}"
-                msg2 = (
-                    f"Report saved: [{category}]{cmt_str2}{tag_str2}\n\n"
-                    f"View in dashboard: http://127.0.0.1:3000/dashboard/observability"
-                )
-                return ChatCompletionResponse(
-                    model=request.model,
-                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg2}, finish_reason="stop")],
-                    rag=RAGMetadata(request_id=rate_request_id2, citations=[]),
                     audit=None,
                 )
         except Exception:
@@ -298,33 +244,10 @@ def create_app() -> FastAPI:
                     initial_state["query"] = query
                     yield ": agent validate_input + retrieve running\n\n"
                     t_retrieve = time.monotonic()
-                    # O-C2: clone state to avoid race on shared dict
-                    v_state = dict(initial_state)
-                    r_state = dict(initial_state)
-                    v_task = asyncio.create_task(node_validate(v_state))
-                    r_task = asyncio.create_task(node_retrieve(r_state))
+                    v_task = asyncio.create_task(node_validate(initial_state))
+                    r_task = asyncio.create_task(node_retrieve(initial_state))
                     state = await v_task
-                    if state.get("blocked"):
-                        r_task.cancel()
-                        try:
-                            await r_task
-                        except asyncio.CancelledError:
-                            pass
-                        # merge non-conflicting fields from r_state if needed
-                    else:
-                        r_result = await r_task
-                        # merge retrieved chunks and FAQ fields from r_state
-                        state["retrieved_chunks"] = r_result.get("retrieved_chunks", [])
-                        state["direct_faq_answer"] = r_result.get("direct_faq_answer")
-                        state["faq_matched"] = r_result.get("faq_matched", False)
-                        state["faq_verified"] = r_result.get("faq_verified", False)
-                        state["greeting_only"] = r_result.get("greeting_only")
-                        state["rewritten_query"] = r_result.get("rewritten_query", "")
-                        # merge stage_timing
-                        if "stage_timing_ms" in r_result:
-                            if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-                                state["stage_timing_ms"] = {}
-                            state["stage_timing_ms"].update(r_result.get("stage_timing_ms", {}))
+                    await r_task
                     if state.get("blocked"):
                         content = state.get("refusal_message") or "متأسفم، نمی‌توانم پاسخ دهم."
                         yield ": agent validate_input done blocked=true\n\n"
@@ -550,43 +473,41 @@ def create_app() -> FastAPI:
         except Exception as e:
             log.warning("Langfuse trace update failed: %s", e)
 
-        # Auto-save to observability dashboard (fire-and-forget, non-blocking)
-        # Skip internal task requests (follow-up generation etc.): they have audit.request_id == query == "### Task:..."
+        # Auto-save to observability dashboard (fire-and-forget)
         try:
             import os as _os
-            _is_task = False
-            try:
-                _q = (final_state.get("query") or "").strip()
-                if _q.startswith("### Task:"):
-                    _is_task = True
-            except Exception:
-                pass
             obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
-            if obs_url and audit is not None and not _is_task:
+            if obs_url and audit is not None:
+                import httpx as _httpx
+                import threading as _threading
                 _audit_dict = audit.model_dump()
-                _payload = {
-                    "request_id": request_id,
-                    "user_query": _audit_dict.get("query", ""),
-                    "rewritten_query": _audit_dict.get("rewritten_query", ""),
-                    "response": _audit_dict.get("final_answer", ""),
-                    "stage_timing": _audit_dict.get("stage_timing_ms", {}),
-                    "guardrail_input": _audit_dict.get("guardrail_input"),
-                    "guardrail_output": _audit_dict.get("guardrail_output"),
-                    "retrieved_chunks": _audit_dict.get("retrieved_chunks", []),
-                    "citations": [dict(c) for c in citations] if citations else [],
-                    "context_preview": _audit_dict.get("context_preview", ""),
-                    "model": _audit_dict.get("model", ""),
-                    "latency_ms": latency_ms,
-                }
-                async def _post_observability_async(payload=_payload, obs=obs_url):
-                    for base in [obs, "http://rag-tracing-fallback:3000"]:
-                        try:
-                            async with httpx.AsyncClient(timeout=3.0, trust_env=False) as _cl:
-                                await _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
-                            break
-                        except Exception:
-                            continue
-                asyncio.create_task(_post_observability_async())
+                def _post_observability(audit_data=_audit_dict, req_id=request_id, obs=obs_url, cid=citations):
+                    try:
+                        import httpx as _hx
+                        payload = {
+                            "request_id": req_id,
+                            "user_query": audit_data.get("query", ""),
+                            "rewritten_query": audit_data.get("rewritten_query", ""),
+                            "response": audit_data.get("final_answer", ""),
+                            "stage_timing": audit_data.get("stage_timing_ms", {}),
+                            "guardrail_input": audit_data.get("guardrail_input"),
+                            "guardrail_output": audit_data.get("guardrail_output"),
+                            "retrieved_chunks": audit_data.get("retrieved_chunks", []),
+                            "citations": [dict(c) for c in cid] if cid else [],
+                            "context_preview": audit_data.get("context_preview", ""),
+                            "model": audit_data.get("model", ""),
+                            "latency_ms": latency_ms,
+                        }
+                        for base in [obs, "http://rag-tracing-fallback:3000"]:
+                            try:
+                                with _hx.Client(timeout=3.0) as _cl:
+                                    _cl.post(f"{base.rstrip('/')}/api/observability/traces", json=payload)
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                _threading.Thread(target=_post_observability, daemon=True).start()
         except Exception:
             pass
 
@@ -607,13 +528,6 @@ def create_app() -> FastAPI:
         )
         
         return response
-
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
