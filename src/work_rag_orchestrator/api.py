@@ -114,6 +114,8 @@ def create_app() -> FastAPI:
 
     # /rate command pattern: /rate 5 comment #tag1 #tag2
     _RATE_RE = re.compile(r"^\s*/rate\s+([1-5])\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
+    _REPORT_RE = re.compile(r"^\s*/(?:report|problem)\s+(\w+)\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
+    _REPORT_CATEGORIES = {"inaccurate","incomplete","hallucination","wrong_source","off_topic","other"}
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
     async def chat_completions(
@@ -173,6 +175,62 @@ def create_app() -> FastAPI:
                 )
         except Exception:
             pass  # fall through to normal RAG flow on any error
+
+        # --- /report command: save report without calling LLM ---
+        try:
+            m2 = _REPORT_RE.match(last_content.strip())
+            if m2:
+                import httpx as _httpx2
+                category = (m2.group(1) or "").lower().strip()
+                if category not in _REPORT_CATEGORIES:
+                    category = "other"
+                comment2 = (m2.group(2) or "").strip()
+                tags_raw2 = (m2.group(3) or "").strip()
+                tags2 = re.findall(r"#([^\s#]+)", tags_raw2) if tags_raw2 else []
+                rate_request_id2 = x_request_id or str(uuid.uuid4())
+                rating_val = None
+                try:
+                    _rm = _RATE_RE.search(last_content)
+                    if _rm:
+                        rating_val = int(_rm.group(1))
+                except Exception:
+                    rating_val = None
+                try:
+                    import os as _os2
+                    obs_url2 = _os2.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+                    for base in [obs_url2, "http://rag-tracing-fallback:3000"]:
+                        try:
+                            async with _httpx2.AsyncClient(timeout=3.0) as _client:
+                                await _client.post(
+                                    f"{base.rstrip('/')}/api/observability/evaluations",
+                                    json={
+                                        "request_id": rate_request_id2,
+                                        "rating": rating_val,
+                                        "comment": f"[REPORT:{category}] {comment2}".strip(),
+                                        "tags": tags2 + [f"report:{category}"],
+                                        "user_query": last_content[:500],
+                                        "model": request.model,
+                                    },
+                                )
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                cmt_str2 = f"\n> {comment2}" if comment2 else ""
+                tag_str2 = f"  Tags: {', '.join('#'+t for t in (tags2 + [f'report:{category}']))}"
+                msg2 = (
+                    f"Report saved: [{category}]{cmt_str2} {tag_str2}\n\n"
+                    f"View in dashboard: http://127.0.0.1:3000/dashboard/observability"
+                )
+                return ChatCompletionResponse(
+                    model=request.model,
+                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg2}, finish_reason="stop")],
+                    rag=RAGMetadata(request_id=rate_request_id2, citations=[]),
+                    audit=None,
+                )
+        except Exception:
+            pass
 
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
