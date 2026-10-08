@@ -551,10 +551,18 @@ def create_app() -> FastAPI:
             log.warning("Langfuse trace update failed: %s", e)
 
         # Auto-save to observability dashboard (fire-and-forget, non-blocking)
+        # Skip internal task requests (follow-up generation etc.): they have audit.request_id == query == "### Task:..."
         try:
             import os as _os
+            _is_task = False
+            try:
+                _q = (final_state.get("query") or "").strip()
+                if _q.startswith("### Task:"):
+                    _is_task = True
+            except Exception:
+                pass
             obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
-            if obs_url and audit is not None:
+            if obs_url and audit is not None and not _is_task:
                 _audit_dict = audit.model_dump()
                 _payload = {
                     "request_id": request_id,
