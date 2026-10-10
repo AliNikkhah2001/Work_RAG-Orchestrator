@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
     # /rate command pattern: /rate 5 comment #tag1 #tag2
     _RATE_RE = re.compile(r"^\s*/rate\s+([1-5])\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
     _REPORT_RE = re.compile(r"^\s*/(?:report|problem)\s+(\w+)\s*(.*?)\s*(#[\S]+(?:\s+#[\S]+)*)?\s*$", re.IGNORECASE | re.DOTALL)
+    _TRUTH_RE = re.compile(r"^\s*/(?:truth|ground_truth|true|correct)\s+(.+?)\s*$", re.IGNORECASE | re.DOTALL)
     _REPORT_CATEGORIES = {"inaccurate","incomplete","hallucination","wrong_source","off_topic","other"}
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
@@ -227,6 +228,50 @@ def create_app() -> FastAPI:
                     model=request.model,
                     choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg2}, finish_reason="stop")],
                     rag=RAGMetadata(request_id=rate_request_id2, citations=[]),
+                    audit=None,
+                )
+        except Exception:
+            pass
+
+        # --- /truth command: save ground truth without calling LLM ---
+        try:
+            m3 = _TRUTH_RE.match(last_content.strip())
+            if m3:
+                text = (m3.group(1) or "").strip()
+                # tags at end like #my-tag are not expected for ground truth, but allow them
+                # keep text as-is (the whole ground truth answer)
+                gt_request_id = x_request_id or str(uuid.uuid4())
+                try:
+                    import httpx as _httpx3
+                    import os as _os3
+                    obs_url3 = _os3.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+                    for base in [obs_url3, "http://rag-tracing-fallback:3000"]:
+                        try:
+                            async with _httpx3.AsyncClient(timeout=3.0) as _client:
+                                await _client.post(
+                                    f"{base.rstrip('/')}/api/observability/evaluations",
+                                    json={
+                                        "request_id": gt_request_id,
+                                        "comment": f"[GROUND_TRUTH] {text}".strip()[:4000],
+                                        "tags": ["ground_truth"],
+                                        "user_query": last_content[:500],
+                                        "model": request.model,
+                                    },
+                                )
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                msg3 = (
+                    f"Ground truth saved for {gt_request_id[:8]}\n\n"
+                    f"> {text[:1500]}\n\n"
+                    f"View in dashboard: http://127.0.0.1:3000/dashboard/observability"
+                )
+                return ChatCompletionResponse(
+                    model=request.model,
+                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": msg3}, finish_reason="stop")],
+                    rag=RAGMetadata(request_id=gt_request_id, citations=[]),
                     audit=None,
                 )
         except Exception:
