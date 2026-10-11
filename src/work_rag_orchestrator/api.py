@@ -293,6 +293,32 @@ def create_app() -> FastAPI:
         if request.model not in allowed_models:
             log.warning("Unsupported model requested: %s", request.model)
         
+        config = {"configurable": {"thread_id": request_id}}
+        # Restore sticky applied_subspace from checkpoint (whole KB -> None, after spec -> leaf)
+        sticky_applied = None
+        try:
+            prev = await rag_graph.aget_state(config)
+            if prev and getattr(prev, "values", None):
+                sticky_applied = prev.values.get("applied_subspace")
+        except Exception:
+            sticky_applied = None
+        # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
+        _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
+        if _req_filter_path:
+            try:
+                _map = get_settings().subspace_map or {}
+                _rev = {v: k for k, v in _map.items()}
+                _label = _rev.get(_req_filter_path, _req_filter_path)
+                if "چک" in _req_filter_path:
+                    _label = "cheque"
+                elif "حقوقی" in _req_filter_path:
+                    _label = "facilities_legal"
+                elif "حقیقی" in _req_filter_path:
+                    _label = "facilities_person"
+                sticky_applied = _label
+            except Exception:
+                sticky_applied = _req_filter_path
+
         # Prepare initial state
         initial_state: RAGState = {
             "request_id": request_id,
@@ -317,13 +343,13 @@ def create_app() -> FastAPI:
             "faq_verified": False,
             "greeting_only": None,
             "stage_timing_ms": {},
-            "applied_subspace": None,
+            "applied_subspace": sticky_applied,
             "needs_clarification": False,
             "clarifying_question": None,
             "available_subspaces": None,
             "injected_entities": [],
             "supplemental": [],
-            "filter_path": getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None),
+            "filter_path": _req_filter_path,
         }
         
         # --- Streaming branch: REAL token streaming (no artificial delay) ---
