@@ -386,6 +386,11 @@ async def retrieve(state: RAGState) -> RAGState:
     except Exception as _e:
         log.warning("supplement fallback check failed: %s", _e)
 
+    # If still low evidence after supplement, clear for refusal (no hallucinated G5)
+    if not state.get("faq_verified") and locals().get("_top_score", 1.0) < locals().get("_ev_threshold", 0.15) and not state.get("supplemental") and not state.get("injected_entities"):
+        state["retrieved_chunks"] = []
+        log.info("Low evidence still < %.3f after supplement for %s — clear for refusal", locals().get("_ev_threshold", 0.15), request_id)
+
     try:
         from ..tracing import trace_span
         trace_span(
