@@ -24,7 +24,7 @@ CLARIFY_PROMPT = '''شما دستیار هوشمند شرکت اعتبارسنج
 async def generate_clarification(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     query = state.get("query", "")
-    available = state.get("available_subspaces") or ["تسهیلات افراد", "گزارش چک", "تسهیلات شرکت‌ها"]
+    available = state.get("available_subspaces") or ["تسهیلات افراد", "گزارش چک", "تسهیلات شرکت‌ها", "عمومی (معرفی شرکت، هیات مدیره، کاربردها)"]
     prompt = CLARIFY_PROMPT.format(query=query)
     try:
         settings = get_settings()
@@ -33,10 +33,10 @@ async def generate_clarification(state: RAGState) -> RAGState:
             resp = await client.chat_completion(req, request_id)
             text = resp.choices[0].message.get("content", "").strip() if resp.choices else ""
             if not text:
-                text = "لطفاً مشخص کنید منظورتان کدام بخش است: تسهیلات افراد، گزارش چک، یا تسهیلات شرکت‌ها؟"
+                text = "لطفاً مشخص کنید منظورتان کدام بخش است: تسهیلات افراد، گزارش چک، تسهیلات شرکت‌ها، یا عمومی (معرفی شرکت، هیات مدیره، کاربردها)؟"
     except Exception as e:
         log.warning("Clarification generation failed: %s", e)
-        text = "لطفاً مشخص کنید منظورتان کدام بخش است: تسهیلات افراد، گزارش چک، یا تسهیلات شرکت‌ها؟"
+        text = "لطفاً مشخص کنید منظورتان کدام بخش است: تسهیلات افراد، گزارش چک، تسهیلات شرکت‌ها، یا عمومی (معرفی شرکت، هیات مدیره، کاربردها)؟"
     state["clarifying_question"] = text
     state["needs_clarification"] = True
     # Set formatted_response so graph can END with clarify

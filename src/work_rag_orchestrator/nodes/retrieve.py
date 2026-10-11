@@ -537,11 +537,17 @@ async def retrieve(state: RAGState) -> RAGState:
                     is_spec = False
                 if is_spec:
                     low = last_q.strip().lower()
-                    if "چک" in low:
+                    # "هیچ کدوم" + manager/company → general (user explicitly rejected credit options)
+                    if ("هیچ کدوم" in last_q or "هیچکدوم" in last_q) and any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","شرکت","عام"]):
+                        state["applied_subspace"] = "general"
+                    elif "چک" in low:
                         state["applied_subspace"] = "cheque"
-                    elif "شرکت" in low or "حقوقی" in low:
+                    elif any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
+                        state["applied_subspace"] = "general"
+                    elif "حقوقی" in low or ("شرکت" in last_q and ("تسهیلات" in last_q or "وام" in last_q)):
                         state["applied_subspace"] = "facilities_legal"
-                    elif "عام" in low or "معرفی" in low:
+                    elif "شرکت" in last_q and "تسهیلات" not in last_q and "چک" not in last_q:
+                        # "شرکت" alone without تسهیلات/چک → عمومی (معرفی شرکت)
                         state["applied_subspace"] = "general"
                     else:
                         state["applied_subspace"] = "facilities_person"

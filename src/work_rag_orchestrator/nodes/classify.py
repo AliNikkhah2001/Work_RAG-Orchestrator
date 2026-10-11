@@ -11,8 +11,8 @@ _GREETING = {"سلام","درود","hello","hi","hey","صبح بخیر","وقت 
 _SPEC_KEYWORDS = {
   "cheque": ["چک","صیاد","پیچک","برگشت"],
   "facilities_person": ["تسهیلات","وام","قسط"],
-  "facilities_legal": ["شرکت","حقوقی","سهامدار"],
-  "general": ["معرفی","کاربرد","عمومی"],
+  "facilities_legal": ["حقوقی","سهامدار"],
+  "general": ["معرفی","کاربرد","عمومی","عام","مدیر","هیات مدیره","هیئت مدیره","کاربردها","شرکت"],
 }
 def _heuristic_classify(text: str) -> str:
     t = text.strip().lower()
@@ -27,7 +27,9 @@ def _heuristic_classify(text: str) -> str:
 
 CLASSIFY_PROMPT = """دسته‌بندی کن — فقط یک کلمه: greeting / specification / question
 - greeting: سلام، تشکر، خداحافظی، تعارف کوتاه بدون نیاز به پایگاه دانش
-- specification: کاربر فقط شاخه را مشخص می‌کند (1-4 کلمه شامل چک/تسهیلات/شرکت/عمومی)، مثل "چک" یا "تسهیلات اشخاص حقیقی" یا "شرکت"
+- specification: کاربر فقط شاخه را مشخص می‌کند (1-4 کلمه شامل چک/تسهیلات/شرکت/عمومی)، مثل "چک" یا "تسهیلات اشخاص حقیقی" یا "شرکت" یا "عمومی"
+  شاخه‌ها: 1. تسهیلات افراد 2. گزارش چک 3. تسهیلات شرکت‌ها 4. عمومی (معرفی، هیات مدیره، کاربردها)
+  نکته: "مدیر"، "هیات مدیره"، "هیئت مدیره"، "معرفی شرکت" و سوال درباره اشخاص (مثلا "قاسم بور کیه") → عمومی است نه تسهیلات. "شرکت" تنها بدون تسهیلات/چک → عمومی؛ "شرکت" + تسهیلات/حقوقی → تسهیلات شرکت‌ها
 - question: سوال واقعی که جواب می‌خواهد، حتی اگر کلمه چک داشته باشد: "چک برگشتی چیست؟" → question
 
 متن: "{text}"
@@ -56,10 +58,20 @@ async def classify(state: RAGState) -> RAGState:
     # If specification, also set the subspace label
     if cat=="specification":
         low=text.lower()
-        if "چک" in text: state["applied_subspace"]="cheque"
-        elif "حقوقی" in text or "شرکت" in text: state["applied_subspace"]="facilities_legal"
-        elif "عام" in text or "general" in low: state["applied_subspace"]="general"
-        else: state["applied_subspace"]="facilities_person"
+        has_facility_kw = "تسهیلات" in text or "وام" in text or "قسط" in text
+        has_cheque_kw = "چک" in text
+        is_general_kw = any(kw in text for kw in ["عام","عمومی","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد"]) or "general" in low
+        if has_cheque_kw:
+            state["applied_subspace"]="cheque"
+        elif is_general_kw:
+            state["applied_subspace"]="general"
+        elif "حقوقی" in text or ("شرکت" in text and has_facility_kw):
+            state["applied_subspace"]="facilities_legal"
+        elif "شرکت" in text and not has_facility_kw and not has_cheque_kw:
+            # "شرکت" alone without تسهیلات/چک → عمومی (معرفی شرکت)
+            state["applied_subspace"]="general"
+        else:
+            state["applied_subspace"]="facilities_person"
     elif cat=="greeting":
         state["greeting_only"]="greeting"
         state["needs_clarification"]=False

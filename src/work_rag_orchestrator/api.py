@@ -316,20 +316,42 @@ def create_app() -> FastAPI:
                     sticky_applied = "facilities_person"; break
                 if "اشخاص حقوقی" in hc and "تسهیلات" in hc:
                     sticky_applied = "facilities_legal"; break
-                if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general"):
+                # "هیچ کدوم" + manager/company hint → general (user rejected credit options, wants معرفی/هیات مدیره)
+                if "هیچ کدوم" in hc or "هیچکدوم" in hc:
+                    # if mentions مدیر/هیات مدیره/معرفی/شرکت without تسهیلات/چک → general
+                    if any(kw in hc for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","شرکت","عام"]):
+                        sticky_applied = "general"; break
+                    # bare "هیچ کدوم" after a clarify that included general → treat as general
+                    # fall through to general handling below
+                    low2 = hc.lower()
+                    if "general" in low2 or "عام" in hc or "عمومی" in hc:
+                        sticky_applied = "general"; break
+                if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general","مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام"):
                     low = hc.lower()
                     if "چک" in hc or "cheque" in low:
                         sticky_applied = "cheque"; break
-                    elif "حقوقی" in hc or "شرکت" in hc:
-                        sticky_applied = "facilities_legal"; break
-                    elif "عام" in hc or "general" in low:
+                    elif any(kw in hc for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
                         sticky_applied = "general"; break
+                    elif "حقوقی" in hc or "شرکت" in hc:
+                        # "شرکت" alone without تسهیلات/چک already handled above as general; here it is with facility context
+                        # distinguish: if also has تسهیلات/وام → facilities_legal else general (already returned)
+                        if "تسهیلات" in hc or "وام" in hc or "حقوقی" in hc:
+                            sticky_applied = "facilities_legal"; break
+                        else:
+                            sticky_applied = "general"; break
                     else:
                         sticky_applied = "facilities_person"; break
                 low = hc.lower()
-                if ("منظورم" in hc or low.startswith("چک ") or hc.strip() == "چک") and len(hc.split()) <= 4:
+                # short re-specification: "منظورم چک بود" or "مدیر شرکته" / "هیچ کدوم مدیر"
+                if ("منظورم" in hc or "هیچ کدوم" in hc or "هیچکدوم" in hc or low.startswith("چک ") or hc.strip() == "چک" or "مدیر" in hc) and len(hc.split()) <= 6:
                     if "چک" in hc:
                         sticky_applied = "cheque"; break
+                    if any(kw in hc for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
+                        sticky_applied = "general"; break
+                    if "حقوقی" in hc or ("شرکت" in hc and ("تسهیلات" in hc or "وام" in hc)):
+                        sticky_applied = "facilities_legal"; break
+                    if "شرکت" in hc and "تسهیلات" not in hc and "چک" not in hc:
+                        sticky_applied = "general"; break
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
         if _req_filter_path:
