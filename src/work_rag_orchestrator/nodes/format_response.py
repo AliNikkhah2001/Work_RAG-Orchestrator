@@ -149,10 +149,7 @@ async def format_response(state: RAGState) -> RAGState:
     """
     t0 = time.monotonic()
     request_id = state["request_id"]
-    answer = _to_plain_text(_clean_answer(state["answer"]))
-    # Fallback if cleaning left empty (model only emitted control tokens)
-    if not answer or not answer.strip():
-        answer = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+    answer_raw = _to_plain_text(_clean_answer(state["answer"]))
     blocked = state.get("blocked", False)
     refusal_message = state.get("refusal_message")
     chunks = state["retrieved_chunks"]
@@ -164,17 +161,45 @@ async def format_response(state: RAGState) -> RAGState:
     elif state.get("greeting_only"):
         # Smalltalk: brief reply as-is — no sources retrieved, so no truth
         # block and no citations. Citing nothing is correct here.
-        content = answer
+        # If answer empty (classify direct -> format_response without LLM), synthesize greeting
+        if not answer_raw or not answer_raw.strip() or "پاسخی برای این سوال یافت نشد" in answer_raw:
+            kind = state.get("greeting_only")
+            if kind == "farewell":
+                answer_raw = "خداحافظ! هر وقت سوالی درباره گزارش یا امتیاز اعتباری داشتید در خدمت هستم."
+            elif kind == "thanks":
+                answer_raw = "خواهش می‌کنم! اگر سوال دیگری درباره گزارش یا امتیاز اعتباری داشتید بفرمایید."
+            else:
+                answer_raw = "سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید."
+        content = answer_raw
+        finish_reason = "stop"
+        citations = []
+    elif state.get("classify") == "specification":
+        # Specification ack: no retrieval, just confirm sticky subspace
+        subspace = state.get("applied_subspace") or ""
+        label_map = {
+            "cheque": "گزارش اعتباری چک",
+            "facilities_person": "تسهیلات اشخاص حقیقی",
+            "facilities_legal": "تسهیلات اشخاص حقوقی",
+            "general": "پایگاه دانش عمومی",
+        }
+        label = label_map.get(subspace, subspace) or "حوزه انتخابی"
+        if not answer_raw or not answer_raw.strip() or "پاسخی برای این سوال یافت نشد" in answer_raw:
+            answer_raw = f"حوزه «{label}» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید."
+        content = answer_raw
         finish_reason = "stop"
         citations = []
     elif state.get("direct_faq_answer") and state.get("faq_verified"):
         # FAQ direct-answer: curated content, no KB retrieval happened,
         # so return answer as-is with no citations and no ground-truth block.
-        content = answer
+        if not answer_raw or not answer_raw.strip():
+            answer_raw = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+        content = answer_raw
         finish_reason = "stop"
         citations = []
     else:
-        content = answer
+        if not answer_raw or not answer_raw.strip():
+            answer_raw = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+        content = answer_raw
         finish_reason = "stop"
         # Plain-text answers carry no [n] markers, so cite the top-ranked
         # chunks (max 5) as metadata, preferring "both" > "ce" > "rrf";

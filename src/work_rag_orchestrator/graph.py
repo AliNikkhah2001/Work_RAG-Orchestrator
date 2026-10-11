@@ -16,12 +16,21 @@ from .nodes import (
     format_response,
 )
 from .nodes.generate_clarification import generate_clarification
+from .nodes.classify import classify
 
 
 def should_continue_after_validation(state: RAGState) -> str:
-    """Conditional edge: if blocked, go to format_refusal, else continue to retrieve."""
+    """Conditional edge: if blocked, go to format_refusal, else continue to classify."""
     if state.get("blocked", False):
         return "format_refusal"
+    return "classify"
+
+
+def should_route_after_classify(state: RAGState) -> str:
+    """Conditional edge after LLM classify: greeting/spec go directly to format_response, question -> retrieve."""
+    cat = state.get("classify")
+    if cat in ("greeting", "specification"):
+        return "format_response"
     return "retrieve"
 
 
@@ -39,6 +48,7 @@ def create_graph() -> StateGraph:
     
     # Add nodes
     graph.add_node("validate_input", validate_input)
+    graph.add_node("classify", classify)
     graph.add_node("retrieve", retrieve)
     graph.add_node("build_context", build_context)
     graph.add_node("guarded_generate", guarded_generate)
@@ -49,13 +59,23 @@ def create_graph() -> StateGraph:
     # Set entry point
     graph.set_entry_point("validate_input")
     
-    # Conditional edge from validate_input
+    # Conditional edge from validate_input -> classify (or refusal)
     graph.add_conditional_edges(
         "validate_input",
         should_continue_after_validation,
         {
-            "retrieve": "retrieve",
+            "classify": "classify",
             "format_refusal": "format_refusal",
+        },
+    )
+
+    # Conditional edge from classify: greeting/spec -> format_response, question -> retrieve
+    graph.add_conditional_edges(
+        "classify",
+        should_route_after_classify,
+        {
+            "format_response": "format_response",
+            "retrieve": "retrieve",
         },
     )
     

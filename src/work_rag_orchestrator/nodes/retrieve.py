@@ -71,6 +71,18 @@ async def retrieve(state: RAGState) -> RAGState:
     the original latest user message stays in state["query"] for audit,
     the rewritten form is stored in state["rewritten_query"].
     """
+    if state.get("classify") == "greeting":
+        state["retrieved_chunks"]=[]; state["rewritten_query"]=state.get("query","")
+        return state
+    if state.get("classify") == "specification":
+        # already set applied_subspace above, no retrieval needed — just ack
+        state["retrieved_chunks"]=[]
+        # keep the spec text as rewritten_query for audit
+        state["rewritten_query"]=state.get("query","")
+        # Do not need to ask again; the next question will use the sticky
+        # Set a short ack answer that format_response will use? No, let format_response handle spec ack
+        state["needs_clarification"]=False
+        return state
     t0 = time.monotonic()
     request_id = state["request_id"]
     query = state["query"]

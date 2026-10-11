@@ -74,6 +74,8 @@ class RAGState(TypedDict):
 
     filter_path: Optional[str]
 
+    classify: Optional[str]
+
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:
     """Record stage timing — replaces 6-line boilerplate in every node."""
