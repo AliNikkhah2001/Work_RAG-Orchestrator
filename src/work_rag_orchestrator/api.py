@@ -352,6 +352,11 @@ def create_app() -> FastAPI:
                         sticky_applied = "facilities_legal"; break
                     if "شرکت" in hc and "تسهیلات" not in hc and "چک" not in hc:
                         sticky_applied = "general"; break
+        # Current query general override (strong general keywords in current message itself)
+        cur_q = str(request.messages[-1].get("content","")) if request.messages else ""
+        # If current query explicitly says "سوالات عمومی" or contains board member names, treat as general
+        if "سوالات عمومی" in cur_q or "سوال عمومی" in cur_q or "قاسم" in cur_q or "بور" in cur_q or "هیات مدیره" in cur_q or "هیئت مدیره" in cur_q or "معرفی شرکت" in cur_q:
+            sticky_applied = "general"
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
         if _req_filter_path:

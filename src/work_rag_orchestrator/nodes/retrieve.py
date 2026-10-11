@@ -368,7 +368,12 @@ async def retrieve(state: RAGState) -> RAGState:
         # message is NOT a new specification, reuse sticky with filtered re-retrieve
         # (skip granularity/clarify). Default None means whole KB (no filter).
         _sticky = state.get("applied_subspace")
-        if _sticky and _sticky != "general":
+        # Current query general override — board member / معرفی signals should bypass sticky cheque
+        cur_q2 = state.get("query", "") or ""
+        if any(k in cur_q2 for k in ["قاسم", "بور", "هیات مدیره", "هیئت مدیره", "سوالات عمومی", "سوال عمومی", "معرفی شرکت"]):
+            state["applied_subspace"] = "general"
+            _sticky = "general"
+        if _sticky:
             try:
                 from .infer_specification import is_specification as _is_spec_sticky
 
@@ -570,7 +575,7 @@ async def retrieve(state: RAGState) -> RAGState:
     try:
         if not _explicit_scope and state.get("needs_clarification") is False and not granular:
             inferred = state.get("applied_subspace")
-            if inferred and inferred != "general":
+            if inferred:
                 path_map = get_settings().subspace_map
                 filter_path = path_map.get(inferred, "")
                 if filter_path:
