@@ -306,6 +306,8 @@ def create_app() -> FastAPI:
         # so each turn gets a new thread_id — mine sticky from chat history instead
         if sticky_applied is None:
             for hm in reversed(request.messages[:-1]):
+                if hm.get("role") != "user":
+                    continue
                 hc = str(hm.get("content","")).strip()
                 if not hc:
                     continue
