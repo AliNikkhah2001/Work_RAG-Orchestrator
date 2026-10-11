@@ -554,7 +554,7 @@ async def retrieve(state: RAGState) -> RAGState:
                     state["needs_clarification"] = False
                 elif not granular:
                     sticky = state.get("applied_subspace")
-                    if sticky and sticky != "general":
+                    if sticky:
                         # Use sticky — will trigger re-retrieve in F5
                         pass
                     else:
