@@ -72,6 +72,11 @@ async def classify(state: RAGState) -> RAGState:
             state["applied_subspace"]="general"
         else:
             state["applied_subspace"]="facilities_person"
+    # Also set subspace for question that is clearly general (person name + کیه)
+    if cat=="question":
+        low2 = text.lower()
+        if "قاسم" in text or "بور" in text or "هیات مدیره" in text or "هیئت مدیره" in text:
+            state["applied_subspace"] = "general"
     elif cat=="greeting":
         state["greeting_only"]="greeting"
         state["needs_clarification"]=False
