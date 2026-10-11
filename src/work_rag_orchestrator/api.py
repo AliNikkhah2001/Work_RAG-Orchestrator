@@ -311,6 +311,10 @@ def create_app() -> FastAPI:
                 hc = str(hm.get("content","")).strip()
                 if not hc:
                     continue
+                # Sticky must come from user specs, not user questions:
+                # skip interrogative history entries (they are questions, not declarations)
+                if "؟" in hc or "?" in hc or any(w in hc for w in ["چیست","چطور","چگونه","آیا","چرا","کجاست","چیه","چيست","کیه","کيست"]):
+                    continue
                 # long explicit declaration like "اعتبارسنجی تسهیلات برای اشخاص حقیقی"
                 if "اشخاص حقیقی" in hc and "تسهیلات" in hc:
                     sticky_applied = "facilities_person"; break
