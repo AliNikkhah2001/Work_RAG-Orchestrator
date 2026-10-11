@@ -530,12 +530,13 @@ async def retrieve(state: RAGState) -> RAGState:
                 except Exception:
                     _thresh = 0.8
                     _general_exempt = True
+                last_q = state.get("query", "")
                 is_general = most == "general"
-                granular = (is_general and _general_exempt) or (n / total >= _thresh)
+                # General exempt only when query itself looks general (avoid suppressing clarify for generic credit queries like "وضعیت اعتباری چطور است")
+                _is_general_query = any(k in last_q for k in ["عمومی","عام","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد","قاسم","بور","سوالات عمومی","سوال عمومی"])
+                granular = (is_general and _general_exempt and _is_general_query) or (n / total >= _thresh)
                 state["needs_clarification"] = False
                 from .infer_specification import is_specification
-
-                last_q = state.get("query", "")
                 try:
                     is_spec = await is_specification(last_q, state["request_id"])
                 except Exception:
@@ -571,6 +572,17 @@ async def retrieve(state: RAGState) -> RAGState:
                             llm_choice = await infer_subspace_llm(state.get("query",""), hist, state["request_id"])
                         except:
                             llm_choice = None
+                        # Guard: generic ambiguous queries like "وضعیت اعتباری چطور است" have no subspace keyword — treat LLM leaf as unclear to force clarification
+                        _q_for_llm = state.get("query", "") or ""
+                        _has_hint = any(kw in _q_for_llm for kw in ["چک","صیاد","پیچک","برگشت","تسهیلات","وام","قسط","حقوقی","شرکت","سهامدار","معرفی","مدیر","هیات مدیره","هیئت مدیره","عمومی","عام","کاربرد"])
+                        if llm_choice and not _has_hint:
+                            llm_choice = None
+                        # Ambiguous co-occurrence: چک + تاثیر/اعتبارسنجی/تسهیلات/امتیاز → unclear, must clarify
+                        if llm_choice:
+                            _has_cheque = any(kw in _q_for_llm for kw in ["چک", "صیاد", "پیچک", "برگشت"])
+                            _has_credit_effect = any(kw in _q_for_llm for kw in ["تاثیر", "تأثیر", "اعتبارسنجی", "تسهیلات", "امتیاز"])
+                            if _has_cheque and _has_credit_effect:
+                                llm_choice = None
                         if llm_choice and llm_choice in ("cheque","facilities_person","facilities_legal","general"):
                             filter_path = get_settings().subspace_map.get(llm_choice, "")
                             if filter_path:

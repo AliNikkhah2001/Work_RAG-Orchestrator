@@ -74,6 +74,13 @@ def _is_short_with_keyword(msg: str) -> bool:
 
 async def is_specification(msg: str, request_id: str) -> bool:
     """LLM judge: True if msg is a subspace specification, False if question."""
+    # Hard gate: interrogative is always a question, never a specification
+    # Prevents "وضعیت اعتباری چطور است" from being misclassified via LLM hallucination
+    if "؟" in msg or "?" in msg:
+        return False
+    for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "چيست", "کیه", "کيست"):
+        if w in msg:
+            return False
     try:
         settings = get_settings()
         prompt = JUDGE_PROMPT.format(msg=msg)
@@ -114,9 +121,11 @@ SUGGEST_PROMPT = """شما دسته‌بند سوال کاربر هستید. ت�
 - اگر درباره وام/تسهیلات/قسط/بازپرداخت برای افراد است → تسهیلات افراد
 - اگر درباره شرکت/حقوقی/سهامدار است → تسهیلات شرکت‌ها
 - اگر درباره معرفی/هیات مدیره/کاربردها است → عمومی
+- اگر سوال هم‌زمان حاوی «چک» و یکی از «تاثیر/تأثیر/اعتبارسنجی/تسهیلات/امتیاز» است، بین «گزارش چک» (سابقه صرف) و «اعتبارسنجی تسهیلات» مردد است → unclear
 - اگر مبهم و قابل انتساب به چند شاخه است → unclear
+- مثال: «من چکم برگشت خورده چه تاثیری داره» → unclear (چک + تاثیر/اعتبارسنجی/تسهیلات/امتیاز هم‌زمان)
 فقط یک کلمه: cheque / facilities_person / facilities_legal / general / unclear
-"""
+ """
 
 async def infer_subspace_llm(query: str, history: str, request_id: str) -> str | None:
     try:
