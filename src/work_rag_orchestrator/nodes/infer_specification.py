@@ -97,3 +97,37 @@ async def is_specification(msg: str, request_id: str) -> bool:
     except Exception:
         log.exception("is_specification LLM judge failed, fallback to heuristic for request %s", request_id)
         return _is_short_with_keyword(msg)
+
+
+SUBSPACE_LABELS = {
+    "cheque": "گزارش اعتباری چک",
+    "facilities_person": "اعتبارسنجی تسهیلات برای اشخاص حقیقی (افراد)",
+    "facilities_legal": "اعتبارسنجی تسهیلات برای اشخاص حقوقی (شرکت‌ها)",
+    "general": "پایگاه دانش عمومی (معرفی، هیات مدیره، کاربردها)",
+}
+
+SUGGEST_PROMPT = """شما دسته‌بند سوال کاربر هستید. تاریخچه:
+{history}
+سوال فعلی بدون شاخه مشخص: "{query}"
+گزینه‌ها: [تسهیلات افراد, گزارش چک, تسهیلات شرکت‌ها, عمومی]
+- اگر سوال درباره چک/صیاد/برگشت است → گزارش چک
+- اگر درباره وام/تسهیلات/قسط/بازپرداخت برای افراد است → تسهیلات افراد
+- اگر درباره شرکت/حقوقی/سهامدار است → تسهیلات شرکت‌ها
+- اگر درباره معرفی/هیات مدیره/کاربردها است → عمومی
+- اگر مبهم و قابل انتساب به چند شاخه است → unclear
+فقط یک کلمه: cheque / facilities_person / facilities_legal / general / unclear
+"""
+
+async def infer_subspace_llm(query: str, history: str, request_id: str) -> str | None:
+    try:
+        settings = get_settings()
+        prompt = SUGGEST_PROMPT.format(history=history[:1000], query=query[:500])
+        async with GuardrailsClient() as client:
+            req = GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role": "user", "content": prompt}], max_tokens=16, temperature=0.0)
+            resp = await client.chat_completion(req, request_id)
+            ans = resp.choices[0].message.get("content","").strip().lower() if resp.choices else ""
+            for k in ["cheque","facilities_person","facilities_legal","general"]:
+                if k in ans: return k
+            if "unclear" in ans: return None
+            return None
+    except Exception: return None

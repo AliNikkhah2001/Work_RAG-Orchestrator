@@ -563,6 +563,118 @@ async def retrieve(state: RAGState) -> RAGState:
                         # Use sticky — will trigger re-retrieve in F5
                         pass
                     else:
+                        # Scope-less scattered question -> ask LLM judge, not keyword table
+                        try:
+                            from .infer_specification import infer_subspace_llm
+                            from ..rewrite import last_exchanges_text
+                            hist = last_exchanges_text(state.get("messages",[]), include_current=False)
+                            llm_choice = await infer_subspace_llm(state.get("query",""), hist, state["request_id"])
+                        except:
+                            llm_choice = None
+                        if llm_choice and llm_choice in ("cheque","facilities_person","facilities_legal","general"):
+                            filter_path = get_settings().subspace_map.get(llm_choice, "")
+                            if filter_path:
+                                _fresult_llm = None
+                                try:
+                                    async with KnowledgebaseClient() as _client_llm:
+                                        _fresult_llm = await _client_llm.retrieve(search_query, top_k, request_id, filter_path=filter_path)
+                                except Exception as e:
+                                    log.warning("LLM-judge filtered re-retrieve failed: %s", e)
+                                if _fresult_llm is not None:
+                                    if isinstance(_fresult_llm, dict):
+                                        _f_rrf = _fresult_llm.get("rrf", [])
+                                        _f_ce = _fresult_llm.get("ce", [])
+                                        _f_injected = _fresult_llm.get("injected_entities", [])
+                                    else:
+                                        _f_rrf = []
+                                        _f_ce = list(_fresult_llm)
+                                        _f_injected = []
+                                    _f_merged: dict[str, dict] = {}
+                                    _f_order: list[str] = []
+                                    for c in _f_rrf:
+                                        d = _item_dict(c, "rrf")
+                                        key = d.get("chunk_id") or f"__rrf_{len(_f_order)}"
+                                        if key not in _f_merged:
+                                            _f_merged[key] = d
+                                            _f_order.append(key)
+                                    for c in _f_ce:
+                                        d = _item_dict(c, "ce")
+                                        key = d.get("chunk_id") or f"__ce_{len(_f_order)}"
+                                        if key in _f_merged:
+                                            existing = _f_merged[key]
+                                            existing["source"] = "both"
+                                            if existing.get("rank_ce") is None:
+                                                existing["rank_ce"] = d.get("rank_ce")
+                                            if existing.get("rerank_score") is None:
+                                                existing["rerank_score"] = d.get("rerank_score")
+                                            if existing.get("hybrid_score") is None:
+                                                existing["hybrid_score"] = d.get("hybrid_score")
+                                            existing["score"] = (
+                                                existing.get("rerank_score")
+                                                if existing.get("rerank_score") is not None
+                                                else d.get("score", existing.get("score"))
+                                            )
+                                            for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                                                if not existing.get(k) and d.get(k):
+                                                    existing[k] = d[k]
+                                        else:
+                                            _f_merged[key] = d
+                                            _f_order.append(key)
+                                    def _f_best_rank_llm(d: dict) -> int:
+                                        ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+                                        return min(ranks) if ranks else 10**9
+                                    _f_both = sorted(
+                                        (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "both"),
+                                        key=_f_best_rank_llm,
+                                    )
+                                    _f_ce_only = sorted(
+                                        (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "ce"),
+                                        key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9,
+                                    )
+                                    _f_rrf_only = sorted(
+                                        (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "rrf"),
+                                        key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9,
+                                    )
+                                    _filtered_retrieved = (_f_both + _f_ce_only + _f_rrf_only)[:20]
+                                    if state.get("faq_verified") and state.get("direct_faq_answer"):
+                                        _filtered_retrieved.insert(0, {
+                                            "chunk_id": "__faq_direct__",
+                                            "document_id": "__faq_direct__",
+                                            "title": "FAQ Direct Answer",
+                                            "heading": "FAQ",
+                                            "content": state["direct_faq_answer"],
+                                            "score": 1.0,
+                                            "source": "faq_direct",
+                                            "rank_rrf": 0,
+                                            "rank_ce": 0,
+                                            "hybrid_score": 1.0,
+                                            "rerank_score": None,
+                                        })
+                                    state["retrieved_chunks"] = _filtered_retrieved
+                                    if _f_injected:
+                                        existing_injected = state.get("injected_entities") or []
+                                        seen = {e.get("list_name") for e in existing_injected}
+                                        merged_injected = list(existing_injected)
+                                        for ent in _f_injected:
+                                            if ent.get("list_name") not in seen:
+                                                merged_injected.append(ent)
+                                                seen.add(ent.get("list_name"))
+                                        state["injected_entities"] = merged_injected
+                                        state["supplemental"] = merged_injected
+                                    state["applied_subspace"] = llm_choice
+                                    state["needs_clarification"] = False
+                                    log.info("LLM-judge filtered re-retrieve for subspace %s (%s): %d chunks", llm_choice, filter_path, len(_filtered_retrieved))
+                                    elapsed = round((time.monotonic() - t0) * 1000, 1)
+                                    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                        state["stage_timing_ms"] = {}
+                                    state["stage_timing_ms"]["retrieve"] = elapsed
+                                    try:
+                                        from ..tracing import trace_span
+                                        trace_span(request_id, "retrieve", span_input={"query": query, "rewritten_query": rewritten, "search_query": search_query, "top_k": top_k, "filter_path": filter_path, "llm_judge": llm_choice}, span_output={"total": len(state["retrieved_chunks"]), "llm_judge_filtered": True})
+                                    except Exception:
+                                        pass
+                                    return state
+                        # If still unclear or no filter_path, fall through to clarify
                         state["needs_clarification"] = True
                         state["available_subspaces"] = list(cnt.keys())
                         state["clarifying_question"] = None  # will be filled by generate_clarification node
