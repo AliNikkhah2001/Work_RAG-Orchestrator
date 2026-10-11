@@ -314,8 +314,16 @@ def create_app() -> FastAPI:
             "grounded": False,
             "direct_faq_answer": None,
             "faq_matched": False,
+            "faq_verified": False,
             "greeting_only": None,
             "stage_timing_ms": {},
+            "applied_subspace": None,
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "available_subspaces": None,
+            "injected_entities": [],
+            "supplemental": [],
+            "filter_path": getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None),
         }
         
         # --- Streaming branch: REAL token streaming (no artificial delay) ---
@@ -373,6 +381,24 @@ def create_app() -> FastAPI:
                         yield "data: [DONE]\n\n"
                         return
 
+                    # Clarify branch — scattered but no sticky (F5 conditional edge)
+                    if state.get("needs_clarification"):
+                        from .nodes.generate_clarification import generate_clarification as node_clarify
+                        state = await node_clarify(state)
+                        content = state.get("clarifying_question") or state.get("formatted_response", {}).get("content", "") or "لطفاً مشخص کنید منظورتان کدام بخش است."
+                        yield ": agent generate_clarification clarify\n\n"
+                        for tok in re.findall(r"\S+\s*", content):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                        sup_clarify = state.get("supplemental") or state.get("injected_entities") or []
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'clarify'}],'rag':{'request_id':request_id,'citations':[],'supplemental': sup_clarify if sup_clarify else None}}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        try:
+                            from .tracing import update_trace
+                            update_trace(request_id, content[:2000], {"finish_reason":"clarify","stream":True,"supplemental": len(sup_clarify) if sup_clarify else 0})
+                        except Exception:
+                            pass
+                        return
+
                     # Build context
                     yield ": agent build_context running\n\n"
                     state = await node_build(state)
@@ -390,11 +416,12 @@ def create_app() -> FastAPI:
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                             # No sleep — real streaming speed is LLM speed; for canned we can yield immediately
-                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[]}}, ensure_ascii=False)}\n\n"
+                        sup_faq = state.get("supplemental") or state.get("injected_entities") or []
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[],'supplemental': sup_faq if sup_faq else None}}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         try:
                             from .tracing import update_trace
-                            update_trace(request_id, content[:2000], {"finish_reason":"stop","faq":True,"stream":True})
+                            update_trace(request_id, content[:2000], {"finish_reason":"stop","faq":True,"stream":True,"supplemental": len(sup_faq) if sup_faq else 0})
                         except Exception:
                             pass
                         return
@@ -430,13 +457,14 @@ def create_app() -> FastAPI:
                     formatted = state.get("formatted_response", {}) or {}
                     citations = formatted.get("citations", [])
                     finish_reason = formatted.get("finish_reason", "stop")
+                    supplemental_stream = state.get("supplemental") or state.get("injected_entities") or []
                     final_chunk = {
                         "id": f"chatcmpl-{request_id}",
                         "object": "chat.completion.chunk",
                         "created": int(time.time()),
                         "model": request.model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        "rag": {"request_id": request_id, "citations": citations},
+                        "rag": {"request_id": request_id, "citations": citations, "supplemental": supplemental_stream if supplemental_stream else None},
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -466,10 +494,18 @@ def create_app() -> FastAPI:
             log.exception("Graph execution failed: %s", e)
             raise HTTPException(status_code=500, detail="Orchestration failed")
         
-        # Extract formatted response
-        formatted = final_state.get("formatted_response", {})
+        # Extract formatted response — preserve clarify finish_reason (generate_clarification -> END)
+        formatted = final_state.get("formatted_response", {}) or {}
+        # Handle clarify finish_reason explicitly; generate_clarification sets formatted_response
+        # with clarify; ensure it is not overwritten by generic stop/error handling
         content = formatted.get("content", "An error occurred.")
         finish_reason = formatted.get("finish_reason", "error")
+        # Preserve clarify if state signals it, even if formatted was malformed
+        if final_state.get("needs_clarification") or finish_reason == "clarify":
+            finish_reason = "clarify"
+            # Ensure content reflects clarifying_question when formatted content missing
+            if not content or content == "An error occurred.":
+                content = final_state.get("clarifying_question") or content
         citations = formatted.get("citations", [])
         
         # Build audit trail for transparency (shown in OpenWebUI rag agent)
@@ -506,6 +542,7 @@ def create_app() -> FastAPI:
                 retrieval_method = "rrf+ce"
             else:
                 retrieval_method = ""
+            supplemental = final_state.get("supplemental") or final_state.get("injected_entities") or []
             # Build audit
             audit = AuditTrail(
                 request_id=request_id,
@@ -545,6 +582,9 @@ def create_app() -> FastAPI:
                 retrieval_chunks_used=len(citations),
                 reranker_applied=len(retrieved) > 0,
                 latency_ms=latency_ms,
+                supplemental=supplemental,
+                applied_subspace=final_state.get("applied_subspace"),
+                available_subspaces=final_state.get("available_subspaces"),
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")
@@ -600,6 +640,9 @@ def create_app() -> FastAPI:
                             "context_preview": audit_data.get("context_preview", ""),
                             "model": audit_data.get("model", ""),
                             "latency_ms": latency_ms,
+                            "applied_subspace": audit_data.get("applied_subspace"),
+                            "available_subspaces": audit_data.get("available_subspaces"),
+                            "filter_path": audit_data.get("filter_path"),
                         }
                         for base in [obs, "http://rag-tracing-fallback:3000"]:
                             try:
@@ -614,6 +657,14 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
+        # supplemental envelope: rag.supplemental (F6) wired from KB injected_entities
+        rag_supplemental = final_state.get("supplemental") or final_state.get("injected_entities") or []
+        # ensure audit also carries supplemental if audit was built without it (fallback)
+        if audit is not None and getattr(audit, "supplemental", None) in (None, []):
+            try:
+                audit.supplemental = rag_supplemental or None
+            except Exception:
+                pass
         response = ChatCompletionResponse(
             model=request.model,
             choices=[
@@ -626,6 +677,7 @@ def create_app() -> FastAPI:
             rag=RAGMetadata(
                 request_id=request_id,
                 citations=[Citation(**c) for c in citations],
+                supplemental=rag_supplemental if rag_supplemental else None,
             ),
             audit=audit,
         )

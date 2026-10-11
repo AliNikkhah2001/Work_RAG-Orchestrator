@@ -45,6 +45,19 @@ def detect_greeting_kind(text: str) -> str | None:
     return None
 
 
+def _extract_subspace(hier: list[str] | str | None) -> str:
+    """Map folder_hierarchy to subspace label (F4)."""
+    s = "/".join(hier) if isinstance(hier, list) else str(hier or "")
+    if "اشخاص حقوقی" in s:
+        return "facilities_legal"
+    elif "گزارش اعتباری چک" in s:
+        return "cheque"
+    elif "پایگاه دانش عمومی" in s:
+        return "general"
+    else:
+        return "facilities_person"
+
+
 async def retrieve(state: RAGState) -> RAGState:
     """
     Rewrite the last user message against history, then call KB search.
@@ -87,6 +100,8 @@ async def retrieve(state: RAGState) -> RAGState:
         state["greeting_only"] = kind
         state["rewritten_query"] = query
         state["retrieved_chunks"] = []
+        state["injected_entities"] = []
+        state["supplemental"] = []
         log.info("Greeting-only (%s) for request %s — skipping retrieval", kind, request_id)
         elapsed = round((time.monotonic() - t0) * 1000, 1)
         record_timing(state, "retrieve", elapsed)
@@ -135,30 +150,75 @@ async def retrieve(state: RAGState) -> RAGState:
     search_query = norm_query
     settings = get_settings()
     top_k = settings.retrieval_top_k
-    
-    try:
-        async with KnowledgebaseClient() as client:
-            result = await client.retrieve(search_query, top_k, request_id)
-    except Exception as e:
-        log.error("KB retrieval failed for request %s: %s — continuing with empty context", request_id, e)
-        try:
-            from ..tracing import trace_span
-            trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query}, span_output={"error": str(e), "fallback": "empty"})
-        except Exception:
-            pass
-        state["retrieved_chunks"] = []
-        elapsed = round((time.monotonic() - t0) * 1000, 1)
-        record_timing(state, "retrieve", elapsed)
-        return state
 
-    # Client returns {"rrf": [...top10...], "ce": [...top10...]}; be
+    # F7 scope picker: if caller supplied explicit filter_path, honor it
+    explicit_filter = (state.get("filter_path") or "").strip() if state.get("filter_path") else None
+    if explicit_filter:
+        # reverse-map filter_path to subspace label for observability badge
+        try:
+            _map = settings.subspace_map or {}
+            _rev = {v: k for k, v in _map.items()}
+            _label = _rev.get(explicit_filter, explicit_filter)
+            # shorten common Persian labels for badge
+            if "چک" in explicit_filter:
+                _label = "cheque"
+            elif "حقوقی" in explicit_filter:
+                _label = "facilities_legal"
+            elif "حقیقی" in explicit_filter:
+                _label = "facilities_person"
+            state["applied_subspace"] = _label
+        except Exception:
+            state["applied_subspace"] = explicit_filter
+        try:
+            async with KnowledgebaseClient() as client:
+                result = await client.retrieve(search_query, top_k, request_id, filter_path=explicit_filter)
+        except Exception as e:
+            log.error("KB filtered retrieval failed for request %s (filter=%r): %s — continuing empty", request_id, explicit_filter, e)
+            try:
+                from ..tracing import trace_span
+                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": explicit_filter}, span_output={"error": str(e), "fallback": "empty"})
+            except Exception:
+                pass
+            state["retrieved_chunks"] = []
+            state["injected_entities"] = []
+            state["supplemental"] = []
+            elapsed = round((time.monotonic() - t0) * 1000, 1)
+            record_timing(state, "retrieve", elapsed)
+            return state
+        # process result same as normal path — jump to shared merge logic below via inline handling
+        # We set a flag so later F4/F5 scatter logic is skipped (explicit scope is authoritative)
+        _explicit_scope = True
+    else:
+        _explicit_scope = False
+        try:
+            async with KnowledgebaseClient() as client:
+                result = await client.retrieve(search_query, top_k, request_id)
+        except Exception as e:
+            log.error("KB retrieval failed for request %s: %s — continuing with empty context", request_id, e)
+            try:
+                from ..tracing import trace_span
+                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query}, span_output={"error": str(e), "fallback": "empty"})
+            except Exception:
+                pass
+            state["retrieved_chunks"] = []
+            state["injected_entities"] = []
+            state["supplemental"] = []
+            elapsed = round((time.monotonic() - t0) * 1000, 1)
+            record_timing(state, "retrieve", elapsed)
+            return state
+
+    # Client returns {"rrf": [...top10...], "ce": [...top10...], "injected_entities": [...]}; be
     # defensive if an older client shape (plain list) is ever returned.
     if isinstance(result, dict):
         rrf_chunks = result.get("rrf", [])
         ce_chunks = result.get("ce", [])
+        injected = result.get("injected_entities", [])
     else:  # pragma: no cover - legacy fallback
         rrf_chunks = []
         ce_chunks = list(result)
+        injected = []
+    state["injected_entities"] = injected
+    state["supplemental"] = injected
 
     def _item_dict(c, default_source: str) -> dict:
         d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
@@ -175,6 +235,7 @@ async def retrieve(state: RAGState) -> RAGState:
             "rank_ce": get("rank_ce"),
             "hybrid_score": get("hybrid_score"),
             "rerank_score": get("rerank_score"),
+            "folder_hierarchy": get("folder_hierarchy"),
         }
 
     # UNION of top-10 RRF + top-10 CE, deduped by chunk_id. A chunk in both
@@ -207,7 +268,7 @@ async def retrieve(state: RAGState) -> RAGState:
                 else d.get("score", existing.get("score"))
             )
             # Fill any missing display fields from the CE copy.
-            for k in ("document_id", "title", "heading", "content"):
+            for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
                 if not existing.get(k) and d.get(k):
                     existing[k] = d[k]
         else:
@@ -279,6 +340,163 @@ async def retrieve(state: RAGState) -> RAGState:
         )
     except Exception:
         pass
+
+    # --- Subspace granularity + sticky + clarifying (F4) ---
+    # If explicit scope was used, skip F4 inference — the user's picked scope is authoritative
+    if _explicit_scope:
+        granular = True
+        state["needs_clarification"] = False
+    else:
+        granular = True
+        try:
+            from collections import Counter
+
+            subspaces = [_extract_subspace(c.get("folder_hierarchy", [])) for c in state.get("retrieved_chunks", [])]
+            cnt = Counter(subspaces)
+            if cnt:
+                most, n = cnt.most_common(1)[0]
+                total = len(subspaces)
+                try:
+                    _s = get_settings()
+                    _thresh = float(_s.subspace_threshold)
+                    _general_exempt = bool(_s.subspace_general_exempt)
+                except Exception:
+                    _thresh = 0.8
+                    _general_exempt = True
+                is_general = most == "general"
+                granular = (is_general and _general_exempt) or (n / total >= _thresh)
+                state["needs_clarification"] = False
+                from .infer_specification import is_specification
+
+                last_q = state.get("query", "")
+                try:
+                    is_spec = await is_specification(last_q, state["request_id"])
+                except Exception:
+                    is_spec = False
+                if is_spec:
+                    low = last_q.strip().lower()
+                    if "چک" in low:
+                        state["applied_subspace"] = "cheque"
+                    elif "شرکت" in low or "حقوقی" in low:
+                        state["applied_subspace"] = "facilities_legal"
+                    elif "عام" in low or "معرفی" in low:
+                        state["applied_subspace"] = "general"
+                    else:
+                        state["applied_subspace"] = "facilities_person"
+                    state["needs_clarification"] = False
+                elif not granular:
+                    sticky = state.get("applied_subspace")
+                    if sticky and sticky != "general":
+                        # Use sticky — will trigger re-retrieve in F5
+                        pass
+                    else:
+                        state["needs_clarification"] = True
+                        state["available_subspaces"] = list(cnt.keys())
+                        state["clarifying_question"] = None  # will be filled by generate_clarification node
+        except Exception as e:
+            log.warning("Granularity check failed: %s", e)
+
+    # --- Filtered re-retrieve (F5) ---
+    # If scattered but we have an inferred/sticky subspace, re-retrieve filtered
+    # Skip when explicit scope already used (authoritative)
+    try:
+        if not _explicit_scope and state.get("needs_clarification") is False and not granular:
+            inferred = state.get("applied_subspace")
+            if inferred and inferred != "general":
+                path_map = get_settings().subspace_map
+                filter_path = path_map.get(inferred, "")
+                if filter_path:
+                    try:
+                        async with KnowledgebaseClient() as client2:
+                            fresult = await client2.retrieve(search_query, top_k, request_id, filter_path=filter_path)
+                        if isinstance(fresult, dict):
+                            f_rrf = fresult.get("rrf", [])
+                            f_ce = fresult.get("ce", [])
+                            f_injected = fresult.get("injected_entities", [])
+                        else:
+                            f_rrf = []
+                            f_ce = list(fresult)
+                            f_injected = []
+                        f_merged: dict[str, dict] = {}
+                        f_order: list[str] = []
+                        for c in f_rrf:
+                            d = _item_dict(c, "rrf")
+                            key = d.get("chunk_id") or f"__rrf_{len(f_order)}"
+                            if key not in f_merged:
+                                f_merged[key] = d
+                                f_order.append(key)
+                        for c in f_ce:
+                            d = _item_dict(c, "ce")
+                            key = d.get("chunk_id") or f"__ce_{len(f_order)}"
+                            if key in f_merged:
+                                existing = f_merged[key]
+                                existing["source"] = "both"
+                                if existing.get("rank_ce") is None:
+                                    existing["rank_ce"] = d.get("rank_ce")
+                                if existing.get("rerank_score") is None:
+                                    existing["rerank_score"] = d.get("rerank_score")
+                                if existing.get("hybrid_score") is None:
+                                    existing["hybrid_score"] = d.get("hybrid_score")
+                                existing["score"] = (
+                                    existing.get("rerank_score")
+                                    if existing.get("rerank_score") is not None
+                                    else d.get("score", existing.get("score"))
+                                )
+                                for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                                    if not existing.get(k) and d.get(k):
+                                        existing[k] = d[k]
+                            else:
+                                f_merged[key] = d
+                                f_order.append(key)
+
+                        def _f_best_rank(d: dict) -> int:
+                            ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+                            return min(ranks) if ranks else 10**9
+
+                        f_both = sorted(
+                            (f_merged[k] for k in f_order if f_merged[k].get("source") == "both"),
+                            key=_f_best_rank,
+                        )
+                        f_ce_only = sorted(
+                            (f_merged[k] for k in f_order if f_merged[k].get("source") == "ce"),
+                            key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9,
+                        )
+                        f_rrf_only = sorted(
+                            (f_merged[k] for k in f_order if f_merged[k].get("source") == "rrf"),
+                            key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9,
+                        )
+                        filtered_retrieved = (f_both + f_ce_only + f_rrf_only)[:20]
+                        if state.get("faq_verified") and state.get("direct_faq_answer"):
+                            filtered_retrieved.insert(0, {
+                                "chunk_id": "__faq_direct__",
+                                "document_id": "__faq_direct__",
+                                "title": "FAQ Direct Answer",
+                                "heading": "FAQ",
+                                "content": state["direct_faq_answer"],
+                                "score": 1.0,
+                                "source": "faq_direct",
+                                "rank_rrf": 0,
+                                "rank_ce": 0,
+                                "hybrid_score": 1.0,
+                                "rerank_score": None,
+                            })
+                        state["retrieved_chunks"] = filtered_retrieved
+                        # Merge injected entities from filtered re-retrieve
+                        if f_injected:
+                            existing_injected = state.get("injected_entities") or []
+                            seen = {e.get("list_name") for e in existing_injected}
+                            merged_injected = list(existing_injected)
+                            for ent in f_injected:
+                                if ent.get("list_name") not in seen:
+                                    merged_injected.append(ent)
+                                    seen.add(ent.get("list_name"))
+                            state["injected_entities"] = merged_injected
+                            state["supplemental"] = merged_injected
+                        log.info("Filtered re-retrieve for subspace %s (%s): %d chunks", inferred, filter_path, len(filtered_retrieved))
+                    except Exception as e:
+                        log.warning("Filtered re-retrieve failed: %s", e)
+    except Exception as e:
+        log.warning("Filtered re-retrieve check failed: %s", e)
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:

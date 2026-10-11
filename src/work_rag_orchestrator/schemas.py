@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
+
+    model_config = ConfigDict(extra="allow")
 
     model: str = Field(..., description="Model identifier")
     messages: List[Dict[str, str]] = Field(..., min_length=1)
@@ -17,6 +19,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
     stream: bool = Field(default=False)
     session_id: Optional[str] = Field(default=None)
+    filter_path: Optional[str] = Field(default=None, description="KB subspace filter path, e.g. 'اشخاص حقوقی' or 'گزارش اعتباری چک'")
 
 
 class Citation(BaseModel):
@@ -41,6 +44,7 @@ class RAGMetadata(BaseModel):
 
     request_id: str
     citations: List[Citation] = Field(default_factory=list)
+    supplemental: Optional[List[Dict[str, Any]]] = None
 
 
 class AuditTrail(BaseModel):
@@ -69,6 +73,9 @@ class AuditTrail(BaseModel):
     reranker_applied: bool = False
     context_preview: str = ""
     prompt_messages_preview: List[Dict[str, str]] = Field(default_factory=list)
+    supplemental: Optional[List[Dict[str, Any]]] = None
+    applied_subspace: Optional[str] = Field(default=None, description="Subspace applied for retrieval (cheque/facilities/general/legal_entity)")
+    available_subspaces: Optional[List[str]] = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -145,6 +152,7 @@ class KBRetrievalResult(BaseModel):
     rank_ce: Optional[int] = None
     hybrid_score: Optional[float] = None
     rerank_score: Optional[float] = None
+    folder_hierarchy: Optional[List[str]] = None
 
 
 class KBRetrievalResponse(BaseModel):

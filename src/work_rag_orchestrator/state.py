@@ -64,6 +64,16 @@ class RAGState(TypedDict):
 
     stage_timing_ms: Dict[str, float]
 
+    applied_subspace: Optional[str]
+    needs_clarification: bool
+    clarifying_question: Optional[str]
+    available_subspaces: Optional[List[str]]
+
+    injected_entities: Optional[List[Dict[str, Any]]]
+    supplemental: Optional[List[Dict[str, Any]]]
+
+    filter_path: Optional[str]
+
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:
     """Record stage timing — replaces 6-line boilerplate in every node."""

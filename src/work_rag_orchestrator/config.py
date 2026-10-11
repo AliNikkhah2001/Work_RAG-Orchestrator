@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Retrieval
     retrieval_top_k: int = 20
 
+    subspace_threshold: float = 0.8
+    subspace_general_exempt: bool = True
+    subspace_map: dict = {"cheque": "گزارش اعتباری چک", "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات", "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات", "general": "پایگاه دانش عمومی"}
+
     # Response detail: "production" hides the ground-truth retrieval block
     # (source labels, titles, scores) from user-visible text; "verbose" appends
     # it for debugging. Citations metadata + traces always keep full detail.

@@ -15,6 +15,7 @@ from .nodes import (
     guarded_generate,
     format_response,
 )
+from .nodes.generate_clarification import generate_clarification
 
 
 def should_continue_after_validation(state: RAGState) -> str:
@@ -22,6 +23,13 @@ def should_continue_after_validation(state: RAGState) -> str:
     if state.get("blocked", False):
         return "format_refusal"
     return "retrieve"
+
+
+def should_clarify(state: RAGState) -> str:
+    """Branch after retrieve: clarify vs continue."""
+    if state.get("needs_clarification"):
+        return "clarify"
+    return "continue"
 
 
 def create_graph() -> StateGraph:
@@ -36,6 +44,7 @@ def create_graph() -> StateGraph:
     graph.add_node("guarded_generate", guarded_generate)
     graph.add_node("format_response", format_response)
     graph.add_node("format_refusal", format_response)  # Reuse format_response for refusal
+    graph.add_node("generate_clarification", generate_clarification)
     
     # Set entry point
     graph.set_entry_point("validate_input")
@@ -50,8 +59,16 @@ def create_graph() -> StateGraph:
         },
     )
     
-    # Linear path for allowed requests
-    graph.add_edge("retrieve", "build_context")
+    # Conditional after retrieve: clarify vs continue
+    graph.add_conditional_edges(
+        "retrieve",
+        should_clarify,
+        {
+            "clarify": "generate_clarification",
+            "continue": "build_context",
+        },
+    )
+    graph.add_edge("generate_clarification", END)
     graph.add_edge("build_context", "guarded_generate")
     graph.add_edge("guarded_generate", "format_response")
     graph.add_edge("format_response", END)

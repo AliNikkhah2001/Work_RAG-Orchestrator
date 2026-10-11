@@ -59,7 +59,7 @@ class KnowledgebaseClient:
         return self._client
 
     async def retrieve(
-        self, query: str, top_k: int, request_id: str
+        self, query: str, top_k: int, request_id: str, filter_path: Optional[str] = None
     ) -> Dict[str, List[KBRetrievalResult]]:
         """Call KB POST /search/api and return top-10 RRF + top-10 CE sets.
 
@@ -72,13 +72,16 @@ class KnowledgebaseClient:
         """
         client = self._get_client()
         request = KBRetrievalRequest(query=query, top_k=top_k)
+        payload = request.model_dump()
+        if filter_path is not None:
+            payload["filter_path"] = filter_path
 
         headers = {"X-Request-ID": request_id}
 
         try:
             response = await client.post(
                 self.search_url,
-                json=request.model_dump(),
+                json=payload,
                 headers=headers,
             )
             response.raise_for_status()
@@ -106,6 +109,7 @@ class KnowledgebaseClient:
                     rank_ce=None,
                     hybrid_score=hybrid,
                     rerank_score=item.get("rerank_score"),
+                    folder_hierarchy=item.get("folder_hierarchy", []),
                 ))
 
             ce: List[KBRetrievalResult] = []
@@ -124,9 +128,10 @@ class KnowledgebaseClient:
                     rank_ce=rank,
                     hybrid_score=item.get("hybrid_score"),
                     rerank_score=item.get("rerank_score"),
+                    folder_hierarchy=item.get("folder_hierarchy", []),
                 ))
 
-            return {"rrf": rrf, "ce": ce}
+            return {"rrf": rrf, "ce": ce, "injected_entities": data.get("injected_entities", [])}
 
         except httpx.HTTPStatusError as e:
             log.error("KB retrieval failed: %s", e)
