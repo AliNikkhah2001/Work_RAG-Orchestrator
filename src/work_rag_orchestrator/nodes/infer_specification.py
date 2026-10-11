@@ -24,15 +24,37 @@ JUDGE_PROMPT = '''شما یک دسته‌بند پیام کاربر هستید. 
   گزینه‌های موجود: [تسهیلات افراد, گزارش چک, تسهیلات شرکت‌ها]
   آیا این پیام یک "تعیین شاخه" است (کاربر مشخص می‌کند از کدام شاخه می‌خواهد) یا یک "سوال" است؟
   - تعیین شاخه: ONLY پیام کوتاه حداکثر 4 کلمه که فقط نام/کلیدواژه شاخه را می‌برد بدون کلمه پرسشی و بدون علامت سوال، مثل "چک" (1 کلمه، بدون ؟، فقط کلیدواژه) یا "منظورم چک بود" یا "شرکت". اگر پیام بیشتر از 4 کلمه باشد یا پرسشی باشد، specification نیست.
+    استثنا: اگر پیام حاوی عبارت دقیق "اشخاص حقیقی" یا "اشخاص حقوقی" همراه با "تسهیلات" یا "اعتبارسنجی" باشد و پرسشی نباشد (بدون "؟" و بدون کلمات پرسشی "چیست/چطور/چگونه/آیا/چرا/کجاست/چیه")، حتی اگر بیش از 4 کلمه باشد specification است — مثال "اعتبارسنجی تسهیلات برای اشخاص حقیقی" → specification.
   - سوال: هر پیام پرسشی که جواب می‌خواهد — حتی اگر کلمه "چک" داشته باشد، باز هم سوال است. اگر پیام حاوی هر یک از کلمات پرسشی "چیست"، "چطور"، "چگونه"، "آیا"، "چرا"، "کجاست" یا علامت پایانی "؟" باشد، حتما "question" است، صرف‌نظر از وجود "چک". مثال: "چک" → specification اما "چک برگشتی چیست؟" → question و "چک برگشتی چیست و چگونه رفع اثر می‌شود؟" → question
   فقط با یک کلمه پاسخ دهید: "specification" یا "question"'''
 
 
 def _is_short_with_keyword(msg: str) -> bool:
-    """Heuristic fallback: True if msg is 1-4 words and contains a subspace keyword."""
+    """Heuristic fallback: True if msg is 1-4 words and contains a subspace keyword.
+
+    Extended: phrase "اشخاص حقیقی"/"اشخاص حقوقی" + "تسهیلات"/"اعتبارسنجی"
+    is specification regardless of length, provided it is not interrogative.
+    """
     if not msg or not msg.strip():
         return False
-    # word_tokenize via whitespace / non-space sequence (uses re per spec imports)
+    # Long-phrase exception: explicit subspace declaration with اشخاص حقیقی/حقوقی
+    # e.g. "اعتبارسنجی تسهیلات برای اشخاص حقیقی" (5 words) → specification
+    # regardless of token count, provided it is not interrogative.
+    if "اشخاص حقیقی" in msg or "اشخاص حقوقی" in msg:
+        if "؟" in msg or "?" in msg:
+            return False
+        for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "چيست"):
+            if w in msg:
+                return False
+        return True
+    # Interrogative gate — even a short keyword phrase is a question if it
+    # contains ؟/? or any interrogative word. This prevents
+    # "چک برگشتی چیست؟" (3 words, contains چک) from being misclassified.
+    if "؟" in msg or "?" in msg:
+        return False
+    for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "چيست"):
+        if w in msg:
+            return False
     tokens = re.findall(r"\S+", msg.strip())
     if len(tokens) > 4:
         return False

@@ -30,9 +30,14 @@ _THANKS = {
 
 def detect_greeting_kind(text: str) -> str | None:
     """Return 'greeting'/'farewell'/'thanks' for standalone smalltalk, else None."""
+    import re
+
     t = (text or "").strip().lower()
+    # Strip trailing ASCII dots (e.g. "hello..." -> "hello", "سلام..." -> "سلام") before generic punctuation removal
+    t = re.sub(r"\.+$", "", t).strip()
     for ch in "؟?!.,،؛:؛\"'«»()…-":
         t = t.replace(ch, "")
+    t = re.sub(r"\.+$", "", t).strip()
     t = " ".join(t.replace("‌", " ").split())
     if not t:
         return None
@@ -347,6 +352,151 @@ async def retrieve(state: RAGState) -> RAGState:
         granular = True
         state["needs_clarification"] = False
     else:
+        # Sticky subspace persistence: if previous turn set applied_subspace and current
+        # message is NOT a new specification, reuse sticky with filtered re-retrieve
+        # (skip granularity/clarify). Default None means whole KB (no filter).
+        _sticky = state.get("applied_subspace")
+        if _sticky and _sticky != "general":
+            try:
+                from .infer_specification import is_specification as _is_spec_sticky
+
+                _last_q_sticky = state.get("query", "")
+                try:
+                    _is_spec_now = await _is_spec_sticky(_last_q_sticky, request_id)
+                except Exception:
+                    _is_spec_now = False
+                if not _is_spec_now:
+                    _filter_path_sticky = get_settings().subspace_map.get(_sticky, "")
+                    if _filter_path_sticky:
+                        _fresult_sticky = None
+                        try:
+                            async with KnowledgebaseClient() as _client_sticky:
+                                _fresult_sticky = await _client_sticky.retrieve(
+                                    search_query, top_k, request_id, filter_path=_filter_path_sticky
+                                )
+                        except Exception as e:
+                            log.warning("Sticky filtered re-retrieve failed: %s", e)
+                        if _fresult_sticky is not None:
+                            if isinstance(_fresult_sticky, dict):
+                                _f_rrf = _fresult_sticky.get("rrf", [])
+                                _f_ce = _fresult_sticky.get("ce", [])
+                                _f_injected = _fresult_sticky.get("injected_entities", [])
+                            else:
+                                _f_rrf = []
+                                _f_ce = list(_fresult_sticky)
+                                _f_injected = []
+                            _f_merged: dict[str, dict] = {}
+                            _f_order: list[str] = []
+                            for c in _f_rrf:
+                                d = _item_dict(c, "rrf")
+                                key = d.get("chunk_id") or f"__rrf_{len(_f_order)}"
+                                if key not in _f_merged:
+                                    _f_merged[key] = d
+                                    _f_order.append(key)
+                            for c in _f_ce:
+                                d = _item_dict(c, "ce")
+                                key = d.get("chunk_id") or f"__ce_{len(_f_order)}"
+                                if key in _f_merged:
+                                    existing = _f_merged[key]
+                                    existing["source"] = "both"
+                                    if existing.get("rank_ce") is None:
+                                        existing["rank_ce"] = d.get("rank_ce")
+                                    if existing.get("rerank_score") is None:
+                                        existing["rerank_score"] = d.get("rerank_score")
+                                    if existing.get("hybrid_score") is None:
+                                        existing["hybrid_score"] = d.get("hybrid_score")
+                                    existing["score"] = (
+                                        existing.get("rerank_score")
+                                        if existing.get("rerank_score") is not None
+                                        else d.get("score", existing.get("score"))
+                                    )
+                                    for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                                        if not existing.get(k) and d.get(k):
+                                            existing[k] = d[k]
+                                else:
+                                    _f_merged[key] = d
+                                    _f_order.append(key)
+
+                            def _f_best_rank_sticky(d: dict) -> int:
+                                ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+                                return min(ranks) if ranks else 10**9
+
+                            _f_both = sorted(
+                                (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "both"),
+                                key=_f_best_rank_sticky,
+                            )
+                            _f_ce_only = sorted(
+                                (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "ce"),
+                                key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9,
+                            )
+                            _f_rrf_only = sorted(
+                                (_f_merged[k] for k in _f_order if _f_merged[k].get("source") == "rrf"),
+                                key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9,
+                            )
+                            _filtered_retrieved = (_f_both + _f_ce_only + _f_rrf_only)[:20]
+                            if state.get("faq_verified") and state.get("direct_faq_answer"):
+                                _filtered_retrieved.insert(
+                                    0,
+                                    {
+                                        "chunk_id": "__faq_direct__",
+                                        "document_id": "__faq_direct__",
+                                        "title": "FAQ Direct Answer",
+                                        "heading": "FAQ",
+                                        "content": state["direct_faq_answer"],
+                                        "score": 1.0,
+                                        "source": "faq_direct",
+                                        "rank_rrf": 0,
+                                        "rank_ce": 0,
+                                        "hybrid_score": 1.0,
+                                        "rerank_score": None,
+                                    },
+                                )
+                            state["retrieved_chunks"] = _filtered_retrieved
+                            if _f_injected:
+                                existing_injected = state.get("injected_entities") or []
+                                seen = {e.get("list_name") for e in existing_injected}
+                                merged_injected = list(existing_injected)
+                                for ent in _f_injected:
+                                    if ent.get("list_name") not in seen:
+                                        merged_injected.append(ent)
+                                        seen.add(ent.get("list_name"))
+                                state["injected_entities"] = merged_injected
+                                state["supplemental"] = merged_injected
+                            state["needs_clarification"] = False
+                            log.info(
+                                "Sticky filtered re-retrieve for subspace %s (%s): %d chunks",
+                                _sticky,
+                                _filter_path_sticky,
+                                len(_filtered_retrieved),
+                            )
+                            elapsed = round((time.monotonic() - t0) * 1000, 1)
+                            if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                state["stage_timing_ms"] = {}
+                            state["stage_timing_ms"]["retrieve"] = elapsed
+                            try:
+                                from ..tracing import trace_span
+
+                                trace_span(
+                                    request_id,
+                                    "retrieve",
+                                    span_input={
+                                        "query": query,
+                                        "rewritten_query": rewritten,
+                                        "search_query": search_query,
+                                        "top_k": top_k,
+                                        "filter_path": _filter_path_sticky,
+                                        "sticky": _sticky,
+                                    },
+                                    span_output={
+                                        "total": len(state["retrieved_chunks"]),
+                                        "sticky_filtered": True,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            return state
+            except Exception as e:
+                log.warning("Sticky check failed: %s", e)
         granular = True
         try:
             from collections import Counter
