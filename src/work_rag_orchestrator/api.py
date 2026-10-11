@@ -302,6 +302,32 @@ def create_app() -> FastAPI:
                 sticky_applied = prev.values.get("applied_subspace")
         except Exception:
             sticky_applied = None
+        # Fallback: WebUI's POST /api/chat/completions has no X-Request-ID,
+        # so each turn gets a new thread_id — mine sticky from chat history instead
+        if sticky_applied is None:
+            for hm in reversed(request.messages[:-1]):
+                hc = str(hm.get("content","")).strip()
+                if not hc:
+                    continue
+                # long explicit declaration like "اعتبارسنجی تسهیلات برای اشخاص حقیقی"
+                if "اشخاص حقیقی" in hc and "تسهیلات" in hc:
+                    sticky_applied = "facilities_person"; break
+                if "اشخاص حقوقی" in hc and "تسهیلات" in hc:
+                    sticky_applied = "facilities_legal"; break
+                if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general"):
+                    low = hc.lower()
+                    if "چک" in hc or "cheque" in low:
+                        sticky_applied = "cheque"; break
+                    elif "حقوقی" in hc or "شرکت" in hc:
+                        sticky_applied = "facilities_legal"; break
+                    elif "عام" in hc or "general" in low:
+                        sticky_applied = "general"; break
+                    else:
+                        sticky_applied = "facilities_person"; break
+                low = hc.lower()
+                if ("منظورم" in hc or low.startswith("چک ") or hc.strip() == "چک") and len(hc.split()) <= 4:
+                    if "چک" in hc:
+                        sticky_applied = "cheque"; break
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
         if _req_filter_path:
