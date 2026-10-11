@@ -332,6 +332,60 @@ async def retrieve(state: RAGState) -> RAGState:
         len(state["retrieved_chunks"]), len(rrf_chunks), len(ce_chunks), len(both), request_id,
     )
 
+    # --- G5 supplement fallback: if top evidence < threshold, try direct
+    # EntityList content search (threshold 0.4 < 0.6) and log outcome ---
+    try:
+        from ..config import get_settings as _get_ev_settings
+        _ev_threshold = float(_get_ev_settings().evidence_min_score)
+    except Exception:
+        _ev_threshold = 0.15
+    try:
+        _top_score = 0.0
+        for _c in retrieved:
+            for _k in ("rerank_score", "hybrid_score", "score"):
+                _v = _c.get(_k)
+                if isinstance(_v, (int, float)):
+                    _top_score = max(_top_score, float(_v))
+                    break
+        # skip FAQ-verified (already evidence)
+        _has_supplement = bool(injected)
+        if not state.get("faq_verified") and _top_score < _ev_threshold and not _has_supplement:
+            log.info(
+                "Low evidence for request %s: top_score=%.4f < %.3f (query=%r) — trying supplementary_search",
+                request_id, _top_score, _ev_threshold, search_query[:80],
+            )
+            try:
+                async with KnowledgebaseClient() as _sup_client:
+                    _sup = await _sup_client.supplementary_search(search_query, threshold=0.4, request_id=request_id)
+                if _sup:
+                    log.info("supplementary_search returned %d lists for request %s", len(_sup), request_id)
+                    # merge into injected_entities / supplemental
+                    existing = state.get("injected_entities") or []
+                    seen = {e.get("list_name") for e in existing}
+                    merged = list(existing)
+                    for ent in _sup:
+                        if ent.get("list_name") not in seen:
+                            merged.append(ent)
+                            seen.add(ent.get("list_name"))
+                    state["injected_entities"] = merged
+                    state["supplemental"] = merged
+                else:
+                    log.info("supplementary_search empty for request %s (G5 no supplement)", request_id)
+            except Exception as _se:
+                log.warning("supplementary_search failed for request %s: %s", request_id, _se)
+            try:
+                from ..tracing import trace_span as _tsp
+                _tsp(
+                    request_id,
+                    "retrieve-supplement-fallback",
+                    span_input={"query": search_query, "top_score": _top_score, "threshold": _ev_threshold},
+                    span_output={"supplemental": state.get("supplemental") or state.get("injected_entities") or [], "sup_found": bool(state.get("supplemental"))},
+                )
+            except Exception:
+                pass
+    except Exception as _e:
+        log.warning("supplement fallback check failed: %s", _e)
+
     try:
         from ..tracing import trace_span
         trace_span(

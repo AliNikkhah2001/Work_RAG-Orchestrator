@@ -68,6 +68,9 @@ MAX_CITATIONS = 5
 GROUND_TRUTH_HEADER = "\n\nمنابع بازیابی‌شده:\n"
 MAX_GROUND_TRUTH_LINES = 20
 
+# G5 hallucination fix: refusal when evidence is too weak
+NO_EVIDENCE_MSG = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
+
 
 def _source_label(chunk: dict, fallback_idx: int) -> str:
     """Source-set label with the relevant rank, e.g. [RRF-3], [CE-2], [BOTH-1]."""
@@ -140,6 +143,21 @@ def _parse_cited_indices(text: str) -> list[int]:
             indices.append(idx)
     return indices
 
+
+def _top_evidence_score(chunks: list) -> float:
+    """Best rerank/hybrid/score across chunks, 0.0 if none."""
+    best = 0.0
+    for c in chunks or []:
+        for key in ("rerank_score", "hybrid_score", "score"):
+            v = c.get(key)
+            if isinstance(v, (int, float)):
+                if float(v) > best:
+                    best = float(v)
+                break
+        # also consider injected supplemental similarity as evidence
+        # (handled separately in retrieve supplement fallback)
+    return best
+
 async def format_response(state: RAGState) -> RAGState:
     """
     Return OpenAI-compatible output with citation metadata.
@@ -197,6 +215,47 @@ async def format_response(state: RAGState) -> RAGState:
         finish_reason = "stop"
         citations = []
     else:
+        # --- G5 hallucination guard: refuse when evidence is too weak ---
+        # "رتبه اعتباری G5 چیه" returns 1 noise chunk with rerank 0.008;
+        # without this guard the LLM synthesizes "یکی از سطوح...".
+        # If top rerank/hybrid/score < threshold and no supplemental entity,
+        # treat as no evidence and return the canonical "پاسخی یافت نشد".
+        try:
+            from ..config import get_settings as _get_settings_ev
+            _threshold = float(_get_settings_ev().evidence_min_score)
+        except Exception:
+            _threshold = 0.15
+        _top = _top_evidence_score(chunks)
+        _has_supplement = bool(state.get("injected_entities") or state.get("supplemental"))
+        if (not chunks or _top < _threshold) and not _has_supplement:
+            log.info(
+                "No evidence for request %s: top_score=%.4f < threshold=%.3f -> refusing (G5 guard)",
+                request_id, _top, _threshold,
+            )
+            content = NO_EVIDENCE_MSG
+            finish_reason = "stop"
+            citations = []
+            state["formatted_response"] = {
+                "content": content,
+                "finish_reason": finish_reason,
+                "citations": [],
+            }
+            log.info("Formatted response (no-evidence guard) for request %s", request_id)
+            try:
+                from ..tracing import trace_span as _trace_span
+                _trace_span(
+                    request_id,
+                    "format_response",
+                    span_input={"blocked": blocked, "finish_reason": finish_reason, "guard": "no_evidence", "top_score": _top, "threshold": _threshold},
+                    span_output={"content": content, "citations": 0},
+                    clip=3000,
+                )
+            except Exception:
+                pass
+            elapsed = round((time.monotonic() - t0) * 1000, 1)
+            record_timing(state, "format_response", elapsed)
+            return state
+
         if not answer_raw or not answer_raw.strip():
             answer_raw = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
         content = answer_raw

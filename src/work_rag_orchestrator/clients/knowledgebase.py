@@ -143,6 +143,49 @@ class KnowledgebaseClient:
             log.exception("KB retrieval error: %s", e)
             raise
 
+    async def supplementary_search(self, query: str, threshold: float = 0.4, request_id: str = "") -> List[Dict]:
+        """Direct EntityList search as tool fallback (G5 supplement fix).
+
+        Supplements (5 EntityLists from EntityList.description/content_json) are
+        normally injected only via search.py step 8 with cosine >0.6 on
+        description. G5 not in any description, so not injected (0.6 not met for
+        "لیست و عناوین وام ها" which has سنپ پی etc.). This tool searches
+        entity_lists content_json directly via substring + lower threshold
+        (default 0.4) so list content like "سنپ پی" can still match when
+        description fails. Returns list of injected_entities dicts.
+        Falls back to empty list if KB endpoint unavailable (graceful).
+        """
+        headers = {"X-Request-ID": request_id} if request_id else {}
+        # Try dedicated KB endpoint first (if deployed)
+        for path in ("/entity_lists/search", "/supplementary/search", "/supplemental/search"):
+            try:
+                client = self._get_client()
+                resp = await client.post(
+                    f"{self.base_url}{path}",
+                    json={"query": query, "threshold": threshold},
+                    headers=headers,
+                    timeout=5.0,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # normalize shapes: {"results": [...] } or list
+                    if isinstance(data, list):
+                        return data
+                    if isinstance(data, dict):
+                        for key in ("results", "injected_entities", "entity_lists", "data"):
+                            if key in data and isinstance(data[key], list):
+                                return data[key]
+                        # single entity
+                        if "list_name" in data:
+                            return [data]
+                    return []
+            except Exception:
+                continue
+        # Fallback: no endpoint — caller will rely on normal injected_entities
+        # from /search/api. Return empty so threshold guard can decide.
+        log.debug("supplementary_search no endpoint for query %r -> empty", query[:80])
+        return []
+
     async def health_check(self) -> bool:
         """Check if KB service is healthy."""
         client = self._get_client()

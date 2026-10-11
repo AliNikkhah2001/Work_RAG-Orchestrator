@@ -490,6 +490,34 @@ def create_app() -> FastAPI:
                     prompt_messages = state.get("prompt_messages", [])
                     yield f": agent build_context done prompt_tokens={len(str(prompt_messages))}\n\n"
 
+                    # G5 hallucination guard for streaming: if no evidence, stream refusal without LLM
+                    try:
+                        _ev_t = float(get_settings().evidence_min_score)
+                    except Exception:
+                        _ev_t = 0.15
+                    _chunks_s = state.get("retrieved_chunks") or []
+                    _top_s = 0.0
+                    for _cc in _chunks_s:
+                        for _kk in ("rerank_score", "hybrid_score", "score"):
+                            _vv = _cc.get(_kk)
+                            if isinstance(_vv, (int, float)):
+                                _top_s = max(_top_s, float(_vv))
+                                break
+                    _has_sup_s = bool(state.get("injected_entities") or state.get("supplemental"))
+                    if not state.get("faq_verified") and (_top_s < _ev_t or not _chunks_s) and not _has_sup_s:
+                        _no_ev = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
+                        yield ": agent guarded_generate no_evidence_guard streaming\n\n"
+                        for tok in re.findall(r"\S+\s*", _no_ev):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[],'supplemental': None}}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        try:
+                            from .tracing import update_trace as _ut2
+                            _ut2(request_id, _no_ev[:2000], {"finish_reason":"stop","guard":"no_evidence","top_score":_top_s,"threshold":_ev_t,"stream":True})
+                        except Exception:
+                            pass
+                        return
+
                     # FAQ direct — stream canned answer directly (no LLM latency) OR via LLM rewrite
                     # Only use verified FAQ answers; unverified ones fall through to retrieval
                     if state.get("faq_verified") and state.get("direct_faq_answer"):

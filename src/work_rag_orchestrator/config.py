@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # it for debugging. Citations metadata + traces always keep full detail.
     response_detail: str = "production"
 
+    # Evidence threshold for hallucination guard (G5 fix):
+    # if top retrieved rerank/hybrid score < this, treat as no evidence and refuse
+    # instead of synthesizing "یکی از سطوح...". Tunable via EVIDENCE_MIN_SCORE env.
+    evidence_min_score: float = 0.15
+
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
 
