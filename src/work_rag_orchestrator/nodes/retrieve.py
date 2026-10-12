@@ -616,6 +616,160 @@ async def retrieve(state: RAGState) -> RAGState:
                                 state["injected_entities"] = merged_injected
                                 state["supplemental"] = merged_injected
                             state["needs_clarification"] = False
+                            # --- Dynamic broadening: filtered empty -> LLM judge then whole KB ---
+                            _broad_thr = _get_ev_threshold()
+                            _broad_empty = len(_filtered_retrieved) == 0 or _compute_top_score(_filtered_retrieved) < _broad_thr
+                            if _broad_empty:
+                                log.info("Filtered retrieval empty for subspace %s, broadening to whole KB", _sticky)
+                                try:
+                                    from .infer_specification import infer_subspace_llm
+                                    from ..rewrite import last_exchanges_text
+                                    hist = last_exchanges_text(state.get("messages", []) or [], include_current=False)
+                                    llm_choice = await infer_subspace_llm(state.get("query", ""), hist, state["request_id"])
+                                    if llm_choice and llm_choice in get_settings().subspace_map and llm_choice != _sticky:
+                                        new_filter = get_settings().subspace_map[llm_choice]
+                                        _broad_result = None
+                                        try:
+                                            async with KnowledgebaseClient() as _client2:
+                                                _broad_result = await _client2.retrieve(search_query, top_k, request_id, filter_path=new_filter)
+                                        except Exception as _e2:
+                                            log.warning("LLM broadening re-retrieve failed: %s", _e2)
+                                        if _broad_result is not None:
+                                            if isinstance(_broad_result, dict):
+                                                _b_rrf = _broad_result.get("rrf", [])
+                                                _b_ce = _broad_result.get("ce", [])
+                                                _b_injected = _broad_result.get("injected_entities", [])
+                                            else:
+                                                _b_rrf = []
+                                                _b_ce = list(_broad_result)
+                                                _b_injected = []
+                                            _b_merged: dict[str, dict] = {}
+                                            _b_order: list[str] = []
+                                            for c in _b_rrf:
+                                                d = _item_dict(c, "rrf")
+                                                key = d.get("chunk_id") or f"__rrf_{len(_b_order)}"
+                                                if key not in _b_merged:
+                                                    _b_merged[key] = d
+                                                    _b_order.append(key)
+                                            for c in _b_ce:
+                                                d = _item_dict(c, "ce")
+                                                key = d.get("chunk_id") or f"__ce_{len(_b_order)}"
+                                                if key in _b_merged:
+                                                    existing = _b_merged[key]
+                                                    existing["source"] = "both"
+                                                    if existing.get("rank_ce") is None:
+                                                        existing["rank_ce"] = d.get("rank_ce")
+                                                    if existing.get("rerank_score") is None:
+                                                        existing["rerank_score"] = d.get("rerank_score")
+                                                    if existing.get("hybrid_score") is None:
+                                                        existing["hybrid_score"] = d.get("hybrid_score")
+                                                    existing["score"] = (
+                                                        existing.get("rerank_score")
+                                                        if existing.get("rerank_score") is not None
+                                                        else d.get("score", existing.get("score"))
+                                                    )
+                                                    for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                                                        if not existing.get(k) and d.get(k):
+                                                            existing[k] = d[k]
+                                                else:
+                                                    _b_merged[key] = d
+                                                    _b_order.append(key)
+                                            def _b_best_rank(d: dict) -> int:
+                                                ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+                                                return min(ranks) if ranks else 10**9
+                                            _b_both = sorted((_b_merged[k] for k in _b_order if _b_merged[k].get("source") == "both"), key=_b_best_rank)
+                                            _b_ce_only = sorted((_b_merged[k] for k in _b_order if _b_merged[k].get("source") == "ce"), key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9)
+                                            _b_rrf_only = sorted((_b_merged[k] for k in _b_order if _b_merged[k].get("source") == "rrf"), key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9)
+                                            new_filtered = (_b_both + _b_ce_only + _b_rrf_only)[:20]
+                                            if state.get("faq_verified") and state.get("direct_faq_answer"):
+                                                new_filtered.insert(0, {"chunk_id": "__faq_direct__", "document_id": "__faq_direct__", "title": "FAQ Direct Answer", "heading": "FAQ", "content": state["direct_faq_answer"], "score": 1.0, "source": "faq_direct", "rank_rrf": 0, "rank_ce": 0, "hybrid_score": 1.0, "rerank_score": None})
+                                            if _b_injected:
+                                                existing_injected = state.get("injected_entities") or []
+                                                seen = {e.get("list_name") for e in existing_injected}
+                                                merged_injected = list(existing_injected)
+                                                for ent in _b_injected:
+                                                    if ent.get("list_name") not in seen:
+                                                        merged_injected.append(ent)
+                                                        seen.add(ent.get("list_name"))
+                                                state["injected_entities"] = merged_injected
+                                                state["supplemental"] = merged_injected
+                                            state["applied_subspace"] = llm_choice
+                                            state["retrieved_chunks"] = new_filtered
+                                            log.info("Broadened from %s to %s: %d chunks", _sticky, llm_choice, len(new_filtered))
+                                            return state
+                                except Exception as e:
+                                    log.warning("Broadening failed: %s", e)
+                                # Fall back to whole KB (no filter)
+                                try:
+                                    _whole_result = None
+                                    async with KnowledgebaseClient() as _client3:
+                                        _whole_result = await _client3.retrieve(search_query, top_k, request_id, filter_path=None)
+                                    if _whole_result is not None:
+                                        if isinstance(_whole_result, dict):
+                                            _w_rrf = _whole_result.get("rrf", [])
+                                            _w_ce = _whole_result.get("ce", [])
+                                            _w_injected = _whole_result.get("injected_entities", [])
+                                        else:
+                                            _w_rrf = []
+                                            _w_ce = list(_whole_result)
+                                            _w_injected = []
+                                        _w_merged: dict[str, dict] = {}
+                                        _w_order: list[str] = []
+                                        for c in _w_rrf:
+                                            d = _item_dict(c, "rrf")
+                                            key = d.get("chunk_id") or f"__rrf_{len(_w_order)}"
+                                            if key not in _w_merged:
+                                                _w_merged[key] = d
+                                                _w_order.append(key)
+                                        for c in _w_ce:
+                                            d = _item_dict(c, "ce")
+                                            key = d.get("chunk_id") or f"__ce_{len(_w_order)}"
+                                            if key in _w_merged:
+                                                existing = _w_merged[key]
+                                                existing["source"] = "both"
+                                                if existing.get("rank_ce") is None:
+                                                    existing["rank_ce"] = d.get("rank_ce")
+                                                if existing.get("rerank_score") is None:
+                                                    existing["rerank_score"] = d.get("rerank_score")
+                                                if existing.get("hybrid_score") is None:
+                                                    existing["hybrid_score"] = d.get("hybrid_score")
+                                                existing["score"] = (
+                                                    existing.get("rerank_score")
+                                                    if existing.get("rerank_score") is not None
+                                                    else d.get("score", existing.get("score"))
+                                                )
+                                                for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                                                    if not existing.get(k) and d.get(k):
+                                                        existing[k] = d[k]
+                                            else:
+                                                _w_merged[key] = d
+                                                _w_order.append(key)
+                                        def _w_best_rank(d: dict) -> int:
+                                            ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+                                            return min(ranks) if ranks else 10**9
+                                        _w_both = sorted((_w_merged[k] for k in _w_order if _w_merged[k].get("source") == "both"), key=_w_best_rank)
+                                        _w_ce_only = sorted((_w_merged[k] for k in _w_order if _w_merged[k].get("source") == "ce"), key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9)
+                                        _w_rrf_only = sorted((_w_merged[k] for k in _w_order if _w_merged[k].get("source") == "rrf"), key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9)
+                                        whole_retrieved = (_w_both + _w_ce_only + _w_rrf_only)[:20]
+                                        if state.get("faq_verified") and state.get("direct_faq_answer"):
+                                            whole_retrieved.insert(0, {"chunk_id": "__faq_direct__", "document_id": "__faq_direct__", "title": "FAQ Direct Answer", "heading": "FAQ", "content": state["direct_faq_answer"], "score": 1.0, "source": "faq_direct", "rank_rrf": 0, "rank_ce": 0, "hybrid_score": 1.0, "rerank_score": None})
+                                        if _w_injected:
+                                            existing_injected = state.get("injected_entities") or []
+                                            seen = {e.get("list_name") for e in existing_injected}
+                                            merged_injected = list(existing_injected)
+                                            for ent in _w_injected:
+                                                if ent.get("list_name") not in seen:
+                                                    merged_injected.append(ent)
+                                                    seen.add(ent.get("list_name"))
+                                            state["injected_entities"] = merged_injected
+                                            state["supplemental"] = merged_injected
+                                        state["applied_subspace"] = None
+                                        state["retrieved_chunks"] = whole_retrieved
+                                        log.info("Broadened to whole KB: %d chunks", len(whole_retrieved))
+                                        return state
+                                except Exception as _e3:
+                                    log.warning("Whole KB fallback failed: %s", _e3)
+                                # If broadened still empty, fall through to DLQ/clear logic below
                             # --- Dynamic broadening: one re-retrieval then not-enough-context + DLQ ---
                             # Increment attempts (sticky counts as the single allowed re-retrieve)
                             try:
