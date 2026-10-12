@@ -277,16 +277,42 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
+        # --- Task filter: WebUI ungrounded follow-up generation ---
+        # WebUI's ENABLE_FOLLOW_UP_GENERATION sends "### Task: Suggest 3-5 relevant follow-up questions"
+        # These are untracked task LLM calls that produced 268 junk traces before cleanup.
+        # They are ungrounded (not from KB) and should be filtered from RAG/observability.
+        # Grounded follow-ups are now generated inside nodes/format_response.py and
+        # returned via rag.follow_ups, so WebUI doesn't need to generate its own.
+        # Filtering here prevents junk traces and wasted RAG. If WebUI still calls this,
+        # return a minimal empty response so WebUI shows no ungrounded suggestions.
+        try:
+            _task_q = request.messages[-1].get("content", "") if request.messages else ""
+            if "### Task" in _task_q or "Suggest 3-5" in _task_q:
+                log.info("Filtered ### Task follow-up prompt (ungrounded) - returning empty, no RAG/observability")
+                return ChatCompletionResponse(
+                    model=request.model,
+                    choices=[ChatCompletionChoice(index=0, message={"role": "assistant", "content": ""}, finish_reason="stop")],
+                    rag=RAGMetadata(request_id=x_request_id or str(uuid.uuid4()), citations=[], follow_ups=[]),
+                    audit=None,
+                )
+        except Exception:
+            pass
+
         # Generate request ID for tracing
         request_id = x_request_id or str(uuid.uuid4())
         t0 = time.monotonic()
         # Langfuse trace (self-hosted) — non-blocking, direct HTTP fallback
         try:
             from .tracing import start_trace
-            input_text = request.messages[-1].get("content", "")[:1000] if request.messages else ""
-            start_trace(request_id, "rag", input_text, {"model": request.model, "request_id": request_id})
+            # Skip tracing Task prompts (already filtered above, but double-guard)
+            _input_for_trace = request.messages[-1].get("content", "")[:1000] if request.messages else ""
+            if "### Task" in _input_for_trace:
+                raise ValueError("skip Task trace")
+            start_trace(request_id, "rag", _input_for_trace, {"model": request.model, "request_id": request_id})
         except Exception as e:
-            log.warning("Langfuse trace init failed: %s", e)
+            # Task traces are intentionally skipped; other errors logged
+            if "skip Task" not in str(e):
+                log.warning("Langfuse trace init failed: %s", e)
         
         # Validate model — primary is ICS Helper Agent; keep legacy aliases for backward compat
         allowed_models = {"ics-helper-agent", "work-rag-agent", "gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
@@ -409,6 +435,7 @@ def create_app() -> FastAPI:
             "injected_entities": [],
             "supplemental": [],
             "filter_path": _req_filter_path,
+            "follow_ups": [],
         }
         
         # --- Streaming branch: REAL token streaming (no artificial delay) ---
@@ -562,14 +589,15 @@ def create_app() -> FastAPI:
                             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                             # No sleep — real LLM pacing (~30ms/token) is the animation
 
-                    # Finalize state for citations/audit
+                    # Finalize state for citations/audit + grounded follow-ups
                     answer_text = "".join(full_answer)
                     state["answer"] = answer_text
-                    # Format citations (same as format_response)
+                    # Format citations (same as format_response) — includes grounded follow_ups
                     state = await node_format(state)
                     formatted = state.get("formatted_response", {}) or {}
                     citations = formatted.get("citations", [])
                     finish_reason = formatted.get("finish_reason", "stop")
+                    follow_ups_stream = formatted.get("follow_ups") or state.get("follow_ups") or []
                     supplemental_stream = state.get("supplemental") or state.get("injected_entities") or []
                     final_chunk = {
                         "id": f"chatcmpl-{request_id}",
@@ -577,7 +605,7 @@ def create_app() -> FastAPI:
                         "created": int(time.time()),
                         "model": request.model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        "rag": {"request_id": request_id, "citations": citations, "supplemental": supplemental_stream if supplemental_stream else None},
+                        "rag": {"request_id": request_id, "citations": citations, "supplemental": supplemental_stream if supplemental_stream else None, "follow_ups": follow_ups_stream if follow_ups_stream else None},
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -620,6 +648,10 @@ def create_app() -> FastAPI:
             if not content or content == "An error occurred.":
                 content = final_state.get("clarifying_question") or content
         citations = formatted.get("citations", [])
+        follow_ups = formatted.get("follow_ups") or final_state.get("follow_ups") or []
+        # Ensure list type
+        if not isinstance(follow_ups, list):
+            follow_ups = []
         
         # Build audit trail for transparency (shown in OpenWebUI rag agent)
         # This exposes the whole pipeline: guardrails, retrieval, generation
@@ -730,9 +762,15 @@ def create_app() -> FastAPI:
             log.warning("Langfuse trace update failed: %s", e)
 
         # Auto-save to observability dashboard (fire-and-forget)
+        # Filter out Task prompts (WebUI ungrounded follow-up generation) from traces
         try:
             import os as _os
             obs_url = _os.getenv("OBSERVABILITY_URL", "http://127.0.0.1:3000")
+            # Task filter for observability (268 junk traces before cleanup)
+            _obs_query = audit.query if audit is not None else final_state.get("query", "")
+            if _obs_query and ("### Task" in str(_obs_query) or "Suggest 3-5" in str(_obs_query)):
+                log.info("Skipping observability save for Task prompt (ungrounded): %s", request_id)
+                obs_url = None  # disable save
             if obs_url and audit is not None:
                 import httpx as _httpx
                 import threading as _threading
@@ -791,6 +829,7 @@ def create_app() -> FastAPI:
                 request_id=request_id,
                 citations=[Citation(**c) for c in citations],
                 supplemental=rag_supplemental if rag_supplemental else None,
+                follow_ups=follow_ups if follow_ups else None,
             ),
             audit=audit,
         )

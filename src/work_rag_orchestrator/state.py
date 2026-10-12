@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from typing import TypedDict, List, Optional, Dict, Any
+try:
+    from typing import NotRequired  # py 3.11+
+except ImportError:
+    from typing_extensions import NotRequired  # type: ignore
+
 from uuid import UUID
 
 
@@ -75,6 +80,8 @@ class RAGState(TypedDict):
     filter_path: Optional[str]
 
     classify: Optional[str]
+
+    follow_ups: NotRequired[Optional[List[str]]]
 
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:

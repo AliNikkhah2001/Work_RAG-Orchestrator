@@ -63,6 +63,83 @@ def _extract_subspace(hier: list[str] | str | None) -> str:
         return "facilities_person"
 
 
+# --- Dynamic retrieval: one re-retrieval then not-enough-context + DLQ ---
+_DLQ_PATH = "/tmp/dlq_retrieval.jsonl"
+
+
+def _compute_top_score(chunks: list | None) -> float:
+    """Best rerank/hybrid/score across chunks, 0.0 if none."""
+    best = 0.0
+    for c in (chunks or []):
+        for k in ("rerank_score", "hybrid_score", "score"):
+            v = c.get(k)
+            if isinstance(v, (int, float)):
+                if float(v) > best:
+                    best = float(v)
+                break
+    return best
+
+
+def _get_ev_threshold() -> float:
+    try:
+        from ..config import get_settings as _gs
+        return float(_gs().evidence_min_score)
+    except Exception:
+        return 0.15
+
+
+def _save_dlq_sample(
+    state: dict,
+    request_id: str,
+    query: str,
+    search_query: str,
+    top_score: float,
+    threshold: float,
+    stage: str,
+) -> None:
+    """Clear chunks for refusal, mark DLQ, trace and append JSONL."""
+    # one-retry budget: mark attempt
+    try:
+        state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+    except Exception:
+        state["retrieve_attempts"] = 1
+    state["retrieved_chunks"] = []
+    state["dlq_saved"] = True
+    # trace_span for observability
+    try:
+        from ..tracing import trace_span as _tsp
+
+        _tsp(
+            request_id,
+            "retrieve-dlq",
+            span_input={"query": query, "search_query": search_query, "top_score": top_score, "threshold": threshold, "stage": stage, "retrieve_attempts": state.get("retrieve_attempts")},
+            span_output={"dlq": True, "query": query, "cleared": True},
+        )
+    except Exception:
+        pass
+    # JSONL file for offline DLQ review
+    try:
+        import json as _json
+        import time as _time
+
+        rec = {
+            "ts": _time.time(),
+            "request_id": request_id,
+            "query": query,
+            "search_query": search_query,
+            "top_score": top_score,
+            "threshold": threshold,
+            "stage": stage,
+            "dlq": True,
+            "retrieve_attempts": state.get("retrieve_attempts"),
+        }
+        with open(_DLQ_PATH, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    log.info("DLQ saved for request %s stage=%s top=%.4f < %.3f query=%r", request_id, stage, top_score, threshold, (query or search_query)[:80])
+
+
 async def retrieve(state: RAGState) -> RAGState:
     """
     Rewrite the last user message against history, then call KB search.
@@ -539,11 +616,37 @@ async def retrieve(state: RAGState) -> RAGState:
                                 state["injected_entities"] = merged_injected
                                 state["supplemental"] = merged_injected
                             state["needs_clarification"] = False
+                            # --- Dynamic broadening: one re-retrieval then not-enough-context + DLQ ---
+                            # Increment attempts (sticky counts as the single allowed re-retrieve)
+                            try:
+                                state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                            except Exception:
+                                state["retrieve_attempts"] = 1
+                            _sticky_top = _compute_top_score(state["retrieved_chunks"])
+                            _sticky_thr = _get_ev_threshold()
+                            _sticky_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                            if not state.get("faq_verified") and _sticky_top < _sticky_thr and not _sticky_has_sup:
+                                # Do NOT retry again — DLQ + clear for refusal (single retry budget exhausted)
+                                state["retrieved_chunks"] = []
+                                state["dlq_saved"] = True
+                                try:
+                                    from ..tracing import trace_span as _tsp2
+                                    _tsp2(request_id, "retrieve-dlq", span_input={"query": query, "search_query": search_query, "top_score": _sticky_top, "threshold": _sticky_thr, "stage": "sticky_filtered", "retrieve_attempts": state.get("retrieve_attempts")}, span_output={"dlq": True, "query": query, "cleared": True})
+                                except Exception:
+                                    pass
+                                try:
+                                    import json as _json2, time as _time2
+                                    rec2 = {"ts": _time2.time(), "request_id": request_id, "query": query, "search_query": search_query, "top_score": _sticky_top, "threshold": _sticky_thr, "stage": "sticky_filtered", "dlq": True, "retrieve_attempts": state.get("retrieve_attempts")}
+                                    with open(_DLQ_PATH, "a", encoding="utf-8") as fh2:
+                                        fh2.write(_json2.dumps(rec2, ensure_ascii=False) + "\n")
+                                except Exception:
+                                    pass
+                                log.info("Sticky re-retrieve still low (%.4f < %.3f) — cleared for refusal + DLQ", _sticky_top, _sticky_thr)
                             log.info(
                                 "Sticky filtered re-retrieve for subspace %s (%s): %d chunks",
                                 _sticky,
                                 _filter_path_sticky,
-                                len(_filtered_retrieved),
+                                len(_filtered_retrieved) if not state.get("dlq_saved") else 0,
                             )
                             elapsed = round((time.monotonic() - t0) * 1000, 1)
                             if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
@@ -566,6 +669,7 @@ async def retrieve(state: RAGState) -> RAGState:
                                     span_output={
                                         "total": len(state["retrieved_chunks"]),
                                         "sticky_filtered": True,
+                                        "dlq_saved": bool(state.get("dlq_saved")),
                                     },
                                 )
                             except Exception:
@@ -734,14 +838,38 @@ async def retrieve(state: RAGState) -> RAGState:
                                         state["supplemental"] = merged_injected
                                     state["applied_subspace"] = llm_choice
                                     state["needs_clarification"] = False
-                                    log.info("LLM-judge filtered re-retrieve for subspace %s (%s): %d chunks", llm_choice, filter_path, len(_filtered_retrieved))
+                                    # --- Dynamic broadening: one re-retrieval then not-enough-context + DLQ ---
+                                    try:
+                                        state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                                    except Exception:
+                                        state["retrieve_attempts"] = 1
+                                    _llm_top = _compute_top_score(state["retrieved_chunks"])
+                                    _llm_thr = _get_ev_threshold()
+                                    _llm_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                                    if not state.get("faq_verified") and _llm_top < _llm_thr and not _llm_has_sup:
+                                        state["retrieved_chunks"] = []
+                                        state["dlq_saved"] = True
+                                        try:
+                                            from ..tracing import trace_span as _tsp3
+                                            _tsp3(request_id, "retrieve-dlq", span_input={"query": query, "search_query": search_query, "top_score": _llm_top, "threshold": _llm_thr, "stage": "llm_judge_filtered", "retrieve_attempts": state.get("retrieve_attempts")}, span_output={"dlq": True, "query": query, "cleared": True})
+                                        except Exception:
+                                            pass
+                                        try:
+                                            import json as _json3, time as _time3
+                                            rec3 = {"ts": _time3.time(), "request_id": request_id, "query": query, "search_query": search_query, "top_score": _llm_top, "threshold": _llm_thr, "stage": "llm_judge_filtered", "dlq": True, "retrieve_attempts": state.get("retrieve_attempts")}
+                                            with open(_DLQ_PATH, "a", encoding="utf-8") as fh3:
+                                                fh3.write(_json3.dumps(rec3, ensure_ascii=False) + "\n")
+                                        except Exception:
+                                            pass
+                                        log.info("LLM-judge re-retrieve still low (%.4f < %.3f) — cleared for refusal + DLQ", _llm_top, _llm_thr)
+                                    log.info("LLM-judge filtered re-retrieve for subspace %s (%s): %d chunks", llm_choice, filter_path, len(_filtered_retrieved) if not state.get("dlq_saved") else 0)
                                     elapsed = round((time.monotonic() - t0) * 1000, 1)
                                     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
                                         state["stage_timing_ms"] = {}
                                     state["stage_timing_ms"]["retrieve"] = elapsed
                                     try:
                                         from ..tracing import trace_span
-                                        trace_span(request_id, "retrieve", span_input={"query": query, "rewritten_query": rewritten, "search_query": search_query, "top_k": top_k, "filter_path": filter_path, "llm_judge": llm_choice}, span_output={"total": len(state["retrieved_chunks"]), "llm_judge_filtered": True})
+                                        trace_span(request_id, "retrieve", span_input={"query": query, "rewritten_query": rewritten, "search_query": search_query, "top_k": top_k, "filter_path": filter_path, "llm_judge": llm_choice}, span_output={"total": len(state["retrieved_chunks"]), "llm_judge_filtered": True, "dlq_saved": bool(state.get("dlq_saved"))})
                                     except Exception:
                                         pass
                                     return state
@@ -848,11 +976,60 @@ async def retrieve(state: RAGState) -> RAGState:
                                     seen.add(ent.get("list_name"))
                             state["injected_entities"] = merged_injected
                             state["supplemental"] = merged_injected
-                        log.info("Filtered re-retrieve for subspace %s (%s): %d chunks", inferred, filter_path, len(filtered_retrieved))
+                        # --- Dynamic broadening: one re-retrieval then not-enough-context + DLQ (F5) ---
+                        try:
+                            state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                        except Exception:
+                            state["retrieve_attempts"] = 1
+                        _f_top = _compute_top_score(state["retrieved_chunks"])
+                        _f_thr = _get_ev_threshold()
+                        _f_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                        if not state.get("faq_verified") and _f_top < _f_thr and not _f_has_sup:
+                            state["retrieved_chunks"] = []
+                            state["dlq_saved"] = True
+                            try:
+                                from ..tracing import trace_span as _tsp4
+                                _tsp4(request_id, "retrieve-dlq", span_input={"query": query, "search_query": search_query, "top_score": _f_top, "threshold": _f_thr, "stage": "f5_filtered", "retrieve_attempts": state.get("retrieve_attempts")}, span_output={"dlq": True, "query": query, "cleared": True})
+                            except Exception:
+                                pass
+                            try:
+                                import json as _json4, time as _time4
+                                rec4 = {"ts": _time4.time(), "request_id": request_id, "query": query, "search_query": search_query, "top_score": _f_top, "threshold": _f_thr, "stage": "f5_filtered", "dlq": True, "retrieve_attempts": state.get("retrieve_attempts")}
+                                with open(_DLQ_PATH, "a", encoding="utf-8") as fh4:
+                                    fh4.write(_json4.dumps(rec4, ensure_ascii=False) + "\n")
+                            except Exception:
+                                pass
+                            log.info("F5 filtered re-retrieve still low (%.4f < %.3f) — cleared for refusal + DLQ", _f_top, _f_thr)
+                        log.info("Filtered re-retrieve for subspace %s (%s): %d chunks", inferred, filter_path, len(filtered_retrieved) if not state.get("dlq_saved") else 0)
                     except Exception as e:
                         log.warning("Filtered re-retrieve failed: %s", e)
     except Exception as e:
         log.warning("Filtered re-retrieve check failed: %s", e)
+
+    # --- Final fallback: if we did one re-retrieval and still low with no supplement, DLQ (single-retry budget) ---
+    try:
+        if int(state.get("retrieve_attempts") or 0) >= 1 and not state.get("dlq_saved") and not state.get("faq_verified"):
+            _final_top = _compute_top_score(state.get("retrieved_chunks"))
+            _final_thr = _get_ev_threshold()
+            _final_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+            if _final_top < _final_thr and not _final_has_sup:
+                state["retrieved_chunks"] = []
+                state["dlq_saved"] = True
+                try:
+                    from ..tracing import trace_span as _tsp_final
+                    _tsp_final(request_id, "retrieve-dlq", span_input={"query": query, "search_query": search_query, "top_score": _final_top, "threshold": _final_thr, "stage": "final_fallback", "retrieve_attempts": state.get("retrieve_attempts")}, span_output={"dlq": True, "query": query, "cleared": True})
+                except Exception:
+                    pass
+                try:
+                    import json as _jsonF, time as _timeF
+                    recF = {"ts": _timeF.time(), "request_id": request_id, "query": query, "search_query": search_query, "top_score": _final_top, "threshold": _final_thr, "stage": "final_fallback", "dlq": True, "retrieve_attempts": state.get("retrieve_attempts")}
+                    with open(_DLQ_PATH, "a", encoding="utf-8") as fhF:
+                        fhF.write(_jsonF.dumps(recF, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+                log.info("Final DLQ fallback for request %s top=%.4f < %.3f", request_id, _final_top, _final_thr)
+    except Exception:
+        pass
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:

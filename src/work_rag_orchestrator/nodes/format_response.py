@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 import time
@@ -9,6 +11,104 @@ from ..state import RAGState, record_timing
 from ..schemas import Citation
 
 log = logging.getLogger(__name__)
+
+# Grounded follow-ups: only answerable from same retrieved context (same leaf)
+FOLLOWUP_PROMPT = """Given the user's question: {query}
+And the answer we gave: {answer}
+And the retrieved context titles: {titles}
+Suggest 2-3 follow-up questions that ARE answerable from the same context (same leaf), in Persian, short.
+Return ONLY a JSON array of strings, e.g. ["سوال 1؟", "سوال 2؟"]"""
+
+FOLLOWUP_SYSTEM = "You suggest follow-up questions. Reply ONLY with a JSON array of 2-3 short Persian questions. No explanation."
+FOLLOWUP_MAX_TOKENS = 120
+
+
+async def _generate_grounded_followups(state: RAGState, answer: str) -> list[str]:
+    """Generate 2-3 grounded follow-up questions from retrieved_chunks titles."""
+    try:
+        query = (state.get("query") or state.get("rewritten_query") or "").strip()
+        chunks = state.get("retrieved_chunks") or []
+        if not query or not answer or not chunks:
+            return []
+        # Skip Task prompts (WebUI ungrounded follow-up generation)
+        if "### Task" in query or "Suggest 3-5" in query:
+            return []
+        titles: list[str] = []
+        for c in chunks[:5]:
+            t = str(c.get("title") or "").strip()
+            h = str(c.get("heading") or "").strip()
+            label = f"{t} — {h}" if t and h else (t or h)
+            if label:
+                titles.append(label)
+        if not titles:
+            return []
+        titles_str = "\n".join(f"- {x}" for x in titles)
+        prompt = FOLLOWUP_PROMPT.format(query=query[:300], answer=answer[:500], titles=titles_str)
+        from ..clients.guardrails import GuardrailsClient
+        from ..schemas import GuardrailsChatRequest
+        from ..config import get_settings
+        settings = get_settings()
+        req = GuardrailsChatRequest(
+            model=settings.upstream_llm_model,
+            messages=[
+                {"role": "system", "content": FOLLOWUP_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=FOLLOWUP_MAX_TOKENS,
+            temperature=0.3,
+        )
+        async with GuardrailsClient(timeout=12.0) as client:
+            resp = await asyncio.wait_for(
+                client.chat_completion(req, (state.get("request_id") or "") + "-followup"),
+                timeout=10.0,
+            )
+        content = ""
+        if resp and getattr(resp, "choices", None):
+            msg = resp.choices[0].message  # type: ignore
+            if isinstance(msg, dict):
+                content = str(msg.get("content") or "")
+            else:
+                # Pydantic ChatCompletionChoice.message is Dict[str,str]
+                try:
+                    content = str(msg.get("content") or "")  # type: ignore
+                except Exception:
+                    content = str(msg)
+        if not content:
+            return []
+        # Extract JSON array substring
+        m = re.search(r"\[.*\]", content, re.DOTALL)
+        if not m:
+            return []
+        arr = json.loads(m.group(0))
+        if not isinstance(arr, list):
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in arr:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if not s:
+                continue
+            if len(s) > 150:
+                s = s[:150].strip()
+            if not s.endswith("؟") and not s.endswith("?"):
+                s = s + "؟"
+            low = s.lower().strip()
+            if low in seen or low == query.lower().strip():
+                continue
+            seen.add(low)
+            cleaned.append(s)
+            if len(cleaned) >= 3:
+                break
+        # Require 2-3, but return whatever we have (0-3)
+        return cleaned[:3]
+    except asyncio.TimeoutError:
+        log.warning("grounded follow-ups timeout for %s", state.get("request_id"))
+        return []
+    except Exception as e:
+        log.warning("grounded follow-ups failed for %s: %s", state.get("request_id"), e)
+        return []
 
 
 _CLEAN_PATTERNS = [
@@ -171,6 +271,7 @@ async def format_response(state: RAGState) -> RAGState:
     blocked = state.get("blocked", False)
     refusal_message = state.get("refusal_message")
     chunks = state["retrieved_chunks"]
+    follow_ups: list[str] = []
 
     if blocked:
         content = _to_plain_text(_clean_answer(refusal_message)) or "I cannot comply with that request."
@@ -235,10 +336,13 @@ async def format_response(state: RAGState) -> RAGState:
             content = NO_EVIDENCE_MSG
             finish_reason = "stop"
             citations = []
+            follow_ups = []
+            state["follow_ups"] = follow_ups
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,
                 "citations": [],
+                "follow_ups": follow_ups,
             }
             log.info("Formatted response (no-evidence guard) for request %s", request_id)
             try:
@@ -292,12 +396,29 @@ async def format_response(state: RAGState) -> RAGState:
             block = _ground_truth_block(chunks)
             if block:
                 content = content + block
+        # --- Grounded follow-ups: only for successful RAG answers with citations ---
+        # Skip for blocked/greeting/spec/faq/no_evidence. Generates 2-3 questions
+        # that ARE answerable from the same retrieved chunks (same leaf).
+        if finish_reason == "stop" and citations and chunks and content != NO_EVIDENCE_MSG:
+            try:
+                _q = state.get("query") or ""
+                if "### Task" not in _q and "Suggest 3-5" not in _q:
+                    follow_ups = await _generate_grounded_followups(state, content)
+                else:
+                    follow_ups = []
+            except Exception as e:
+                log.warning("follow_ups generation error for %s: %s", request_id, e)
+                follow_ups = []
+        else:
+            follow_ups = []
     
-    # Store formatted response data in state for API layer
+    # Store formatted response data in state for API layer (including grounded follow_ups)
+    state["follow_ups"] = follow_ups
     state["formatted_response"] = {
         "content": content,
         "finish_reason": finish_reason,
         "citations": [c.model_dump() for c in citations],
+        "follow_ups": follow_ups,
     }
     
     log.info("Formatted response for request %s", request_id)

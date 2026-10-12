@@ -45,6 +45,7 @@ class RAGMetadata(BaseModel):
     request_id: str
     citations: List[Citation] = Field(default_factory=list)
     supplemental: Optional[List[Dict[str, Any]]] = None
+    follow_ups: Optional[List[str]] = Field(default=None, description="Grounded follow-up questions answerable from same retrieved chunks")
 
 
 class AuditTrail(BaseModel):
