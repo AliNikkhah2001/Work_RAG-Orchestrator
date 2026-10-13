@@ -83,6 +83,12 @@ class RAGState(TypedDict):
 
     follow_ups: NotRequired[Optional[List[str]]]
 
+    # T1: filtered → whole-KB fallback audit (single retry)
+    fallback_used: NotRequired[bool]
+    fallback_reason: NotRequired[Optional[str]]
+    broaden_used: NotRequired[bool]
+    # retry_stage_timing is stored in stage_timing_ms (retrieve_retry, retrieve_broadened)
+
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:
     """Record stage timing — replaces 6-line boilerplate in every node."""

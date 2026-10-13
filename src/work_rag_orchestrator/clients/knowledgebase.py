@@ -59,7 +59,8 @@ class KnowledgebaseClient:
         return self._client
 
     async def retrieve(
-        self, query: str, top_k: int, request_id: str, filter_path: Optional[str] = None
+        self, query: str, top_k: int, request_id: str, filter_path: Optional[str] = None,
+        keyword_boost: Optional[float] = None,
     ) -> Dict[str, List[KBRetrievalResult]]:
         """Call KB POST /search/api and return top-10 RRF + top-10 CE sets.
 
@@ -69,12 +70,20 @@ class KnowledgebaseClient:
         ``top_k=20`` and this method slices each list to its first 10
         entries. RRF items score by ``hybrid_score``, CE items by
         ``rerank_score``.
+        ``keyword_boost`` if given is forwarded as ``keyword_boost`` in the JSON body
+        (KB ``search.py`` respects per-request override, default 3.0; T2 uses 1.5 to relax keyword bias).
+        ``filter_path`` forwarded if not None.
         """
         client = self._get_client()
         request = KBRetrievalRequest(query=query, top_k=top_k)
         payload = request.model_dump()
         if filter_path is not None:
             payload["filter_path"] = filter_path
+        if keyword_boost is not None:
+            try:
+                payload["keyword_boost"] = float(keyword_boost)
+            except Exception:
+                pass
 
         headers = {"X-Request-ID": request_id}
 

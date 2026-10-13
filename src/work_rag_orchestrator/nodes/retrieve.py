@@ -68,7 +68,11 @@ _DLQ_PATH = "/tmp/dlq_retrieval.jsonl"
 
 
 def _compute_top_score(chunks: list | None) -> float:
-    """Best rerank/hybrid/score across chunks, 0.0 if none."""
+    """Best rerank/hybrid/score across chunks, 0.0 if none.
+
+    T6 fix: MAX across all keys (don't break after first), so hybrid 0.03 is
+    not hidden behind rerank 0.0.
+    """
     best = 0.0
     for c in (chunks or []):
         for k in ("rerank_score", "hybrid_score", "score"):
@@ -76,15 +80,64 @@ def _compute_top_score(chunks: list | None) -> float:
             if isinstance(v, (int, float)):
                 if float(v) > best:
                     best = float(v)
-                break
     return best
 
 
-def _get_ev_threshold() -> float:
+def _has_lexical_evidence_retrieve(query: str, chunks: list | None, applied_subspace: str | None) -> bool:
+    """T6 lexical proxy for ctx_rel (retrieve side) — same logic as format_response."""
+    if not chunks:
+        return False
+    q = (query or "").strip()
+    if not q:
+        return False
+    subspace_kw = {
+        "cheque": ["چک"],
+        "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی"],
+        "facilities_legal": ["حقوقی", "شرکت"],
+        "general": ["معرفی", "مدیر", "شرکت", "عمومی", "عام"],
+    }
+    keywords: set[str] = set()
+    s = (applied_subspace or "").strip().lower()
+    if "چک" in (applied_subspace or "") or s == "cheque":
+        keywords.update(subspace_kw["cheque"])
+    elif "حقیقی" in (applied_subspace or "") or s == "facilities_person":
+        keywords.update(subspace_kw["facilities_person"])
+    elif "حقوقی" in (applied_subspace or "") or s == "facilities_legal":
+        keywords.update(subspace_kw["facilities_legal"])
+    elif "عمومی" in (applied_subspace or "") or "پایگاه دانش عمومی" in (applied_subspace or "") or s == "general":
+        keywords.update(subspace_kw["general"])
+    import re as _re2
+    q_norm = _re2.sub(r"[؟?!.,،؛:\"'«»()…\-\.]+", " ", q)
+    for tok in q_norm.split():
+        t = tok.strip()
+        if len(t) >= 2 and t not in {"در", "با", "از", "به", "که", "را", "یا", "هم", "این", "آن", "برای", "آیا", "چقدر", "چطور", "چگونه", "چیست", "است"}:
+            keywords.add(t)
+    if not keywords:
+        return False
+    corpus = " ".join(str(c.get("content") or "") for c in (chunks or [])[:10])
+    if not corpus:
+        return False
+    for kw in keywords:
+        if kw and kw in corpus:
+            return True
+        kw2 = kw.replace("‌", " ").strip()
+        if kw2 and kw2 != kw and kw2 in corpus:
+            return True
+    return False
+
+
+def _get_ev_threshold(applied_subspace: str | None = None) -> float:
     try:
         from ..config import get_settings as _gs
-        return float(_gs().evidence_min_score)
+        return float(_gs().get_evidence_threshold(applied_subspace))
     except Exception:
+        # fallback hardcoded per-subspace defaults (T3)
+        s = (applied_subspace or "")
+        low = s.lower() if isinstance(s, str) else ""
+        if "چک" in s or low == "cheque":
+            return 0.05
+        if "حقیقی" in s or low == "facilities_person":
+            return 0.10
         return 0.15
 
 
@@ -140,6 +193,377 @@ def _save_dlq_sample(
     log.info("DLQ saved for request %s stage=%s top=%.4f < %.3f query=%r", request_id, stage, top_score, threshold, (query or search_query)[:80])
 
 
+# ---------------------------------------------------------------------------
+# T1: Filtered → whole-KB fallback helpers
+# ---------------------------------------------------------------------------
+
+def _t1_item_dict(c, default_source: str) -> dict:
+    """Normalize a KB result item to the internal chunk dict (shared by fallback)."""
+    d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
+    get = d.get
+    return {
+        "chunk_id": get("chunk_id"),
+        "document_id": get("document_id"),
+        "title": get("title"),
+        "heading": get("heading"),
+        "content": get("content"),
+        "score": get("score"),
+        "source": get("source") or default_source,
+        "rank_rrf": get("rank_rrf"),
+        "rank_ce": get("rank_ce"),
+        "hybrid_score": get("hybrid_score"),
+        "rerank_score": get("rerank_score"),
+        "folder_hierarchy": get("folder_hierarchy"),
+    }
+
+
+def _t1_merge_rrf_ce(rrf_chunks, ce_chunks) -> list[dict]:
+    """Union top-10 RRF + top-10 CE, deduped by chunk_id, ordered both>ce>rrf (T1 reuse)."""
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for c in rrf_chunks:
+        d = _t1_item_dict(c, "rrf")
+        key = d.get("chunk_id") or f"__rrf_{len(order)}"
+        if key not in merged:
+            merged[key] = d
+            order.append(key)
+    for c in ce_chunks:
+        d = _t1_item_dict(c, "ce")
+        key = d.get("chunk_id") or f"__ce_{len(order)}"
+        if key in merged:
+            existing = merged[key]
+            existing["source"] = "both"
+            if existing.get("rank_ce") is None:
+                existing["rank_ce"] = d.get("rank_ce")
+            if existing.get("rerank_score") is None:
+                existing["rerank_score"] = d.get("rerank_score")
+            if existing.get("hybrid_score") is None:
+                existing["hybrid_score"] = d.get("hybrid_score")
+            existing["score"] = (
+                existing.get("rerank_score")
+                if existing.get("rerank_score") is not None
+                else d.get("score", existing.get("score"))
+            )
+            for k in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                if not existing.get(k) and d.get(k):
+                    existing[k] = d[k]
+        else:
+            merged[key] = d
+            order.append(key)
+
+    def _best_rank(d: dict) -> int:
+        ranks = [r for r in (d.get("rank_rrf"), d.get("rank_ce")) if isinstance(r, int)]
+        return min(ranks) if ranks else 10**9
+
+    both = sorted((merged[k] for k in order if merged[k].get("source") == "both"), key=_best_rank)
+    ce_only = sorted((merged[k] for k in order if merged[k].get("source") == "ce"), key=lambda d: d.get("rank_ce") if isinstance(d.get("rank_ce"), int) else 10**9)
+    rrf_only = sorted((merged[k] for k in order if merged[k].get("source") == "rrf"), key=lambda d: d.get("rank_rrf") if isinstance(d.get("rank_rrf"), int) else 10**9)
+    return (both + ce_only + rrf_only)[:20]
+
+
+async def _t1_try_whole_kb_fallback(
+    state: dict,
+    search_query: str,
+    request_id: str,
+    top_k: int = 20,
+    fallback_reason: str = "",
+    active_filter: str | None = None,
+) -> bool:
+    """
+    T1: If current retrieval was filtered and evidence is weak (0 chunks or
+    top_score < evidence_min_score), retry once against the whole KB
+    (filter_path=None, 1123 chunks).  Single retry only; avoid loop when
+    already whole-KB; handle exceptions gracefully keeping original results.
+
+    Returns True if a fallback attempt was made (even if fallback not adopted).
+    Records state["fallback_used"], state["fallback_reason"], and
+    state["stage_timing_ms"]["retrieve_retry"] plus tracing.
+    """
+    # Avoid infinite loop: if original probe was already whole-KB, skip.
+    if not active_filter:
+        # No filtered probe — whole KB was already used.
+        return False
+    # Single retry guard.
+    if state.get("fallback_used"):
+        return False
+    # Check trigger: 0 chunks or max score < threshold (T3 per-subspace).
+    cur_chunks = state.get("retrieved_chunks") or []
+    cur_top = _compute_top_score(cur_chunks)
+    thr = _get_ev_threshold(active_filter)
+    cur_len = len(cur_chunks)
+    # Also consider FAQ-verified bypass: don't fallback if FAQ satisfied.
+    if state.get("faq_verified"):
+        return False
+    needs_fallback = (cur_len == 0) or (cur_top < thr)
+    if not needs_fallback:
+        return False
+
+    # Determine fallback reason string for audit.
+    if not fallback_reason:
+        if cur_len == 0:
+            fallback_reason = f"filtered_empty sub={active_filter}"
+        else:
+            fallback_reason = f"low_score top={cur_top:.4f} < thr={thr:.3f} sub={active_filter}"
+
+    t_retry = time.monotonic()
+    log.info("T1 fallback: filtered (%s) weak (len=%d top=%.4f < %.3f) — retrying whole KB with query=%r", active_filter, cur_len, cur_top, thr, search_query[:80])
+    try:
+        from ..clients.knowledgebase import KnowledgebaseClient as _KBClient
+
+        # KnowledgebaseClient uses httpx.AsyncClient(trust_env=False) internally,
+        # so localhost bypasses corporate Squid proxy (critical for 127.0.0.1).
+        async with _KBClient() as fb_client:
+            fb_result = await fb_client.retrieve(search_query, top_k, request_id, filter_path=None)
+    except Exception as e:
+        # Retry failed — keep original, but record fallback attempt for audit.
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        state["fallback_used"] = True
+        state["fallback_reason"] = f"{fallback_reason} retry_failed: {e}"
+        record_timing(state, "retrieve_retry", elapsed)
+        log.warning("T1 whole-KB retry failed for request %s (keep original): %s", request_id, e)
+        try:
+            from ..tracing import trace_span as _tsp
+
+            _tsp(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "reason": fallback_reason}, span_output={"error": str(e), "fallback_used": True})
+        except Exception:
+            pass
+        return True
+
+    # Merge fallback result using same RRF+CE union logic.
+    try:
+        if isinstance(fb_result, dict):
+            fb_rrf = fb_result.get("rrf", [])
+            fb_ce = fb_result.get("ce", [])
+            fb_injected = fb_result.get("injected_entities", [])
+        else:
+            fb_rrf = []
+            fb_ce = list(fb_result)
+            fb_injected = []
+        fb_retrieved = _t1_merge_rrf_ce(fb_rrf, fb_ce)
+        # Prepend FAQ if verified (same as main path).
+        if state.get("faq_verified") and state.get("direct_faq_answer"):
+            fb_retrieved.insert(0, {
+                "chunk_id": "__faq_direct__",
+                "document_id": "__faq_direct__",
+                "title": "FAQ Direct Answer",
+                "heading": "FAQ",
+                "content": state["direct_faq_answer"],
+                "score": 1.0,
+                "source": "faq_direct",
+                "rank_rrf": 0,
+                "rank_ce": 0,
+                "hybrid_score": 1.0,
+                "rerank_score": None,
+            })
+        fb_top = _compute_top_score(fb_retrieved)
+        fb_len = len(fb_retrieved)
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        # Merge decision: prefer fallback if higher max score or more chunks.
+        prefer_fallback = (fb_top > cur_top) or (fb_top == cur_top and fb_len > cur_len) or (cur_len == 0 and fb_len > 0)
+        # Record timing and audit regardless of preference (single retry spent).
+        state["fallback_used"] = True
+        state["fallback_reason"] = fallback_reason
+        record_timing(state, "retrieve_retry", elapsed)
+        # Merge injected entities if any.
+        if fb_injected:
+            existing = state.get("injected_entities") or []
+            seen = {e.get("list_name") for e in existing}
+            merged_inj = list(existing)
+            for ent in fb_injected:
+                if ent.get("list_name") not in seen:
+                    merged_inj.append(ent)
+                    seen.add(ent.get("list_name"))
+            # Keep merged for audit even if chunks not adopted.
+            state["injected_entities"] = merged_inj
+            state["supplemental"] = merged_inj
+        try:
+            from ..tracing import trace_span as _tsp2
+
+            _tsp2(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "reason": fallback_reason}, span_output={"fb_len": fb_len, "fb_top": fb_top, "prefer_fallback": prefer_fallback, "fallback_used": True})
+        except Exception:
+            pass
+        if prefer_fallback:
+            log.info("T1 fallback adopted: fallback len=%d top=%.4f > original len=%d top=%.4f reason=%s", fb_len, fb_top, cur_len, cur_top, fallback_reason)
+            state["retrieved_chunks"] = fb_retrieved
+            # Whole-KB fallback means subspace is now broader; clear sticky to avoid re-filtering later.
+            # Keep applied_subspace as None to signal whole-KB result (audit will show fallback).
+            # Do not overwrite if caller explicitly set whole-KB already.
+        else:
+            log.info("T1 fallback not adopted: fallback len=%d top=%.4f <= original len=%d top=%.4f reason=%s", fb_len, fb_top, cur_len, cur_top, fallback_reason)
+        return True
+    except Exception as e:
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        state["fallback_used"] = True
+        state["fallback_reason"] = f"{fallback_reason} merge_failed: {e}"
+        record_timing(state, "retrieve_retry", elapsed)
+        log.warning("T1 fallback merge failed for request %s (keep original): %s", request_id, e)
+        try:
+            from ..tracing import trace_span as _tsp3
+
+            _tsp3(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "reason": fallback_reason}, span_output={"error": str(e), "fallback_used": True})
+        except Exception:
+            pass
+        return True
+
+
+# ---------------------------------------------------------------------------
+# T2: Broadened retry when whole-KB fallback still weak
+# ---------------------------------------------------------------------------
+
+async def _t2_try_broadened_retry(
+    state: dict,
+    search_query: str,
+    request_id: str,
+    top_k: int = 30,
+    keyword_boost: float = 1.5,
+) -> bool:
+    """
+    T2: If after T1 the retrieval is still weak (0 chunks or max score <
+    evidence threshold) do a second fallback with broadened params:
+    whole KB (filter_path=None), top_k=30, keyword_boost=1.5.
+
+    The KB handles synonym beam server-side (KB_SYNONYM_BEAM, default 5);
+    the client only needs to pass keyword_boost.  Single broadened retry
+    only; guarded by state["broaden_used"].
+
+    Returns True if a broadened attempt was made (even if not adopted).
+    Records state["broaden_used"], state["fallback_used"] (also set on
+    success), and stage_timing_ms["retrieve_broadened"] plus tracing.
+    Reuses _t1_merge_rrf_ce and the same KnowledgebaseClient path (trust_env=False).
+    """
+    if state.get("broaden_used"):
+        return False
+    if state.get("faq_verified"):
+        return False
+    # If still has supplement evidence, don't broaden (supplement counts as evidence)
+    # But T1 fallback chunks that are still low DO trigger broaden (they are not supplement).
+    if state.get("supplemental") or state.get("injected_entities"):
+        # Check if supplemental is non-empty; if it is, evidence exists
+        sup = state.get("supplemental") or state.get("injected_entities")
+        if sup:
+            return False
+    cur_chunks = state.get("retrieved_chunks") or []
+    cur_top = _compute_top_score(cur_chunks)
+    thr = _get_ev_threshold(state.get("applied_subspace"))
+    cur_len = len(cur_chunks)
+    needs_broaden = (cur_len == 0) or (cur_top < thr)
+    if not needs_broaden:
+        return False
+
+    t_retry = time.monotonic()
+    log.info(
+        "T2 broadened retry: still weak after T1 (len=%d top=%.4f < %.3f) — retrying whole KB broadened top_k=%d keyword_boost=%.1f query=%r",
+        cur_len, cur_top, thr, top_k, keyword_boost, search_query[:80],
+    )
+    try:
+        from ..clients.knowledgebase import KnowledgebaseClient as _KBClient2
+
+        async with _KBClient2() as fb_client:
+            fb_result = await fb_client.retrieve(
+                search_query, top_k, request_id, filter_path=None, keyword_boost=keyword_boost
+            )
+    except Exception as e:
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        state["broaden_used"] = True
+        # T2 counts as fallback as well for audit (spec: if broadened succeeds, set fallback_used; on failure also mark both so we don't loop)
+        state["fallback_used"] = True
+        if not state.get("fallback_reason"):
+            state["fallback_reason"] = f"broadened_failed: {e}"
+        else:
+            # append broaden failure to reason without overwriting T1 reason
+            state["fallback_reason"] = f"{state['fallback_reason']} | broaden_failed: {e}"
+        record_timing(state, "retrieve_broadened", elapsed)
+        log.warning("T2 broadened retry failed for request %s (keep original): %s", request_id, e)
+        try:
+            from ..tracing import trace_span as _tsp
+            _tsp(
+                request_id,
+                "retrieve-broadened",
+                span_input={"query": search_query, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "top_k": top_k, "keyword_boost": keyword_boost},
+                span_output={"error": str(e), "broaden_used": True, "fallback_used": True},
+            )
+        except Exception:
+            pass
+        return True
+
+    # Merge broadened result (same RRF+CE union)
+    try:
+        if isinstance(fb_result, dict):
+            fb_rrf = fb_result.get("rrf", [])
+            fb_ce = fb_result.get("ce", [])
+            fb_injected = fb_result.get("injected_entities", [])
+        else:
+            fb_rrf = []
+            fb_ce = list(fb_result)
+            fb_injected = []
+        fb_retrieved = _t1_merge_rrf_ce(fb_rrf, fb_ce)
+        if state.get("faq_verified") and state.get("direct_faq_answer"):
+            fb_retrieved.insert(0, {
+                "chunk_id": "__faq_direct__",
+                "document_id": "__faq_direct__",
+                "title": "FAQ Direct Answer",
+                "heading": "FAQ",
+                "content": state["direct_faq_answer"],
+                "score": 1.0,
+                "source": "faq_direct",
+                "rank_rrf": 0,
+                "rank_ce": 0,
+                "hybrid_score": 1.0,
+                "rerank_score": None,
+            })
+        fb_top = _compute_top_score(fb_retrieved)
+        fb_len = len(fb_retrieved)
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        prefer_broadened = (fb_top > cur_top) or (fb_top == cur_top and fb_len > cur_len) or (cur_len == 0 and fb_len > 0)
+        # Always mark broaden_used and fallback_used (spec: if broadened succeeds, set fallback_used as well)
+        state["broaden_used"] = True
+        state["fallback_used"] = True
+        # Keep original fallback_reason but annotate broadened
+        base_reason = state.get("fallback_reason") or f"low_score top={cur_top:.4f} < thr={thr:.3f}"
+        state["fallback_reason"] = f"{base_reason} | broadened top_k={top_k} boost={keyword_boost} -> len={fb_len} top={fb_top:.4f}"
+        record_timing(state, "retrieve_broadened", elapsed)
+        if fb_injected:
+            existing = state.get("injected_entities") or []
+            seen = {e.get("list_name") for e in existing}
+            merged_inj = list(existing)
+            for ent in fb_injected:
+                if ent.get("list_name") not in seen:
+                    merged_inj.append(ent)
+                    seen.add(ent.get("list_name"))
+            state["injected_entities"] = merged_inj
+            state["supplemental"] = merged_inj
+        try:
+            from ..tracing import trace_span as _tsp2
+            _tsp2(
+                request_id,
+                "retrieve-broadened",
+                span_input={"query": search_query, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "top_k": top_k, "keyword_boost": keyword_boost},
+                span_output={"fb_len": fb_len, "fb_top": fb_top, "prefer_broadened": prefer_broadened, "broaden_used": True, "fallback_used": True},
+            )
+        except Exception:
+            pass
+        if prefer_broadened:
+            log.info("T2 broadened adopted: broadened len=%d top=%.4f > original len=%d top=%.4f", fb_len, fb_top, cur_len, cur_top)
+            state["retrieved_chunks"] = fb_retrieved
+        else:
+            log.info("T2 broadened not adopted: broadened len=%d top=%.4f <= original len=%d top=%.4f", fb_len, fb_top, cur_len, cur_top)
+        return True
+    except Exception as e:
+        elapsed = round((time.monotonic() - t_retry) * 1000, 1)
+        state["broaden_used"] = True
+        state["fallback_used"] = True
+        base = state.get("fallback_reason") or ""
+        state["fallback_reason"] = f"{base} | broaden_merge_failed: {e}" if base else f"broaden_merge_failed: {e}"
+        record_timing(state, "retrieve_broadened", elapsed)
+        log.warning("T2 broadened merge failed for request %s (keep original): %s", request_id, e)
+        try:
+            from ..tracing import trace_span as _tsp3
+            _tsp3(request_id, "retrieve-broadened", span_input={"query": search_query, "top_k": top_k, "keyword_boost": keyword_boost}, span_output={"error": str(e), "broaden_used": True})
+        except Exception:
+            pass
+        return True
+
+
 async def retrieve(state: RAGState) -> RAGState:
     """
     Rewrite the last user message against history, then call KB search.
@@ -164,6 +588,14 @@ async def retrieve(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     query = state["query"]
     messages = state.get("messages", [])
+    # T1: initialize fallback audit fields (single retry guard)
+    if "fallback_used" not in state or state["fallback_used"] is None:
+        state["fallback_used"] = False
+    if "fallback_reason" not in state or state["fallback_reason"] is None:
+        state["fallback_reason"] = None
+    # T2: broadened retry audit (second leg after T1)
+    if "broaden_used" not in state or state["broaden_used"] is None:
+        state["broaden_used"] = False
 
     faq_answer = find_direct_answer(query)
     if faq_answer:
@@ -409,13 +841,26 @@ async def retrieve(state: RAGState) -> RAGState:
         len(state["retrieved_chunks"]), len(rrf_chunks), len(ce_chunks), len(both), request_id,
     )
 
+    # --- T1: Filtered → whole-KB fallback (single retry) ---
+    # If the initial probe was filtered (sticky subspace) and evidence is weak
+    # (0 chunks or max reranker < 0.15), retry once against the whole KB
+    # (1123 chunks, filter_path=None) with same query top_k=20. Record
+    # fallback_used/reason and retrieve_retry timing; keep original on failure.
+    if _explicit_scope:
+        # Explicit filter_path is authoritative and filtered — check T1 condition
+        try:
+            await _t1_try_whole_kb_fallback(
+                state, search_query, request_id, top_k=20, active_filter=explicit_filter
+            )
+            # If fallback adopted, reflect whole-KB broader context: keep note
+            # but do not override applied_subspace if it was explicitly requested
+            # for audit transparency (fallback_used still true).
+        except Exception as _t1_e:
+            log.warning("T1 explicit fallback check failed: %s", _t1_e)
+
     # --- G5 supplement fallback: if top evidence < threshold, try direct
-    # EntityList content search (threshold 0.4 < 0.6) and log outcome ---
-    try:
-        from ..config import get_settings as _get_ev_settings
-        _ev_threshold = float(_get_ev_settings().evidence_min_score)
-    except Exception:
-        _ev_threshold = 0.15
+    # EntityList content search (threshold 0.4 < 0.6) and log outcome (T3 per-subspace) ---
+    _ev_threshold = _get_ev_threshold(state.get("applied_subspace") or explicit_filter if _explicit_scope else state.get("applied_subspace"))
     try:
         _top_score = 0.0
         for _c in retrieved:
@@ -423,7 +868,6 @@ async def retrieve(state: RAGState) -> RAGState:
                 _v = _c.get(_k)
                 if isinstance(_v, (int, float)):
                     _top_score = max(_top_score, float(_v))
-                    break
         # skip FAQ-verified (already evidence)
         _has_supplement = bool(injected)
         if not state.get("faq_verified") and _top_score < _ev_threshold and not _has_supplement:
@@ -464,9 +908,19 @@ async def retrieve(state: RAGState) -> RAGState:
         log.warning("supplement fallback check failed: %s", _e)
 
     # If still low evidence after supplement, clear for refusal (no hallucinated G5)
-    if not state.get("faq_verified") and locals().get("_top_score", 1.0) < locals().get("_ev_threshold", 0.15) and not state.get("supplemental") and not state.get("injected_entities"):
+    # T1: if whole-KB fallback already provided chunks, keep them even if still low (prefer some evidence over faith 0.0)
+    _cur_top_after = _compute_top_score(state.get("retrieved_chunks") or [])
+    _cur_thr_after = locals().get("_ev_threshold", 0.15)
+    _has_fallback_after = bool(state.get("fallback_used") and len(state.get("retrieved_chunks") or []) > 0)
+    # T6: lexical evidence (query/subspace keyword in chunk) bypasses low-score clear
+    _has_lex_after = _has_lexical_evidence_retrieve(search_query or query, state.get("retrieved_chunks"), state.get("applied_subspace") or explicit_filter if _explicit_scope else state.get("applied_subspace"))
+    if not state.get("faq_verified") and _cur_top_after < _cur_thr_after and not state.get("supplemental") and not state.get("injected_entities") and not _has_fallback_after and not _has_lex_after:
         state["retrieved_chunks"] = []
-        log.info("Low evidence still < %.3f after supplement for %s — clear for refusal", locals().get("_ev_threshold", 0.15), request_id)
+        log.info("Low evidence still < %.3f after supplement for %s — clear for refusal", _cur_thr_after, request_id)
+    elif _has_fallback_after and _cur_top_after < _cur_thr_after:
+        log.info("Low evidence still < %.3f but T1 fallback provided %d chunks — keeping for faith (not clearing)", _cur_thr_after, len(state.get("retrieved_chunks") or []))
+    elif _has_lex_after and _cur_top_after < _cur_thr_after:
+        log.info("T6 lexical evidence keeps %d chunks despite low score %.4f < %.3f", len(state.get("retrieved_chunks") or []), _cur_top_after, _cur_thr_after)
 
     try:
         from ..tracing import trace_span
@@ -616,9 +1070,62 @@ async def retrieve(state: RAGState) -> RAGState:
                                 state["injected_entities"] = merged_injected
                                 state["supplemental"] = merged_injected
                             state["needs_clarification"] = False
-                            # --- Dynamic broadening: filtered empty -> LLM judge then whole KB ---
-                            _broad_thr = _get_ev_threshold()
-                            _broad_empty = len(_filtered_retrieved) == 0 or _compute_top_score(_filtered_retrieved) < _broad_thr
+                            # --- T1: filtered → whole-KB fallback (single retry, before LLM judge broadening) ---
+                            # T4: For generic follow-ups that inherit sticky (no explicit re-spec), do NOT fallback to whole KB - keep sticky
+                            # Only fallback when there's explicit hint of different subspace; otherwise generic keeps sticky even if weak
+                            try:
+                                if not state.get("fallback_used"):
+                                    _t1_chk_len = len(state.get("retrieved_chunks") or [])
+                                    _t1_chk_top = _compute_top_score(state.get("retrieved_chunks"))
+                                    _t1_chk_thr = _get_ev_threshold(_filter_path_sticky or _sticky)
+                                    _t1_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                                    _t1_needs = (_t1_chk_len == 0 or _t1_chk_top < _t1_chk_thr) and not state.get("faq_verified") and not _t1_has_sup
+                                    # T4 gate: check if current query explicitly mentions a different subspace before allowing fallback
+                                    if _t1_needs:
+                                        _cur_q_t1 = state.get("query", "") or ""
+                                        # Generic follow-up has no explicit different subspace keyword -> preserve sticky, skip fallback
+                                        _has_different_kw = False
+                                        if _sticky == "cheque" and ("تسهیلات" in _cur_q_t1 and ("حقیقی" in _cur_q_t1 or "حقوقی" in _cur_q_t1)):
+                                            _has_different_kw = True
+                                        elif _sticky == "facilities_person" and "چک" in _cur_q_t1 and len(_cur_q_t1.split()) <= 6:
+                                            # short "چک" after facilities_person is explicit re-spec via classify spec path, not via sticky weak fallback
+                                            # For longer generic like "تاثیر چک..." keep sticky, so only short counts
+                                            _has_different_kw = True
+                                        elif _sticky == "facilities_legal" and "چک" in _cur_q_t1 and len(_cur_q_t1.split()) <= 6:
+                                            _has_different_kw = True
+                                        # Only fallback if explicit different subspace hint present; otherwise keep sticky
+                                        if _has_different_kw:
+                                            await _t1_try_whole_kb_fallback(state, search_query, request_id, top_k=20, active_filter=_filter_path_sticky)
+                                            # If fallback made evidence sufficient, skip further broadening
+                                            _post_top = _compute_top_score(state.get("retrieved_chunks") or [])
+                                            _post_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                                            if _post_top >= _t1_chk_thr or _post_has_sup:
+                                                try:
+                                                    state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                                                except Exception:
+                                                    state["retrieve_attempts"] = 1
+                                                _t1_elapsed = round((time.monotonic() - t0) * 1000, 1)
+                                                if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                                    state["stage_timing_ms"] = {}
+                                                state["stage_timing_ms"]["retrieve"] = _t1_elapsed
+                                                try:
+                                                    from ..tracing import trace_span as _tsp_t1
+                                                    _tsp_t1(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": _filter_path_sticky, "sticky": _sticky, "t1_fallback": True}, span_output={"total": len(state.get("retrieved_chunks") or []), "sticky_filtered": True, "fallback_used": True})
+                                                except Exception:
+                                                    pass
+                                                log.info("T1 sticky fallback sufficient — skipping LLM broadening, returning %d chunks", len(state.get("retrieved_chunks") or []))
+                                                return state
+                                        else:
+                                            log.info("T4 T1 fallback skipped for generic follow-up %s (weak top=%.4f < %.3f but no explicit different keyword) - keeping sticky", _sticky, _t1_chk_top, _t1_chk_thr)
+                            except Exception as _t1e:
+                                log.warning("T1 sticky fallback check failed: %s", _t1e)
+                            # --- T4 Dynamic broadening: filtered empty -> LLM judge then preserve sticky for generic (T4) ---
+                            _broad_thr = _get_ev_threshold(_filter_path_sticky or _sticky)
+                            # If T1 already retried whole KB, don't broaden again (single retry budget)
+                            if state.get("fallback_used"):
+                                _broad_empty = False
+                            else:
+                                _broad_empty = len(_filtered_retrieved) == 0 or _compute_top_score(_filtered_retrieved) < _broad_thr
                             if _broad_empty:
                                 log.info("Filtered retrieval empty for subspace %s, broadening to whole KB", _sticky)
                                 try:
@@ -699,7 +1206,29 @@ async def retrieve(state: RAGState) -> RAGState:
                                             return state
                                 except Exception as e:
                                     log.warning("Broadening failed: %s", e)
-                                # Fall back to whole KB (no filter)
+                                # T4: Generic follow-up should keep sticky, not drop to whole KB
+                                # If llm_choice is None/unclear or same as sticky, it's a generic follow-up -> preserve sticky filtered results
+                                # Only whole-KB fallback would drop sticky to None ( ∅ ), which breaks persistence for "تاثیر چک..." and "آیا میزان درآمد..."
+                                _llm_choice_local = locals().get("llm_choice", None)
+                                _is_generic_preserve = (_llm_choice_local is None or _llm_choice_local == _sticky or _llm_choice_local not in get_settings().subspace_map)
+                                if _is_generic_preserve:
+                                    log.info("T4 generic preserve sticky %s (llm_choice=%s) weak filtered len=%d top=%.4f - keeping sticky, not broadening to whole KB", _sticky, _llm_choice_local, len(_filtered_retrieved), _compute_top_score(_filtered_retrieved))
+                                    # Preserve sticky filtered results (even if weak) - ensure applied_subspace stays, record timing and return
+                                    try:
+                                        state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                                    except Exception:
+                                        state["retrieve_attempts"] = 1
+                                    _gen_elapsed = round((time.monotonic() - t0) * 1000, 1)
+                                    if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                        state["stage_timing_ms"] = {}
+                                    state["stage_timing_ms"]["retrieve"] = _gen_elapsed
+                                    try:
+                                        from ..tracing import trace_span as _tsp_gen
+                                        _tsp_gen(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": _filter_path_sticky, "sticky": _sticky, "llm_choice": _llm_choice_local, "t4_preserve": True}, span_output={"total": len(state.get("retrieved_chunks") or []), "sticky_filtered": True, "t4_generic_keep": True})
+                                    except Exception:
+                                        pass
+                                    return state
+                                # Fall back to whole KB (no filter) - only for explicit cases where llm_choice different but switch failed, or broadening logic requires whole KB
                                 try:
                                     _whole_result = None
                                     async with KnowledgebaseClient() as _client3:
@@ -765,6 +1294,20 @@ async def retrieve(state: RAGState) -> RAGState:
                                             state["supplemental"] = merged_injected
                                         state["applied_subspace"] = None
                                         state["retrieved_chunks"] = whole_retrieved
+                                        # T1 audit: this whole-KB broaden counts as fallback if not already marked
+                                        if not state.get("fallback_used"):
+                                            state["fallback_used"] = True
+                                            _wb_top = _compute_top_score(whole_retrieved)
+                                            _wb_orig_top = _compute_top_score(_filtered_retrieved)
+                                            state["fallback_reason"] = f"broadened whole-KB fallback top={_wb_top:.4f} orig={_wb_orig_top:.4f} sub={_sticky}"
+                                            # Approximate retry timing from t0 (or record 0 if not measured)
+                                            try:
+                                                _wb_elapsed = round((time.monotonic() - t0) * 1000, 1)
+                                                # Only set retrieve_retry if not already set by T1 helper
+                                                if not state.get("stage_timing_ms", {}).get("retrieve_retry"):
+                                                    record_timing(state, "retrieve_retry", _wb_elapsed)
+                                            except Exception:
+                                                pass
                                         log.info("Broadened to whole KB: %d chunks", len(whole_retrieved))
                                         return state
                                 except Exception as _e3:
@@ -777,9 +1320,15 @@ async def retrieve(state: RAGState) -> RAGState:
                             except Exception:
                                 state["retrieve_attempts"] = 1
                             _sticky_top = _compute_top_score(state["retrieved_chunks"])
-                            _sticky_thr = _get_ev_threshold()
+                            _sticky_thr = _get_ev_threshold(_filter_path_sticky or _sticky)
                             _sticky_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
-                            if not state.get("faq_verified") and _sticky_top < _sticky_thr and not _sticky_has_sup:
+                            # T1: if whole-KB fallback already gave us chunks, keep them even if still low (better than empty faith 0.0)
+                            _has_fallback_chunks = bool(state.get("fallback_used") and len(state.get("retrieved_chunks") or []) > 0)
+                            # T6 lexical bypass
+                            _sticky_has_lex = _has_lexical_evidence_retrieve(search_query or query, state.get("retrieved_chunks"), _filter_path_sticky or _sticky)
+                            if _sticky_has_lex:
+                                log.info("T6 sticky lexical evidence keeps %d chunks despite low score %.4f < %.3f", len(state.get("retrieved_chunks") or []), _sticky_top, _sticky_thr)
+                            if not state.get("faq_verified") and _sticky_top < _sticky_thr and not _sticky_has_sup and not _has_fallback_chunks and not _sticky_has_lex:
                                 # Do NOT retry again — DLQ + clear for refusal (single retry budget exhausted)
                                 state["retrieved_chunks"] = []
                                 state["dlq_saved"] = True
@@ -832,6 +1381,30 @@ async def retrieve(state: RAGState) -> RAGState:
             except Exception as e:
                 log.warning("Sticky check failed: %s", e)
         granular = True
+        # T5 scattered gate: short generic vague without subspace keywords => force clarify before threshold logic
+        try:
+            from .infer_specification import is_scattered_ambiguous as _is_scattered_ret
+
+            _q_sc = state.get("query", "") or ""
+            _has_sticky_sc = bool(state.get("applied_subspace"))
+            if not _has_sticky_sc and _is_scattered_ret(_q_sc):
+                state["needs_clarification"] = True
+                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+                state["clarifying_question"] = None
+                # keep applied_subspace as None to signal no clear subspace
+                state["applied_subspace"] = None
+                log.info("T5 scattered ambiguous detected in retrieve -> clarify q=%r", _q_sc[:80])
+                elapsed_sc = round((time.monotonic() - t0) * 1000, 1)
+                record_timing(state, "retrieve", elapsed_sc)
+                try:
+                    from ..tracing import trace_span as _tsp_sc
+
+                    _tsp_sc(state["request_id"], "retrieve", span_input={"query": state.get("query"), "search_query": search_query, "scattered": True}, span_output={"needs_clarification": True, "available_subspaces": state["available_subspaces"]})
+                except Exception:
+                    pass
+                return state
+        except Exception as _sc_e:
+            log.warning("T5 scattered check failed: %s", _sc_e)
         try:
             from collections import Counter
 
@@ -851,7 +1424,15 @@ async def retrieve(state: RAGState) -> RAGState:
                 is_general = most == "general"
                 # General exempt only when query itself looks general (avoid suppressing clarify for generic credit queries like "وضعیت اعتباری چطور است")
                 _is_general_query = any(k in last_q for k in ["عمومی","عام","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد","قاسم","بور","سوالات عمومی","سوال عمومی"])
-                granular = (is_general and _general_exempt and _is_general_query) or (n / total >= _thresh)
+                # T8: if query already has explicit subspace keyword, treat as granular even if retrieval distribution is mixed (fixes over-clarify for granular singles like facilities_person with 0.03 scores)
+                _has_explicit = any(kw in last_q for kw in ["چک","تسهیلات","وام","قسط","حقیقی","حقوقی","شرکت","سهامدار","معرفی","مدیر","هیات مدیره","هیئت مدیره","عمومی","عام","درآمد","گردش حساب","گردش"])
+                if _has_explicit and not is_general:
+                    granular = True
+                else:
+                    granular = (is_general and _general_exempt and _is_general_query) or (n / total >= _thresh)
+                # G5 fake grade must never clarify — force granular to go to guard instead
+                if "G5" in last_q or "G 5" in last_q:
+                    granular = True
                 state["needs_clarification"] = False
                 from .infer_specification import is_specification
                 try:
@@ -998,9 +1579,12 @@ async def retrieve(state: RAGState) -> RAGState:
                                     except Exception:
                                         state["retrieve_attempts"] = 1
                                     _llm_top = _compute_top_score(state["retrieved_chunks"])
-                                    _llm_thr = _get_ev_threshold()
+                                    _llm_thr = _get_ev_threshold(llm_choice)
                                     _llm_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
-                                    if not state.get("faq_verified") and _llm_top < _llm_thr and not _llm_has_sup:
+                                    _llm_has_lex = _has_lexical_evidence_retrieve(search_query or query, state.get("retrieved_chunks"), llm_choice)
+                                    if _llm_has_lex:
+                                        log.info("T6 llm-judge lexical evidence keeps %d chunks despite low score %.4f < %.3f", len(state.get("retrieved_chunks") or []), _llm_top, _llm_thr)
+                                    if not state.get("faq_verified") and _llm_top < _llm_thr and not _llm_has_sup and not _llm_has_lex:
                                         state["retrieved_chunks"] = []
                                         state["dlq_saved"] = True
                                         try:
@@ -1136,9 +1720,12 @@ async def retrieve(state: RAGState) -> RAGState:
                         except Exception:
                             state["retrieve_attempts"] = 1
                         _f_top = _compute_top_score(state["retrieved_chunks"])
-                        _f_thr = _get_ev_threshold()
+                        _f_thr = _get_ev_threshold(filter_path or inferred)
                         _f_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
-                        if not state.get("faq_verified") and _f_top < _f_thr and not _f_has_sup:
+                        _f_has_lex = _has_lexical_evidence_retrieve(search_query or query, state.get("retrieved_chunks"), filter_path or inferred)
+                        if _f_has_lex:
+                            log.info("T6 F5 lexical evidence keeps %d chunks despite low score %.4f < %.3f", len(state.get("retrieved_chunks") or []), _f_top, _f_thr)
+                        if not state.get("faq_verified") and _f_top < _f_thr and not _f_has_sup and not _f_has_lex:
                             state["retrieved_chunks"] = []
                             state["dlq_saved"] = True
                             try:
@@ -1160,13 +1747,70 @@ async def retrieve(state: RAGState) -> RAGState:
     except Exception as e:
         log.warning("Filtered re-retrieve check failed: %s", e)
 
+    # --- T1 central fallback: if current result is still filtered & weak and no fallback yet, retry whole KB ---
+    # Covers explicit, LLM-judge, F5, and any other filtered probe that left weak evidence before DLQ.
+    try:
+        if not state.get("fallback_used") and not state.get("faq_verified"):
+            _cf_top = _compute_top_score(state.get("retrieved_chunks") or [])
+            _cf_len = len(state.get("retrieved_chunks") or [])
+            # T3: pre-compute with applied_subspace, but will recompute per _cf_active below if needed
+            _cf_thr = _get_ev_threshold(state.get("applied_subspace"))
+            _cf_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+            _cf_needs = (_cf_len == 0 or _cf_top < _cf_thr) and not _cf_has_sup
+            if _cf_needs:
+                # Determine if original probe was filtered (not whole KB)
+                _cf_active = None
+                if _explicit_scope and explicit_filter:
+                    _cf_active = explicit_filter
+                elif state.get("applied_subspace"):
+                    # Map label to filter_path for audit
+                    try:
+                        _cf_active = get_settings().subspace_map.get(state.get("applied_subspace"), state.get("applied_subspace"))
+                    except Exception:
+                        _cf_active = str(state.get("applied_subspace"))
+                # Also consider the last filtered probe that left weak evidence (F5 inferred)
+                # If no active label but we have a filtered retrieval that was weak, treat as filtered
+                # Heuristic: if applied_subspace is None but we were in filtered path earlier, _explicit_scope would be true.
+                # Only fallback if we can identify a filtered origin; otherwise skip to avoid loop on whole-KB weak.
+                if _cf_active:
+                    await _t1_try_whole_kb_fallback(state, search_query, request_id, top_k=20, active_filter=_cf_active)
+    except Exception as _cfe:
+        log.warning("T1 central fallback failed: %s", _cfe)
+
+    # --- T2: Broadened retry when whole-KB fallback still weak ---
+    # If after T1 (or without T1) the retrieval is still weak (0 chunks or max < threshold),
+    # do a second fallback with broadened params: whole KB, top_k=30, keyword_boost=1.5.
+    # Server handles synonym beam (KB_SYNONYM_BEAM=5) — client just relaxes keyword bias.
+    # This reuses KnowledgebaseClient (trust_env=False) via _t2_try_broadened_retry helper.
+    # Audit: broaden_used, fallback_used (also set), stage_timing.retrieve_broadened.
+    try:
+        # Only consider broaden if not already broadened and still weak
+        if not state.get("broaden_used") and not state.get("faq_verified"):
+            _t2_top = _compute_top_score(state.get("retrieved_chunks") or [])
+            _t2_thr = _get_ev_threshold(state.get("applied_subspace"))
+            _t2_len = len(state.get("retrieved_chunks") or [])
+            _t2_has_sup = bool(state.get("supplemental") or state.get("injected_entities"))
+            _t2_needs = (_t2_len == 0 or _t2_top < _t2_thr) and not _t2_has_sup
+            # Also need to know we already attempted whole-KB (either via T1 or original whole-KB)
+            # We broaden even if T1 wasn't applicable (whole-KB already weak), but skip if we never had a filtered probe and original was already broadened? No — broaden is useful for whole-KB weak.
+            # Guard: don't broaden if no chunks and we haven't tried whole-KB yet but filtered was weak with no fallback_used? Actually T1 would have fired; if T1 didn't fire because _cf_active was None (whole-KB weak), we still want to broaden here.
+            if _t2_needs:
+                await _t2_try_broadened_retry(state, search_query, request_id, top_k=30, keyword_boost=1.5)
+    except Exception as _t2e:
+        log.warning("T2 broadened fallback failed: %s", _t2e)
+
     # --- Final fallback: if we did one re-retrieval and still low with no supplement, DLQ (single-retry budget) ---
+    # T1: don't clear fallback chunks even if still low (better than empty faith 0.0)
     try:
         if int(state.get("retrieve_attempts") or 0) >= 1 and not state.get("dlq_saved") and not state.get("faq_verified"):
             _final_top = _compute_top_score(state.get("retrieved_chunks"))
-            _final_thr = _get_ev_threshold()
+            _final_thr = _get_ev_threshold(state.get("applied_subspace"))
             _final_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
-            if _final_top < _final_thr and not _final_has_sup:
+            _final_has_fallback = bool(state.get("fallback_used") and len(state.get("retrieved_chunks") or []) > 0)
+            _final_has_lex = _has_lexical_evidence_retrieve(search_query or query, state.get("retrieved_chunks"), state.get("applied_subspace"))
+            if _final_has_lex:
+                log.info("T6 final lexical evidence keeps %d chunks despite low score %.4f < %.3f", len(state.get("retrieved_chunks") or []), _final_top, _final_thr)
+            if _final_top < _final_thr and not _final_has_sup and not _final_has_fallback and not _final_has_lex:
                 state["retrieved_chunks"] = []
                 state["dlq_saved"] = True
                 try:

@@ -43,6 +43,45 @@ class Settings(BaseSettings):
     # instead of synthesizing "یکی از سطوح...". Tunable via EVIDENCE_MIN_SCORE env.
     evidence_min_score: float = 0.15
 
+    # T3: Per-subspace evidence thresholds (env overrides: EVIDENCE_MIN_SCORE_CHEQUE etc.)
+    evidence_min_score_cheque: float = 0.05
+    evidence_min_score_facilities_person: float = 0.10
+    evidence_min_score_facilities_legal: float = 0.15
+    evidence_min_score_general: float = 0.15
+
+    def get_evidence_threshold(self, applied_subspace: str | None) -> float:
+        """Return evidence threshold for the given subspace (T3).
+
+        Maps both canonical labels (cheque, facilities_person, facilities_legal,
+        general) and Persian filter_path substrings (چک، حقیقی، حقوقی، عمومی)
+        to per-subspace thresholds.  Falls back to global evidence_min_score
+        for None/unknown subspaces.  Env overrides via EVIDENCE_MIN_SCORE_*
+        are handled by pydantic field defaults.
+        """
+        s = (applied_subspace or "").strip()
+        if not s:
+            return float(self.evidence_min_score)
+        low = s.lower()
+        # Persian filter_path contains these substrings
+        if "چک" in s or low == "cheque":
+            return float(self.evidence_min_score_cheque)
+        if "حقوقی" in s or low == "facilities_legal":
+            return float(self.evidence_min_score_facilities_legal)
+        if "حقیقی" in s or low == "facilities_person":
+            return float(self.evidence_min_score_facilities_person)
+        if "عمومی" in s or "پایگاه دانش عمومی" in s or low == "general":
+            return float(self.evidence_min_score_general)
+        # English label fallback (exact match)
+        if low == "cheque":
+            return float(self.evidence_min_score_cheque)
+        if low == "facilities_person":
+            return float(self.evidence_min_score_facilities_person)
+        if low == "facilities_legal":
+            return float(self.evidence_min_score_facilities_legal)
+        if low == "general":
+            return float(self.evidence_min_score_general)
+        return float(self.evidence_min_score)
+
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
 

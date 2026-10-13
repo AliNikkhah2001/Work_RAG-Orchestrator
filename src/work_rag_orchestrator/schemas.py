@@ -77,6 +77,11 @@ class AuditTrail(BaseModel):
     supplemental: Optional[List[Dict[str, Any]]] = None
     applied_subspace: Optional[str] = Field(default=None, description="Subspace applied for retrieval (cheque/facilities/general/legal_entity)")
     available_subspaces: Optional[List[str]] = None
+    # T1 fallback audit
+    fallback_used: bool = Field(default=False, description="Whether filtered→whole-KB fallback was triggered")
+    fallback_reason: Optional[str] = Field(default=None, description="Reason for fallback (empty/low_score) or retry failure")
+    retry_stage_timing: Optional[Dict[str, float]] = Field(default=None, description="Timing for retrieve_retry/broadened stages")
+    broaden_used: bool = Field(default=False, description="Whether broadened retry (top_k 30, boost 1.5) was triggered")
 
 
 class ChatCompletionResponse(BaseModel):

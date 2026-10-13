@@ -6,6 +6,12 @@ from ..schemas import GuardrailsChatRequest
 from ..config import get_settings
 log = logging.getLogger(__name__)
 
+# T5 scattered helper (reuse infer_specification logic to avoid duplication)
+try:
+    from .infer_specification import is_scattered_ambiguous as _is_scattered
+except Exception:  # pragma: no cover
+    _is_scattered = lambda q: False  # type: ignore
+
 # Heuristic fallback when LLM down — mirrors detect_greeting_kind but as 3-way
 _GREETING = {"سلام","درود","hello","hi","hey","صبح بخیر","وقت بخیر"}
 _SPEC_KEYWORDS = {
@@ -77,6 +83,16 @@ async def classify(state: RAGState) -> RAGState:
         low2 = text.lower()
         if "قاسم" in text or "بور" in text or "هیات مدیره" in text or "هیئت مدیره" in text:
             state["applied_subspace"] = "general"
+        # T5 scattered gate: vague query without subspace keywords => mark ambiguous for retrieve/graph
+        # Do not override already-set general sticky; only mark when no subspace decided
+        try:
+            if not state.get("applied_subspace") and _is_scattered(text):
+                state["needs_clarification"] = True
+                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+                state["clarifying_question"] = None
+                log.info("classify scattered ambiguous -> pre-set clarify for query=%r", text[:80])
+        except Exception:
+            pass
     elif cat=="greeting":
         state["greeting_only"]="greeting"
         state["needs_clarification"]=False

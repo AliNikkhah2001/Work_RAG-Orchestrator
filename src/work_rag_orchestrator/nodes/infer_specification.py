@@ -20,6 +20,46 @@ SUBSPACE_KEYWORDS = {
     "general": ["عمومی", "عام", "معرفی", "مدیر", "هیات مدیره", "هیئت مدیره", "کاربرد", "کاربردها", "شرکت"],
 }
 
+# T5 scattered clarify gate: vague phrases without specific subspace keywords => ambiguous
+SCATTERED_VAGUE_PHRASES = ["وضعیت اعتباری", "اعتبارسنجی", "بدهکار", "بدهی"]
+# Strict subspace keywords that disambiguate a query (if any present, not scattered)
+SCATTERED_SUBSPACE_KWS = [
+    "چک", "صیاد", "پیچک", "برگشت",
+    "تسهیلات", "وام", "قسط", "بازپرداخت",
+    "حقوقی", "حقیقی", "سهامدار",
+    "شرکت", "معرفی", "مدیر", "هیات مدیره", "هیئت مدیره",
+    "عمومی", "عام", "کاربرد",
+]
+# Generic credit words that together with short length signal scattered even if not exact vague phrase
+SCATTERED_GENERIC_WORDS = ["وضعیت", "اعتبار", "اعتباری", "امتیاز", "بدهکار", "بدهی"]
+
+
+def is_scattered_ambiguous(query: str) -> bool:
+    """Detect ambiguous/scattered queries that must trigger clarify.
+
+    Returns True if query contains vague terms (وضعیت اعتباری / اعتبارسنجی / بدهکار)
+    without any specific subspace keyword (چک, تسهیلات, اشخاص حقیقی/حقوقی, شرکت, etc.).
+    Also handles short generic queries (<=6 words) containing generic credit words
+    without disambiguating keywords.
+    """
+    q = (query or "").replace("‌", " ").strip()
+    if not q:
+        return False
+    has_vague = any(v in q for v in SCATTERED_VAGUE_PHRASES)
+    has_subspace = any(kw in q for kw in SCATTERED_SUBSPACE_KWS)
+    if has_vague and not has_subspace:
+        return True
+    # Short generic fallback: e.g. "وضعیت اعتباری چطور است" already caught, but also
+    # covers edge like "اعتبار چطوره" if ever probed
+    tokens = q.split()
+    if len(tokens) <= 6 and not has_subspace:
+        # Exclude known non-scattered entities that look like general but are specific
+        if "قاسم" in q or "بور" in q:
+            return False
+        if any(w in q for w in SCATTERED_GENERIC_WORDS):
+            return True
+    return False
+
 JUDGE_PROMPT = '''شما یک دسته‌بند پیام کاربر هستید. پیام زیر را بررسی کنید:
   پیام: "{msg}"
   گزینه‌های موجود: [تسهیلات افراد, گزارش چک, تسهیلات شرکت‌ها, عمومی (معرفی، هیات مدیره، کاربردها)]

@@ -35,9 +35,28 @@ def should_route_after_classify(state: RAGState) -> str:
 
 
 def should_clarify(state: RAGState) -> str:
-    """Branch after retrieve: clarify vs continue."""
+    """Branch after retrieve: clarify vs continue.
+
+    T5: ensure scattered ambiguous queries with no clear subspace always clarify,
+    even if retrieve's threshold/general_exempt suppressed the flag. This is a
+    safety net in addition to retrieve's early scattered detection.
+    """
     if state.get("needs_clarification"):
         return "clarify"
+    # Safety net: if applied_subspace is None and query is scattered ambiguous, force clarify
+    try:
+        from .nodes.infer_specification import is_scattered_ambiguous
+
+        q = state.get("query") or ""
+        # Only trigger when no subspace was resolved and query looks scattered
+        if not state.get("applied_subspace") and is_scattered_ambiguous(q):
+            # Also ensure we have available_subspaces for the clarification node
+            if not state.get("available_subspaces"):
+                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+            state["needs_clarification"] = True
+            return "clarify"
+    except Exception:
+        pass
     return "continue"
 
 

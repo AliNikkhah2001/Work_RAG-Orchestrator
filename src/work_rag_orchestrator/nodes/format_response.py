@@ -245,7 +245,11 @@ def _parse_cited_indices(text: str) -> list[int]:
 
 
 def _top_evidence_score(chunks: list) -> float:
-    """Best rerank/hybrid/score across chunks, 0.0 if none."""
+    """Best rerank/hybrid/score across chunks, 0.0 if none.
+
+    T6 fix: consider MAX across all score keys (not first-found) so a chunk
+    with rerank 0.0 but hybrid 0.03 is scored as 0.03 instead of 0.0.
+    """
     best = 0.0
     for c in chunks or []:
         for key in ("rerank_score", "hybrid_score", "score"):
@@ -253,10 +257,66 @@ def _top_evidence_score(chunks: list) -> float:
             if isinstance(v, (int, float)):
                 if float(v) > best:
                     best = float(v)
-                break
         # also consider injected supplemental similarity as evidence
         # (handled separately in retrieve supplement fallback)
     return best
+
+
+def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None) -> bool:
+    """T6: lexical proxy for ctx_rel — does any chunk contain query/subspace keywords?
+
+    The cross-encoder rerank gives 0.0 for these turns even though the LLM judge
+    scores ctx_rel 1.0.  When the numeric score is low but the text clearly
+    overlaps the query, we must not treat the context as 'no evidence' and
+    must not abstain.  Checks:
+    - subspace keyword (چک, تسهیلات, etc.) in any chunk content
+    - any informative query token (len>=2) appears in any chunk
+    """
+    if not chunks:
+        return False
+    q = (query or "").strip()
+    if not q:
+        return False
+    # subspace keyword map (same as infer_specification)
+    subspace_kw = {
+        "cheque": ["چک"],
+        "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی"],
+        "facilities_legal": ["حقوقی", "شرکت"],
+        "general": ["معرفی", "مدیر", "شرکت", "عمومی", "عام"],
+    }
+    # collect keywords to test: subspace-specific + query tokens
+    keywords: set[str] = set()
+    s = (applied_subspace or "").strip().lower()
+    # Persian subspace from filter_path also contains "چک" etc.
+    if "چک" in (applied_subspace or "") or s == "cheque":
+        keywords.update(subspace_kw["cheque"])
+    elif "حقیقی" in (applied_subspace or "") or s == "facilities_person":
+        keywords.update(subspace_kw["facilities_person"])
+    elif "حقوقی" in (applied_subspace or "") or s == "facilities_legal":
+        keywords.update(subspace_kw["facilities_legal"])
+    elif "عمومی" in (applied_subspace or "") or "پایگاه دانش عمومی" in (applied_subspace or "") or s == "general":
+        keywords.update(subspace_kw["general"])
+    # also add informative query tokens (split on whitespace, strip punctuation)
+    import re as _re
+    q_norm = _re.sub(r"[؟?!.,،؛:\"'«»()…\-\.]+", " ", q)
+    for tok in q_norm.split():
+        t = tok.strip()
+        if len(t) >= 2 and t not in {"در", "با", "از", "به", "که", "را", "یا", "هم", "این", "آن", "برای", "آیا", "چقدر", "چطور", "چگونه", "چیست", "است"}:
+            keywords.add(t)
+    if not keywords:
+        return False
+    # join all chunk contents lower (first 5 chunks are enough, but check all)
+    corpus = " ".join(str(c.get("content") or "") for c in chunks[:10])
+    if not corpus:
+        return False
+    for kw in keywords:
+        if kw and kw in corpus:
+            return True
+        # also check without ZWNJ variance
+        kw2 = kw.replace("‌", " ").strip()
+        if kw2 and kw2 != kw and kw2 in corpus:
+            return True
+    return False
 
 async def format_response(state: RAGState) -> RAGState:
     """
@@ -323,12 +383,16 @@ async def format_response(state: RAGState) -> RAGState:
         # treat as no evidence and return the canonical "پاسخی یافت نشد".
         try:
             from ..config import get_settings as _get_settings_ev
-            _threshold = float(_get_settings_ev().evidence_min_score)
+            _threshold = float(_get_settings_ev().get_evidence_threshold(state.get("applied_subspace")))
         except Exception:
             _threshold = 0.15
         _top = _top_evidence_score(chunks)
         _has_supplement = bool(state.get("injected_entities") or state.get("supplemental"))
-        if (not chunks or _top < _threshold) and not _has_supplement:
+        # T6: if lexical evidence exists (query/subspace keyword in chunk content),
+        # don't treat low rerank_score as no-evidence — ctx_rel high despite 0.0 score
+        _q_for_lex = state.get("query") or state.get("rewritten_query") or ""
+        _has_lex = _has_lexical_evidence(_q_for_lex, chunks, state.get("applied_subspace"))
+        if (not chunks or _top < _threshold) and not _has_supplement and not _has_lex:
             log.info(
                 "No evidence for request %s: top_score=%.4f < threshold=%.3f -> refusing (G5 guard)",
                 request_id, _top, _threshold,

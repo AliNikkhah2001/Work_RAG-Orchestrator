@@ -63,10 +63,36 @@ async def build_context(state: RAGState) -> RAGState:
         record_timing(state, "build_context", elapsed)
         return state
 
-    # Limit chunks (retrieval agent guarantees up to 20 items with
-    # chunk_id/document_id/title/heading/content/score/source/rank_rrf/
-    # rank_ce/hybrid_score/rerank_score keys; be defensive anyway).
-    chunks = chunks[:MAX_CHUNKS]
+    # T6 fix: do NOT filter by rerank_score threshold here.  If the retrieval
+    # returned chunks (even with rerank 0.0), they are evidence when ctx_rel is
+    # high or when they contain subspace/query keywords.  Preserve all
+    # retrieved chunks up to MAX_CHUNKS and re-order so keyword-matching chunks
+    # survive truncation within the 9000-char budget.
+    # Prioritize chunks whose content contains query or subspace keywords
+    # (lexical evidence) so they are not dropped when truncating.
+    try:
+        from .format_response import _has_lexical_evidence as _lex_check
+
+        q_for_sort = (state.get("query") or query or "").strip()
+        applied = state.get("applied_subspace")
+        # stable partition: lexical matches first, then rest, preserving original RRF/CE order
+        lex_first: list[dict] = []
+        lex_rest: list[dict] = []
+        for c in (chunks or []):
+            try:
+                if _lex_check(q_for_sort, [c], applied):
+                    lex_first.append(c)
+                else:
+                    lex_rest.append(c)
+            except Exception:
+                lex_rest.append(c)
+        # If any lexical matches exist, put them first; otherwise keep original order
+        if lex_first:
+            chunks = (lex_first + lex_rest)[:MAX_CHUNKS]
+        else:
+            chunks = (chunks or [])[:MAX_CHUNKS]
+    except Exception:
+        chunks = (chunks or [])[:MAX_CHUNKS]
 
     def _section_label(chunk: dict, fallback_idx: int) -> str:
         src = str(chunk.get("source") or "").lower()

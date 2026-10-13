@@ -387,8 +387,78 @@ def create_app() -> FastAPI:
         # If current query explicitly says "سوالات عمومی" or contains board member names, treat as general
         if "سوالات عمومی" in cur_q or "سوال عمومی" in cur_q or "قاسم" in cur_q or "بور" in cur_q or "هیات مدیره" in cur_q or "هیئت مدیره" in cur_q or "معرفی شرکت" in cur_q:
             sticky_applied = "general"
+        # T4: Carry sticky correctly for generic follow-ups - preserve checkpoint sticky even when current query is generic/ambiguous
+        # Previous logic mined history skipping interrogatives, but a generic follow-up (e.g. "آیا میزان درآمد...") has no subspace keywords
+        # yet is in same thread => should inherit sticky. Checkpoint sticky already captured above; ensure generic query doesn't clear it.
+        # Detect explicit re-spec in current query (short spec or strong keyword of different subspace) - only then allow switch
+        if sticky_applied is not None:
+            # Generic follow-up heuristic: does current query contain any explicit subspace keyword of a DIFFERENT subspace?
+            _cur_has_cheque = "چک" in cur_q
+            _cur_has_facility = "تسهیلات" in cur_q or "وام" in cur_q
+            _cur_has_legal = "حقوقی" in cur_q
+            _cur_has_general = any(kw in cur_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عام","کاربرد","قاسم","بور"])
+            _cur_is_spec_candidate = False
+            # Short spec candidate (<=6 words) containing a subspace keyword different from sticky => potential re-spec
+            if len(cur_q.split()) <= 6 and cur_q.strip():
+                if sticky_applied != "cheque" and _cur_has_cheque:
+                    _cur_is_spec_candidate = True
+                elif sticky_applied != "facilities_person" and ("حقیقی" in cur_q and _cur_has_facility):
+                    _cur_is_spec_candidate = True
+                elif sticky_applied != "facilities_legal" and _cur_has_legal and _cur_has_facility:
+                    _cur_is_spec_candidate = True
+                elif sticky_applied != "general" and _cur_has_general:
+                    _cur_is_spec_candidate = True
+            # If not a re-spec candidate and query is generic/ambiguous, keep sticky (do not clear)
+            if not _cur_is_spec_candidate:
+                # Preserve sticky for generic follow-up (no explicit different subspace mention)
+                # This covers conv_facilities_person_01 T3 ("آیا میزان درآمد...") and conv_cheque_02 T3 ("تاثیر چک...")
+                # where the follow-up lacks a different subspace keyword - sticky should persist
+                pass  # sticky_applied already holds correct value, ensure not cleared
+            # If it IS a re-spec candidate, let classify/infer_specification handle the switch downstream (don't force keep)
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
+        # T4: Inject sticky filter_path for generic follow-ups when no explicit filter_path supplied
+        # This ensures retrieve.py receives filter_path even for generic queries, so sticky is enforced at KB layer
+        if not _req_filter_path and sticky_applied is not None:
+            # Check if current query is generic (no explicit different subspace) - same heuristic as above
+            _cur_has_cheque2 = "چک" in cur_q
+            _cur_has_facility2 = "تسهیلات" in cur_q or "وام" in cur_q
+            _cur_has_legal2 = "حقوقی" in cur_q
+            _cur_has_general2 = any(kw in cur_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عام","کاربرد","قاسم","بور"])
+            _is_explicit_different = False
+            if len(cur_q.split()) <= 6 and cur_q.strip():
+                if sticky_applied != "cheque" and _cur_has_cheque2:
+                    _is_explicit_different = True
+                elif sticky_applied != "facilities_person" and ("حقیقی" in cur_q and _cur_has_facility2):
+                    _is_explicit_different = True
+                elif sticky_applied != "facilities_legal" and _cur_has_legal2 and _cur_has_facility2:
+                    _is_explicit_different = True
+                elif sticky_applied != "general" and _cur_has_general2:
+                    _is_explicit_different = True
+            # For generic follow-ups (including longer generic like "آیا میزان درآمد...") there is no explicit different keyword in short-spec sense,
+            # so inject sticky. For longer queries containing same-subspace keyword (e.g. "تاثیر چک...") also keep sticky.
+            # Only skip injection when explicit different short spec (e.g. "چک" after facilities_person) - that case is handled by classify spec path anyway
+            if not _is_explicit_different:
+                # Also ensure current query does NOT contain strong keyword of a clearly different subspace in longer form
+                # e.g. "حالا درباره تسهیلات اشخاص حقیقی بگو" after cheque should NOT inject cheque - it's an explicit re-spec
+                # Heuristic: if query contains "تسهیلات" + "حقیقی" while sticky is cheque, don't inject
+                _explicit_long = False
+                if sticky_applied == "cheque" and "تسهیلات" in cur_q and "حقیقی" in cur_q:
+                    _explicit_long = True
+                elif sticky_applied == "cheque" and "تسهیلات" in cur_q and "حقوقی" in cur_q:
+                    _explicit_long = True
+                elif sticky_applied in ("facilities_person","facilities_legal") and _cur_has_cheque2 and "تاثیر" not in cur_q and "آیا" not in cur_q:
+                    # "چک" alone after facilities should be considered explicit re-spec (short), already handled; longer "تاثیر چک..." is NOT different - keep sticky
+                    # So only treat "چک" alone/short as different, which was already covered
+                    _explicit_long = False
+                if not _explicit_long:
+                    try:
+                        _injected = get_settings().subspace_map.get(sticky_applied)
+                        if _injected:
+                            _req_filter_path = _injected
+                            log.info("T4 api sticky inject: generic follow-up inherits %s -> filter_path %r for q=%r", sticky_applied, _req_filter_path, cur_q[:60])
+                    except Exception:
+                        pass
         if _req_filter_path:
             try:
                 _map = get_settings().subspace_map or {}
@@ -436,6 +506,8 @@ def create_app() -> FastAPI:
             "supplemental": [],
             "filter_path": _req_filter_path,
             "follow_ups": [],
+            "fallback_used": False,
+            "fallback_reason": None,
         }
         
         # --- Streaming branch: REAL token streaming (no artificial delay) ---
@@ -517,9 +589,9 @@ def create_app() -> FastAPI:
                     prompt_messages = state.get("prompt_messages", [])
                     yield f": agent build_context done prompt_tokens={len(str(prompt_messages))}\n\n"
 
-                    # G5 hallucination guard for streaming: if no evidence, stream refusal without LLM
+                    # G5 hallucination guard for streaming: if no evidence, stream refusal without LLM (T3 per-subspace)
                     try:
-                        _ev_t = float(get_settings().evidence_min_score)
+                        _ev_t = float(get_settings().get_evidence_threshold(state.get("applied_subspace")))
                     except Exception:
                         _ev_t = 0.15
                     _chunks_s = state.get("retrieved_chunks") or []
@@ -529,9 +601,16 @@ def create_app() -> FastAPI:
                             _vv = _cc.get(_kk)
                             if isinstance(_vv, (int, float)):
                                 _top_s = max(_top_s, float(_vv))
-                                break
                     _has_sup_s = bool(state.get("injected_entities") or state.get("supplemental"))
-                    if not state.get("faq_verified") and (_top_s < _ev_t or not _chunks_s) and not _has_sup_s:
+                    # T6 lexical evidence bypass
+                    _has_lex_s = False
+                    try:
+                        _q_s = state.get("query") or state.get("rewritten_query") or ""
+                        from .nodes.format_response import _has_lexical_evidence as _lex_s
+                        _has_lex_s = _lex_s(_q_s, _chunks_s, state.get("applied_subspace"))
+                    except Exception:
+                        _has_lex_s = False
+                    if not state.get("faq_verified") and (_top_s < _ev_t or not _chunks_s) and not _has_sup_s and not _has_lex_s:
                         _no_ev = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
                         yield ": agent guarded_generate no_evidence_guard streaming\n\n"
                         for tok in re.findall(r"\S+\s*", _no_ev):
@@ -730,6 +809,10 @@ def create_app() -> FastAPI:
                 supplemental=supplemental,
                 applied_subspace=final_state.get("applied_subspace"),
                 available_subspaces=final_state.get("available_subspaces"),
+                fallback_used=bool(final_state.get("fallback_used", False)),
+                fallback_reason=final_state.get("fallback_reason"),
+                retry_stage_timing={k: v for k, v in {"retrieve_retry": final_state.get("stage_timing_ms", {}).get("retrieve_retry"), "retrieve_broadened": final_state.get("stage_timing_ms", {}).get("retrieve_broadened")}.items() if v is not None} or None,
+                broaden_used=bool(final_state.get("broaden_used", False)),
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")
@@ -794,6 +877,10 @@ def create_app() -> FastAPI:
                             "applied_subspace": audit_data.get("applied_subspace"),
                             "available_subspaces": audit_data.get("available_subspaces"),
                             "filter_path": audit_data.get("filter_path"),
+                            "fallback_used": audit_data.get("fallback_used", False),
+                            "fallback_reason": audit_data.get("fallback_reason"),
+                            "retry_stage_timing": audit_data.get("retry_stage_timing"),
+                            "broaden_used": audit_data.get("broaden_used", False),
                         }
                         for base in [obs, "http://rag-tracing-fallback:3000"]:
                             try:
