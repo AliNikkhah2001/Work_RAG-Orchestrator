@@ -141,6 +141,45 @@ def _get_ev_threshold(applied_subspace: str | None = None) -> float:
         return 0.15
 
 
+def _subspace_keyword_boost(subspace_or_filter: str | None) -> float:
+    """D: BM25 keyword_boost for a scoped (filtered) retrieval call.
+
+    Accepts either the canonical subspace label (cheque, facilities_person,
+    facilities_legal, general) or the Persian filter_path itself (چک،
+    حقیقی، حقوقی، عمومی substrings). Unknown or missing values fall back
+    to 3.0 — the KB server default — so unscoped calls behave exactly as
+    before.
+    """
+    default = 3.0
+    try:
+        boost_map = get_settings().subspace_keyword_boost or {}
+    except Exception:
+        boost_map = {}
+    s = (subspace_or_filter or "").strip()
+    if not s:
+        return default
+    if s in boost_map:
+        try:
+            return float(boost_map[s])
+        except (TypeError, ValueError):
+            return default
+    low = s.lower()
+    if "چک" in s or low == "cheque":
+        key = "cheque"
+    elif "حقیقی" in s or low == "facilities_person":
+        key = "facilities_person"
+    elif "حقوقی" in s or low == "facilities_legal":
+        key = "facilities_legal"
+    elif "عمومی" in s or low == "general":
+        key = "general"
+    else:
+        return default
+    try:
+        return float(boost_map.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _save_dlq_sample(
     state: dict,
     request_id: str,
@@ -261,6 +300,59 @@ def _t1_merge_rrf_ce(rrf_chunks, ce_chunks) -> list[dict]:
     return (both + ce_only + rrf_only)[:20]
 
 
+def _fuse_subspace_rrf(filtered: list, whole: list, filtered_weight: float = 1.3) -> list:
+    """A: Reciprocal-rank fusion of the filtered (subspace) and whole-KB legs.
+
+    score(d) = 1 / (60 + rank_in_list) * weight, summed over every leg the
+    chunk appears in.  The filtered leg carries ``filtered_weight`` (1.3x) so:
+      - chunks present in BOTH lists are boosted to the top,
+      - chunks only in the filtered subspace keep priority over most
+        whole-KB noise,
+      - whole-KB-only chunks (the recall the filter was killing) still
+        enter the tail instead of being hard-replaced or dropped.
+
+    Deduped by chunk_id; missing display fields/ranks are merged from the
+    other leg, and absolute scores (score/rerank_score/hybrid_score) keep
+    the max so downstream evidence-threshold checks see the best leg.
+    Each output item gets ``fused_rrf_score`` for audit/debug visibility.
+    """
+    k = 60.0
+    scores: dict = {}
+    entries: dict = {}
+    for chunks, weight in ((filtered, filtered_weight), (whole, 1.0)):
+        for rank, c in enumerate(chunks or [], start=1):
+            if not isinstance(c, dict):
+                continue
+            key = c.get("chunk_id") or f"__fuse_{id(c)}"
+            scores[key] = scores.get(key, 0.0) + (weight / (k + rank))
+            if key not in entries:
+                entries[key] = dict(c)
+                continue
+            existing = entries[key]
+            # Fill missing display fields from the other leg's copy.
+            for field in ("document_id", "title", "heading", "content", "folder_hierarchy"):
+                if not existing.get(field) and c.get(field):
+                    existing[field] = c.get(field)
+            # Keep the best absolute score per field (evidence checks read these).
+            for field in ("score", "rerank_score", "hybrid_score"):
+                a, b = existing.get(field), c.get(field)
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                    existing[field] = max(a, b)
+                elif existing.get(field) is None and isinstance(b, (int, float)):
+                    existing[field] = b
+            # Fill missing rank fields from the other leg.
+            for field in ("rank_rrf", "rank_ce"):
+                if existing.get(field) is None and c.get(field) is not None:
+                    existing[field] = c.get(field)
+    # Sort by fused RRF score desc; ties keep insertion order (filtered leg first).
+    out = []
+    for kk in sorted(entries, key=lambda key: scores[key], reverse=True):
+        item = entries[kk]
+        item["fused_rrf_score"] = round(scores[kk], 6)
+        out.append(item)
+    return out
+
+
 async def _t1_try_whole_kb_fallback(
     state: dict,
     search_query: str,
@@ -275,7 +367,11 @@ async def _t1_try_whole_kb_fallback(
     (filter_path=None, 1123 chunks).  Single retry only; avoid loop when
     already whole-KB; handle exceptions gracefully keeping original results.
 
-    Returns True if a fallback attempt was made (even if fallback not adopted).
+    A: when both the filtered list and the whole-KB list are non-empty, the
+    two legs are FUSED via weighted RRF (_fuse_subspace_rrf) instead of a
+    hard replace; the audit fallback_reason mentions "fused".
+
+    Returns True if a fallback attempt was made (even if no chunks adopted).
     Records state["fallback_used"], state["fallback_reason"], and
     state["stage_timing_ms"]["retrieve_retry"] plus tracing.
     """
@@ -358,12 +454,34 @@ async def _t1_try_whole_kb_fallback(
         fb_top = _compute_top_score(fb_retrieved)
         fb_len = len(fb_retrieved)
         elapsed = round((time.monotonic() - t_retry) * 1000, 1)
-        # Merge decision: prefer fallback if higher max score or more chunks.
-        prefer_fallback = (fb_top > cur_top) or (fb_top == cur_top and fb_len > cur_len) or (cur_len == 0 and fb_len > 0)
-        # Record timing and audit regardless of preference (single retry spent).
+        # A: subspace re-rank — ALWAYS FUSE the filtered leg with the whole-KB
+        # leg via weighted RRF when both lists are non-empty (no more hard
+        # replace). Chunks in both lists get boosted, chunks only in the
+        # filtered subspace keep priority over most whole-KB noise, and
+        # whole-KB-only chunks (the recall the filter was killing) enter the
+        # tail. Wholesale replace survives only for the cur_len == 0 case.
         state["fallback_used"] = True
-        state["fallback_reason"] = fallback_reason
         record_timing(state, "retrieve_retry", elapsed)
+        fused_now = False
+        if cur_len > 0 and fb_len > 0:
+            state["retrieved_chunks"] = _fuse_subspace_rrf(cur_chunks, fb_retrieved)[:20]
+            fused_now = True
+            state["fallback_reason"] = (
+                f"{fallback_reason} | fused rrf(cur={cur_len},fb={fb_len} -> {len(state['retrieved_chunks'])})"
+            )
+            log.info(
+                "T1 fallback fused: cur=%d (top=%.4f) + fb=%d (top=%.4f) -> %d chunks reason=%s",
+                cur_len, cur_top, fb_len, fb_top, len(state["retrieved_chunks"]), fallback_reason,
+            )
+        elif fb_len > 0:
+            # Current was empty — adopt fallback wholesale.
+            state["retrieved_chunks"] = fb_retrieved
+            state["fallback_reason"] = f"{fallback_reason} | adopted (cur empty)"
+            log.info("T1 fallback adopted (cur empty): fallback len=%d top=%.4f", fb_len, fb_top)
+        else:
+            # Fallback empty — keep original results, reason unchanged.
+            state["fallback_reason"] = fallback_reason
+            log.info("T1 fallback empty — keeping original %d chunks", cur_len)
         # Merge injected entities if any.
         if fb_injected:
             existing = state.get("injected_entities") or []
@@ -379,17 +497,9 @@ async def _t1_try_whole_kb_fallback(
         try:
             from ..tracing import trace_span as _tsp2
 
-            _tsp2(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "reason": fallback_reason}, span_output={"fb_len": fb_len, "fb_top": fb_top, "prefer_fallback": prefer_fallback, "fallback_used": True})
+            _tsp2(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "reason": fallback_reason}, span_output={"fb_len": fb_len, "fb_top": fb_top, "fused": fused_now, "fallback_used": True})
         except Exception:
             pass
-        if prefer_fallback:
-            log.info("T1 fallback adopted: fallback len=%d top=%.4f > original len=%d top=%.4f reason=%s", fb_len, fb_top, cur_len, cur_top, fallback_reason)
-            state["retrieved_chunks"] = fb_retrieved
-            # Whole-KB fallback means subspace is now broader; clear sticky to avoid re-filtering later.
-            # Keep applied_subspace as None to signal whole-KB result (audit will show fallback).
-            # Do not overwrite if caller explicitly set whole-KB already.
-        else:
-            log.info("T1 fallback not adopted: fallback len=%d top=%.4f <= original len=%d top=%.4f reason=%s", fb_len, fb_top, cur_len, cur_top, fallback_reason)
         return True
     except Exception as e:
         elapsed = round((time.monotonic() - t_retry) * 1000, 1)
@@ -430,6 +540,10 @@ async def _t2_try_broadened_retry(
     Records state["broaden_used"], state["fallback_used"] (also set on
     success), and stage_timing_ms["retrieve_broadened"] plus tracing.
     Reuses _t1_merge_rrf_ce and the same KnowledgebaseClient path (trust_env=False).
+
+    A: when both the previous list and the broadened list are non-empty, the
+    two legs are FUSED via weighted RRF (_fuse_subspace_rrf) instead of a
+    hard replace; the audit fallback_reason mentions "fused".
     """
     if state.get("broaden_used"):
         return False
@@ -514,13 +628,34 @@ async def _t2_try_broadened_retry(
         fb_top = _compute_top_score(fb_retrieved)
         fb_len = len(fb_retrieved)
         elapsed = round((time.monotonic() - t_retry) * 1000, 1)
-        prefer_broadened = (fb_top > cur_top) or (fb_top == cur_top and fb_len > cur_len) or (cur_len == 0 and fb_len > 0)
         # Always mark broaden_used and fallback_used (spec: if broadened succeeds, set fallback_used as well)
         state["broaden_used"] = True
         state["fallback_used"] = True
         # Keep original fallback_reason but annotate broadened
         base_reason = state.get("fallback_reason") or f"low_score top={cur_top:.4f} < thr={thr:.3f}"
-        state["fallback_reason"] = f"{base_reason} | broadened top_k={top_k} boost={keyword_boost} -> len={fb_len} top={fb_top:.4f}"
+        # A: fuse the broadened leg with the previous (still weak) results —
+        # same weighted RRF as T1 so both legs' recall survives instead of a
+        # hard replace. Wholesale replace only when the current list is empty.
+        fused_t2 = False
+        if cur_len > 0 and fb_len > 0:
+            state["retrieved_chunks"] = _fuse_subspace_rrf(cur_chunks, fb_retrieved)[:20]
+            fused_t2 = True
+            state["fallback_reason"] = (
+                f"{base_reason} | broadened top_k={top_k} boost={keyword_boost} -> len={fb_len} top={fb_top:.4f} | fused (cur={cur_len} fb={fb_len} -> {len(state['retrieved_chunks'])})"
+            )
+            log.info(
+                "T2 broadened fused: cur=%d (top=%.4f) + fb=%d (top=%.4f) -> %d chunks",
+                cur_len, cur_top, fb_len, fb_top, len(state["retrieved_chunks"]),
+            )
+        elif fb_len > 0:
+            # Current was empty — adopt broadened wholesale.
+            state["retrieved_chunks"] = fb_retrieved
+            state["fallback_reason"] = f"{base_reason} | broadened top_k={top_k} boost={keyword_boost} -> len={fb_len} top={fb_top:.4f} | adopted (cur empty)"
+            log.info("T2 broadened adopted (cur empty): len=%d top=%.4f", fb_len, fb_top)
+        else:
+            # Broadened empty — keep original results.
+            state["fallback_reason"] = f"{base_reason} | broadened top_k={top_k} boost={keyword_boost} -> len=0 (keep original)"
+            log.info("T2 broadened empty — keeping original %d chunks", cur_len)
         record_timing(state, "retrieve_broadened", elapsed)
         if fb_injected:
             existing = state.get("injected_entities") or []
@@ -538,15 +673,10 @@ async def _t2_try_broadened_retry(
                 request_id,
                 "retrieve-broadened",
                 span_input={"query": search_query, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "top_k": top_k, "keyword_boost": keyword_boost},
-                span_output={"fb_len": fb_len, "fb_top": fb_top, "prefer_broadened": prefer_broadened, "broaden_used": True, "fallback_used": True},
+                span_output={"fb_len": fb_len, "fb_top": fb_top, "fused": fused_t2, "broaden_used": True, "fallback_used": True},
             )
         except Exception:
             pass
-        if prefer_broadened:
-            log.info("T2 broadened adopted: broadened len=%d top=%.4f > original len=%d top=%.4f", fb_len, fb_top, cur_len, cur_top)
-            state["retrieved_chunks"] = fb_retrieved
-        else:
-            log.info("T2 broadened not adopted: broadened len=%d top=%.4f <= original len=%d top=%.4f", fb_len, fb_top, cur_len, cur_top)
         return True
     except Exception as e:
         elapsed = round((time.monotonic() - t_retry) * 1000, 1)
@@ -676,6 +806,15 @@ async def retrieve(state: RAGState) -> RAGState:
     search_query = norm_query
     settings = get_settings()
     top_k = settings.retrieval_top_k
+    # E: dynamic top_k for the PRIMARY retrieval probe — short queries
+    # (<= 6 tokens) are likely ambiguous/conversational, so widen the KB
+    # candidate pool (top_k=30) to give fusion + cross-encoder rerank more
+    # recall headroom. Longer queries keep the default (20). Primary probe
+    # only: the T2 broadened retry already uses 30, and the sticky/F5
+    # re-retrieves keep the default so per-subspace thresholds stay
+    # comparable across paths.
+    query_tokens = len(search_query.split())
+    primary_top_k = 30 if query_tokens <= 6 else top_k
 
     # F7 scope picker: if caller supplied explicit filter_path, honor it
     explicit_filter = (state.get("filter_path") or "").strip() if state.get("filter_path") else None
@@ -697,7 +836,17 @@ async def retrieve(state: RAGState) -> RAGState:
             state["applied_subspace"] = explicit_filter
         try:
             async with KnowledgebaseClient() as client:
-                result = await client.retrieve(search_query, top_k, request_id, filter_path=explicit_filter)
+                # D: per-subspace keyword_boost — cheque Q&A pairs are
+                # keyword-dominated and get a stronger BM25 bias (3.5) than
+                # facilities (3.0) or general prose (2.5). Only scoped calls
+                # pass the boost; whole-KB calls keep the server default.
+                result = await client.retrieve(
+                    search_query,
+                    primary_top_k,
+                    request_id,
+                    filter_path=explicit_filter,
+                    keyword_boost=_subspace_keyword_boost(state.get("applied_subspace") or explicit_filter),
+                )
         except Exception as e:
             log.error("KB filtered retrieval failed for request %s (filter=%r): %s — continuing empty", request_id, explicit_filter, e)
             try:
@@ -718,7 +867,7 @@ async def retrieve(state: RAGState) -> RAGState:
         _explicit_scope = False
         try:
             async with KnowledgebaseClient() as client:
-                result = await client.retrieve(search_query, top_k, request_id)
+                result = await client.retrieve(search_query, primary_top_k, request_id)
         except Exception as e:
             log.error("KB retrieval failed for request %s: %s — continuing with empty context", request_id, e)
             try:
@@ -978,8 +1127,15 @@ async def retrieve(state: RAGState) -> RAGState:
                         _fresult_sticky = None
                         try:
                             async with KnowledgebaseClient() as _client_sticky:
+                                # D: per-subspace keyword_boost on the sticky
+                                # scoped re-retrieve (same rationale as the
+                                # explicit-scope primary call above).
                                 _fresult_sticky = await _client_sticky.retrieve(
-                                    search_query, top_k, request_id, filter_path=_filter_path_sticky
+                                    search_query,
+                                    top_k,
+                                    request_id,
+                                    filter_path=_filter_path_sticky,
+                                    keyword_boost=_subspace_keyword_boost(_sticky or _filter_path_sticky),
                                 )
                         except Exception as e:
                             log.warning("Sticky filtered re-retrieve failed: %s", e)
@@ -1487,7 +1643,11 @@ async def retrieve(state: RAGState) -> RAGState:
                                 _fresult_llm = None
                                 try:
                                     async with KnowledgebaseClient() as _client_llm:
-                                        _fresult_llm = await _client_llm.retrieve(search_query, top_k, request_id, filter_path=filter_path)
+                                        _fresult_llm = await _client_llm.retrieve(
+                                    search_query, top_k, request_id,
+                                    filter_path=filter_path,
+                                    keyword_boost=_subspace_keyword_boost(llm_choice or filter_path),
+                                )
                                 except Exception as e:
                                     log.warning("LLM-judge filtered re-retrieve failed: %s", e)
                                 if _fresult_llm is not None:
@@ -1630,7 +1790,10 @@ async def retrieve(state: RAGState) -> RAGState:
                 if filter_path:
                     try:
                         async with KnowledgebaseClient() as client2:
-                            fresult = await client2.retrieve(search_query, top_k, request_id, filter_path=filter_path)
+                            fresult = await client2.retrieve(
+                            search_query, top_k, request_id, filter_path=filter_path,
+                            keyword_boost=_subspace_keyword_boost(inferred or filter_path),
+                        )
                         if isinstance(fresult, dict):
                             f_rrf = fresult.get("rrf", [])
                             f_ce = fresult.get("ce", [])

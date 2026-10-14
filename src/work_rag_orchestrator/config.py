@@ -31,7 +31,23 @@ class Settings(BaseSettings):
 
     subspace_threshold: float = 0.8
     subspace_general_exempt: bool = True
-    subspace_map: dict = {"cheque": "گزارش اعتباری چک", "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات", "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات", "general": "پایگاه دانش عمومی"}
+    subspace_keyword_boost: dict = {"cheque": 3.5, "facilities_person": 3.0, "facilities_legal": 3.0, "general": 2.5}
+    subspace_map: dict = {"cheque": "گزارش اعتبارسنجی چک", "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات", "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات", "general": "پایگاه دانش عمومی"}
+
+    # D: Per-subspace BM25 keyword_boost passed to the KB on scoped (filtered)
+    # retrieval calls. Cheque docs are Q&A pairs where exact keywords
+    # (چک، برگشتی، صیاد) dominate relevance, so that subspace gets the
+    # strongest keyword bias (3.5); facilities Q&A pairs sit at 3.0; the
+    # general subspace is narrative prose and needs less keyword bias (2.5)
+    # so the dense/semantic leg contributes more. Whole-KB (unfiltered)
+    # calls keep the KB server default by passing keyword_boost=None.
+    subspace_keyword_boost: dict = {"cheque": 3.5, "facilities_person": 3.0, "facilities_legal": 3.0, "general": 2.5}
+
+    # B: Sticky decay — max consecutive generic user turns (no subspace
+    # keyword, or long) allowed before the sticky subspace is considered
+    # stale and dropped (env STICKY_DECAY_TURNS). Above this many generic
+    # turns in a row, the query re-enters the normal classify/infer path.
+    sticky_decay_turns: int = 3
 
     # Response detail: "production" hides the ground-truth retrieval block
     # (source labels, titles, scores) from user-visible text; "verbose" appends

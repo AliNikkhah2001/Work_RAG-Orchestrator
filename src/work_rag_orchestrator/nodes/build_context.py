@@ -15,6 +15,36 @@ MAX_CONTEXT_CHARS = 9000
 MAX_CHUNKS = 20
 
 
+_NO_EVIDENCE_MARKER = "پاسخی برای این سوال یافت نشد"
+
+
+def _strip_notfound_exchanges(messages):
+    """Drop assistant no-evidence turns (and their unanswered user question).
+
+    A previous "not found" answer is stale: retrieval quality improves over
+    time and the same question can be answered later. Keeping the refusal in
+    the [Conversation history] block biases the model to repeat it.
+    """
+    out = []
+    pending_user = None
+    for msg in messages or []:
+        role = msg.get("role")
+        if role == "user":
+            pending_user = msg
+            out.append(msg)
+        elif role == "assistant":
+            if _NO_EVIDENCE_MARKER in " ".join((msg.get("content") or "").split()):
+                if pending_user is not None and out and out[-1] is pending_user:
+                    out.pop()
+                pending_user = None
+            else:
+                out.append(msg)
+                pending_user = None
+        else:
+            out.append(msg)
+    return out
+
+
 async def build_context(state: RAGState) -> RAGState:
     """
     Create a bounded system/context message with numbered source IDs.
@@ -134,7 +164,12 @@ async def build_context(state: RAGState) -> RAGState:
 
     # Stateless memory: last 2 exchanges (prior turns only, not the current
     # question) as a plain-text block, capped at 1000 chars.
-    history_excerpt = last_exchanges_text(messages, include_current=False, max_chars=1000)
+    # Failed exchanges ("not found in KB") are stripped: they carry no
+    # information and anchor the model into repeating the refusal even when
+    # the current retrieval DID find the answer in another subspace.
+    history_excerpt = last_exchanges_text(
+        _strip_notfound_exchanges(messages), include_current=False, max_chars=1000
+    )
     history_block = f"[Conversation history]\n{history_excerpt}" if history_excerpt else ""
     question_part = f"Question: {query}"
 
@@ -161,6 +196,7 @@ async def build_context(state: RAGState) -> RAGState:
         "مهم: پاسخ را طوری بنویسید که گویی از دانش خودتان است — طبیعی و انسانی، مثل یک کارشناس که جواب می‌دهد. هیچ‌وقت به منابع، متن‌ها، زمینه (context)، بازیابی (retrieval)، رتبه‌بندی یا برچسب‌هایی مثل CE و RRF و BOTH اشاره نکنید؛ "
         "عبارت‌هایی مثل «در منابع آمده»، «در متن‌ها ذکر شده»، «بر اساس زمینه بازیابی‌شده» یا هر اشارهٔ مشابه به منبع اطلاعات ممنوع است. "
         "اگر هیچ‌یک از منابع پاسخ پرسش را ندارند، فقط در یک جملهٔ کوتاه بگویید «بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.» و تمام کنید — "
+        "اگر در تاریخچهٔ گفت‌وگو پاسخ «یافت نشد» قبلاً داده شده باشد، آن پاسخ منسوخ است و ملاک قرار نمی‌گیرد؛ فقط بر اساس منابع همین پیام دوباره ارزیابی کنید و اگر پاسخ در منابع هست، حتماً پاسخ دهید. "
         "متن را طولانی نکنید و حدس نزنید. "
         "مستقیم و دقیق به خودِ سوال پاسخ دهید؛ مقدمهٔ کلیشه‌ای (مثل «موارد زیر را یافتم») ننویسید و پاسخ را در چند پاراگراف منسجم و کاربردی سازمان دهید. "
         "قالب پاسخ متن سادهٔ فارسی است — از هیچ قالب‌بندی مارک‌داون استفاده نکنید: نه ستاره (*)، نه بولد (**)، نه هشتگ (#)، نه خط تیره در ابتدای خط، نه بک‌تیک. "

@@ -171,6 +171,20 @@ MAX_GROUND_TRUTH_LINES = 20
 # G5 hallucination fix: refusal when evidence is too weak
 NO_EVIDENCE_MSG = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
 
+# Abstention marker shared by the G5/faith refusals — used to skip the faith
+# guard when the model already declined to answer.
+ABSTENTION_PHRASE = "پاسخی برای این سوال یافت نشد"
+
+# F: faith/hallucination guard thresholds for weak-evidence answers. An
+# answer produced on a weak-evidence path (T1 whole-KB fallback or T2
+# broadened retry) is replaced with NO_EVIDENCE_MSG when the kept/cited
+# chunks also score below FAITH_GUARD_MIN_SCORE and the answer's lexical
+# coverage over the kept chunk text is below FAITH_GUARD_MIN_COVERAGE —
+# both low means the generated text is not grounded in the evidence
+# (hallucination rate was 0.244 on that path).
+FAITH_GUARD_MIN_SCORE = 0.5
+FAITH_GUARD_MIN_COVERAGE = 0.20
+
 
 def _source_label(chunk: dict, fallback_idx: int) -> str:
     """Source-set label with the relevant rank, e.g. [RRF-3], [CE-2], [BOTH-1]."""
@@ -318,6 +332,24 @@ def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None
             return True
     return False
 
+
+def _token_coverage(answer: str, chunks: list) -> float:
+    """F: lexical coverage of the answer over the kept chunk contents.
+
+    Whitespace tokenization on both sides;
+    coverage = |answer_tokens ∩ chunk_tokens| / |answer_tokens|.
+    Returns 1.0 for an empty answer (nothing to ground) and 0.0 when the
+    kept chunks carry no text.
+    """
+    a_tokens = set((answer or "").split())
+    if not a_tokens:
+        return 1.0
+    corpus = " ".join(str(c.get("content") or "") for c in (chunks or []))
+    c_tokens = set(corpus.split())
+    if not c_tokens:
+        return 0.0
+    return len(a_tokens & c_tokens) / len(a_tokens)
+
 async def format_response(state: RAGState) -> RAGState:
     """
     Return OpenAI-compatible output with citation metadata.
@@ -448,15 +480,45 @@ async def format_response(state: RAGState) -> RAGState:
             for c in chosen
             if c.get("chunk_id")
         ]
+        # --- F: faith/hallucination guard on weak-evidence answers ---
+        # Single post-generation check (no retry loop): when ALL hold —
+        # (a) the answer came from a weak-evidence path (T1 whole-KB
+        # fallback or T2 broadened retry), (b) the top score of the
+        # kept/cited chunks is < 0.5, and (c) lexical coverage between the
+        # answer and the kept chunk contents is < 0.20 — the model is
+        # fabricating beyond the evidence, so replace the answer body with
+        # the canonical refusal and drop citations. Skipped when the
+        # answer already abstains. The decision is logged with the
+        # coverage value.
+        _faith_refused = False
+        if (state.get("fallback_used") or state.get("broaden_used")) and ABSTENTION_PHRASE not in content:
+            _used_top = _top_evidence_score(chosen)
+            _coverage = _token_coverage(content, chosen)
+            if _used_top < FAITH_GUARD_MIN_SCORE and _coverage < FAITH_GUARD_MIN_COVERAGE:
+                log.info(
+                    "Faith guard fired for request %s: coverage=%.3f < %.2f and top_used_score=%.3f < %.2f (fallback_used=%s, broaden_used=%s) -> replacing answer with refusal",
+                    request_id, _coverage, FAITH_GUARD_MIN_COVERAGE, _used_top, FAITH_GUARD_MIN_SCORE,
+                    bool(state.get("fallback_used")), bool(state.get("broaden_used")),
+                )
+                content = NO_EVIDENCE_MSG
+                citations = []
+                _faith_refused = True
+            else:
+                log.info(
+                    "Faith guard passed for request %s: coverage=%.3f, top_used_score=%.3f (fallback_used=%s, broaden_used=%s)",
+                    request_id, _coverage, _used_top,
+                    bool(state.get("fallback_used")), bool(state.get("broaden_used")),
+                )
         # Append the ground-truth block AFTER cleaning so _to_plain_text /
         # _clean_answer never strip it; the block itself is plain text.
         # Production responses hide it (response_detail setting); verbose shows.
+        # A faith refusal carries no sources — skip the block for refusals.
         from ..config import get_settings as _get_settings
         try:
             _verbose = _get_settings().response_detail.strip().lower() == "verbose"
         except Exception:
             _verbose = False
-        if _verbose:
+        if _verbose and not _faith_refused:
             block = _ground_truth_block(chunks)
             if block:
                 content = content + block
