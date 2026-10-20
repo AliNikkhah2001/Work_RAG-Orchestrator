@@ -4,6 +4,17 @@ LangGraph orchestration and public OpenAI-compatible chat API for the Work Credi
 
 > **Status:** ✅ **IMPLEMENTED AND LIVE** on Vast.ai (`main`). The runtime described below matches the deployed system and includes the **ambiguity resolver**, **clarifying-question generator**, and **metadata (subspace) filtering** layers.
 
+<!-- docs-toc:start -->
+## Documentation Index
+
+> Auto-generated from this repository's tracked Markdown notes (**1** file). Refresh with `python scripts/gen_readme_toc.py` — the `docs-toc` workflow does this automatically on push.
+
+### Repository root
+
+- [LangGraph Studio — Orchestrator](STUDIO.md) — LangGraph Studio is the visual debugger for the deterministic RAG graph:
+
+<!-- docs-toc:end -->
+
 ## 1. Summary
 
 The Orchestrator owns **request coordination**. It receives a chat completion request, runs it through a deterministic LangGraph workflow, and returns a grounded, citation-shaped response.

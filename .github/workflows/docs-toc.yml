@@ -1,0 +1,35 @@
+name: docs-toc
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "scripts/gen_readme_toc.py"
+      - "scripts/docs_manifest.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Regenerate README documentation index
+        run: python scripts/gen_readme_toc.py
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- README.md; then
+            echo "README already up to date."
+            exit 0
+          fi
+          git add README.md
+          git commit -m "docs: refresh README documentation index [skip ci]"
+          git push

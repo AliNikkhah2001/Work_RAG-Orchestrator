@@ -1,0 +1,19 @@
+{
+  "readme": "README.md",
+  "section_title": "Documentation Index",
+  "marker_start": "<!-- docs-toc:start -->",
+  "marker_end": "<!-- docs-toc:end -->",
+  "include": ["*.md"],
+  "exclude": [
+    ".git",
+    ".github",
+    ".pytest_cache",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "site-packages"
+  ],
+  "description_chars": 150,
+  "root_label": "Repository root"
+}
