@@ -1,6 +1,11 @@
 # LangGraph Studio — Orchestrator
 
-LangGraph Studio is the visual debugger for the deterministic RAG graph `validate_input -> retrieve -> build_context -> guarded_generate -> format_response`.
+LangGraph Studio is the visual debugger for the deterministic RAG graph:
+
+```text
+validate_input -> classify -> (format_response | retrieve)
+retrieve -> (generate_clarification | build_context -> guarded_generate) -> format_response
+```
 
 ## Setup
 
@@ -19,11 +24,14 @@ Studio auto-loads `langgraph.json:graphs.rag = ./src/work_rag_orchestrator/graph
 
 ## What you get
 
-- Interactive graph canvas with 6 nodes + conditional edge `validate_input -- blocked --> format_refusal`
-- Per-node input/output state (`RAGState`) with Persian `query`, `retrieved_chunks`, `citations`
+- Interactive graph canvas with 8 nodes + conditional edges:
+  - `validate_input -- blocked --> format_refusal`
+  - `classify -- greeting/specification --> format_response | -- question --> retrieve`
+  - `retrieve -- needs_clarification --> generate_clarification | -- continue --> build_context`
+- Per-node input/output state (`RAGState`) with Persian `query`, `classify`, `applied_subspace`, `retrieved_chunks`, `citations`
 - Thread history (MemorySaver) - replay same `thread_id` (= `request_id`)
 - Time per node, hit RRF/reranker scores
-- Test with Persian examples directly in Studio's chat pane
+- Test with Persian examples directly in Studio's chat pane (e.g. `سلام`, `چک`, `وضعیت اعتباری`) to exercise classify / specification / clarify branches
 
 ## Modifying in Studio
 
