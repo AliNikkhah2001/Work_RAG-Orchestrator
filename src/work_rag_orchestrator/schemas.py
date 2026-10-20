@@ -82,6 +82,13 @@ class AuditTrail(BaseModel):
     fallback_reason: Optional[str] = Field(default=None, description="Reason for fallback (empty/low_score) or retry failure")
     retry_stage_timing: Optional[Dict[str, float]] = Field(default=None, description="Timing for retrieve_retry/broadened stages")
     broaden_used: bool = Field(default=False, description="Whether broadened retry (top_k 30, boost 1.5) was triggered")
+    # Embedding subspace ambiguity score (docs/SUBSPACE_AMBIGUITY.md, stage 1 instrument)
+    ambiguity_score: Optional[float] = Field(default=None, description="Subspace ambiguity in [0,1] (higher = more ambiguous)")
+    ambiguity_margin: Optional[float] = Field(default=None, description="Top1-top2 subspace similarity margin")
+    ambiguity_entropy: Optional[float] = Field(default=None, description="Normalized softmax entropy of subspace sims in [0,1]")
+    ambiguity_ambiguous: Optional[bool] = Field(default=None, description="Whether the ambiguity thresholds flagged the query")
+    ambiguity_source: Optional[str] = Field(default=None, description="Scorer source: protos|classifier|fallback|disabled")
+    subspace_sims: Optional[Dict[str, float]] = Field(default=None, description="Per-subspace cosine similarity map")
 
 
 class ChatCompletionResponse(BaseModel):

@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     subspace_keyword_boost: dict = {"cheque": 3.5, "facilities_person": 3.0, "facilities_legal": 3.0, "general": 2.5}
     subspace_map: dict = {"cheque": "گزارش اعتبارسنجی چک", "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات", "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات", "general": "پایگاه دانش عمومی"}
 
+    # Embedding subspace ambiguity score (see docs/SUBSPACE_AMBIGUITY.md).
+    # `enabled` gates compute + audit (stage 1); `route` gates actual
+    # routing/clarification from the score and defaults False.
+    subspace_ambiguity_enabled: bool = True
+    subspace_ambiguity_route: bool = False
+    subspace_protos_path: str = "data/subspace_protos.npz"
+    subspace_clf_path: str = "data/subspace_clf.joblib"
+    subspace_ambiguity_margin: float = 0.08
+    subspace_ambiguity_min_top1: float = 0.30
+    subspace_ambiguity_entropy_max: float = 0.85
+    subspace_softmax_temp: float = 0.05
+    subspace_score_cache_size: int = 512
+    embed_base_url: str = "http://127.0.0.1:8003"
+    embed_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+
     # D: Per-subspace BM25 keyword_boost passed to the KB on scoped (filtered)
     # retrieval calls. Cheque docs are Q&A pairs where exact keywords
     # (چک، برگشتی، صیاد) dominate relevance, so that subspace gets the

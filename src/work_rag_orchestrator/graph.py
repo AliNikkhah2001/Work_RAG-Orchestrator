@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 # For now, limit to 100 threads via custom wrapper (evict oldest)
 
 from .state import RAGState
+from .subspaces import SUBSPACES
 from .nodes import (
     validate_input,
     retrieve,
@@ -43,6 +44,25 @@ def should_clarify(state: RAGState) -> str:
     """
     if state.get("needs_clarification"):
         return "clarify"
+    # Stage 3 (route): the embedding ambiguity score can force clarification
+    # even when the keyword safety net below does not fire — only when no
+    # explicit/sticky subspace resolved. Gated by subspace_ambiguity_route so
+    # default behavior is unchanged; settings imported locally to avoid an
+    # import cycle at module load.
+    try:
+        from .config import get_settings
+
+        if (
+            get_settings().subspace_ambiguity_route
+            and state.get("ambiguity_ambiguous")
+            and not state.get("applied_subspace")
+        ):
+            if not state.get("available_subspaces"):
+                state["available_subspaces"] = list(SUBSPACES)
+            state["needs_clarification"] = True
+            return "clarify"
+    except Exception:
+        pass
     # Safety net: if applied_subspace is None and query is scattered ambiguous, force clarify
     try:
         from .nodes.infer_specification import is_scattered_ambiguous
@@ -52,7 +72,7 @@ def should_clarify(state: RAGState) -> str:
         if not state.get("applied_subspace") and is_scattered_ambiguous(q):
             # Also ensure we have available_subspaces for the clarification node
             if not state.get("available_subspaces"):
-                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+                state["available_subspaces"] = list(SUBSPACES)
             state["needs_clarification"] = True
             return "clarify"
     except Exception:

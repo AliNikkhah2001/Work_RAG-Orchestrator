@@ -89,6 +89,14 @@ class RAGState(TypedDict):
     broaden_used: NotRequired[bool]
     # retry_stage_timing is stored in stage_timing_ms (retrieve_retry, retrieve_broadened)
 
+    # Embedding subspace ambiguity score (see docs/SUBSPACE_AMBIGUITY.md)
+    ambiguity_score: NotRequired[Optional[float]]
+    ambiguity_margin: NotRequired[Optional[float]]
+    ambiguity_entropy: NotRequired[Optional[float]]
+    ambiguity_ambiguous: NotRequired[Optional[bool]]
+    ambiguity_source: NotRequired[Optional[str]]
+    subspace_sims: NotRequired[Optional[Dict[str, float]]]
+
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:
     """Record stage timing — replaces 6-line boilerplate in every node."""

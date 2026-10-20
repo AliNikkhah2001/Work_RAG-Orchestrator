@@ -415,6 +415,38 @@ def create_app() -> FastAPI:
                 # where the follow-up lacks a different subspace keyword - sticky should persist
                 pass  # sticky_applied already holds correct value, ensure not cleared
             # If it IS a re-spec candidate, let classify/infer_specification handle the switch downstream (don't force keep)
+        # --- B: Sticky decay — stale subspace after a long run of generic turns ---
+        # Count consecutive generic user turns since the last subspace-specifying
+        # turn by scanning request.messages backwards (user-role turns only).
+        # A turn is "specifying" if it contains any subspace keyword
+        # (چک، تسهیلات، حقیقی، حقوقی، شرکت، عمومی، معرفی، مدیر، سهامدار) AND is
+        # short (<= 8 words); anything else counts as generic. If the generic
+        # run exceeds settings.sticky_decay_turns, the sticky subspace is stale:
+        # drop it (sticky_applied = None) so the T4 injection below is skipped
+        # and the query goes through the normal classify/infer path (likely
+        # clarify or a fresh subspace inference).
+        if sticky_applied is not None:
+            try:
+                _decay_kws = ["چک", "تسهیلات", "حقیقی", "حقوقی", "شرکت", "عمومی", "معرفی", "مدیر", "سهامدار"]
+                _generic_turns = 0
+                for _dm in reversed(request.messages):
+                    if _dm.get("role") != "user":
+                        continue
+                    _dt = str(_dm.get("content", "") or "").strip()
+                    if not _dt:
+                        continue
+                    # A specifying turn refreshes the sticky subspace — stop counting.
+                    if any(kw in _dt for kw in _decay_kws) and len(_dt.split()) <= 8:
+                        break
+                    _generic_turns += 1
+                if _generic_turns > get_settings().sticky_decay_turns:
+                    log.info(
+                        "B sticky decay: %d consecutive generic user turns > sticky_decay_turns=%d — dropping sticky %s for q=%r",
+                        _generic_turns, get_settings().sticky_decay_turns, sticky_applied, cur_q[:60],
+                    )
+                    sticky_applied = None
+            except Exception:
+                pass  # decay check must never break the request path
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
         # T4: Inject sticky filter_path for generic follow-ups when no explicit filter_path supplied
@@ -813,6 +845,12 @@ def create_app() -> FastAPI:
                 fallback_reason=final_state.get("fallback_reason"),
                 retry_stage_timing={k: v for k, v in {"retrieve_retry": final_state.get("stage_timing_ms", {}).get("retrieve_retry"), "retrieve_broadened": final_state.get("stage_timing_ms", {}).get("retrieve_broadened")}.items() if v is not None} or None,
                 broaden_used=bool(final_state.get("broaden_used", False)),
+                ambiguity_score=final_state.get("ambiguity_score"),
+                ambiguity_margin=final_state.get("ambiguity_margin"),
+                ambiguity_entropy=final_state.get("ambiguity_entropy"),
+                ambiguity_ambiguous=final_state.get("ambiguity_ambiguous"),
+                ambiguity_source=final_state.get("ambiguity_source"),
+                subspace_sims=final_state.get("subspace_sims"),
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")

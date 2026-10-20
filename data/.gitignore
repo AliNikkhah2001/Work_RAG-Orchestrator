@@ -1,0 +1,4 @@
+# Generated subspace artifacts (see docs/SUBSPACE_AMBIGUITY.md). Regenerate
+# with scripts/build_subspace_protos.py, calibrate_subspace.py, train_subspace_clf.py.
+*
+!.gitignore

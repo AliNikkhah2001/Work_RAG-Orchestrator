@@ -6,6 +6,7 @@ import logging
 import time
 from ..state import RAGState, record_timing
 from ..config import get_settings
+from ..subspaces import SUBSPACES
 from ..clients.knowledgebase import KnowledgebaseClient
 from ..clients.faq_verifier import verify_faq_answer
 from ..rewrite import rewrite_query, last_exchanges_text
@@ -804,6 +805,24 @@ async def retrieve(state: RAGState) -> RAGState:
         norm_query = query
     # Keep original query in state for audit, but search with normalized
     search_query = norm_query
+    # Stage 1 (instrument): embedding subspace ambiguity, computed ONCE here so
+    # every downstream path (sticky, scattered, F5) shares one signal. A scorer
+    # failure — missing artifacts, embed service down — must never break
+    # retrieval, so it is wrapped and `_amb` stays None. See
+    # docs/SUBSPACE_AMBIGUITY.md.
+    _amb = None
+    try:
+        from ..subspaces import get_scorer
+
+        _amb = await get_scorer().ascore(search_query)
+        state["ambiguity_score"] = _amb.score
+        state["ambiguity_margin"] = _amb.margin
+        state["ambiguity_entropy"] = _amb.entropy
+        state["ambiguity_ambiguous"] = _amb.ambiguous
+        state["ambiguity_source"] = _amb.source
+        state["subspace_sims"] = _amb.sims
+    except Exception as _amb_err:
+        log.warning("subspace ambiguity scoring failed: %s", _amb_err)
     settings = get_settings()
     top_k = settings.retrieval_top_k
     # E: dynamic top_k for the PRIMARY retrieval probe — short queries
@@ -1545,7 +1564,7 @@ async def retrieve(state: RAGState) -> RAGState:
             _has_sticky_sc = bool(state.get("applied_subspace"))
             if not _has_sticky_sc and _is_scattered_ret(_q_sc):
                 state["needs_clarification"] = True
-                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+                state["available_subspaces"] = list(SUBSPACES)
                 state["clarifying_question"] = None
                 # keep applied_subspace as None to signal no clear subspace
                 state["applied_subspace"] = None
@@ -1637,7 +1656,7 @@ async def retrieve(state: RAGState) -> RAGState:
                             _has_credit_effect = any(kw in _q_for_llm for kw in ["تاثیر", "تأثیر", "اعتبارسنجی", "تسهیلات", "امتیاز"])
                             if _has_cheque and _has_credit_effect:
                                 llm_choice = None
-                        if llm_choice and llm_choice in ("cheque","facilities_person","facilities_legal","general"):
+                        if llm_choice and llm_choice in SUBSPACES:
                             filter_path = get_settings().subspace_map.get(llm_choice, "")
                             if filter_path:
                                 _fresult_llm = None
@@ -1777,6 +1796,32 @@ async def retrieve(state: RAGState) -> RAGState:
                         state["clarifying_question"] = None  # will be filled by generate_clarification node
         except Exception as e:
             log.warning("Granularity check failed: %s", e)
+
+    # --- Stage 3 (route): late fusion of the subspace ambiguity score ---
+    # Gated by subspace_ambiguity_route and only when neither an explicit
+    # filter_path nor a sticky/resolved subspace survived the existing logic —
+    # explicit scope, sticky, and the general override above always win. Placed
+    # after the granularity block so `applied_subspace` reflects what the
+    # existing logic resolved (None = it could not decide).
+    try:
+        if (
+            settings.subspace_ambiguity_route
+            and not _explicit_scope
+            and not state.get("applied_subspace")
+            and _amb is not None
+        ):
+            if _amb.ambiguous:
+                # Defer to the existing clarify gate (graph.should_clarify).
+                state["needs_clarification"] = True
+                if not state.get("available_subspaces"):
+                    state["available_subspaces"] = list(SUBSPACES)
+            elif _amb.subspace:
+                # Confident subspace: clear the flag and route so the F5
+                # filtered re-retrieve below runs against it.
+                state["applied_subspace"] = _amb.subspace
+                state["needs_clarification"] = False
+    except Exception as _route_err:
+        log.warning("subspace ambiguity routing failed: %s", _route_err)
 
     # --- Filtered re-retrieve (F5) ---
     # If scattered but we have an inferred/sticky subspace, re-retrieve filtered
