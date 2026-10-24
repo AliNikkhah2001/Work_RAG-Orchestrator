@@ -15,6 +15,7 @@ from .nodes import (
     build_context,
     guarded_generate,
     format_response,
+    hybrid_classify_node,
 )
 from .nodes.generate_clarification import generate_clarification
 from .nodes.classify import classify
@@ -29,11 +30,11 @@ def should_continue_after_validation(state: RAGState) -> str:
 
 
 def should_route_after_classify(state: RAGState) -> str:
-    """Conditional edge after LLM classify: greeting/spec go directly to format_response, question -> retrieve."""
+    """Conditional edge after LLM classify: greeting/spec go directly to format_response, question -> hybrid_classify."""
     cat = state.get("classify")
     if cat in ("greeting", "specification"):
         return "format_response"
-    return "retrieve"
+    return "hybrid_classify"
 
 
 def should_clarify(state: RAGState) -> str:
@@ -89,6 +90,7 @@ def create_graph() -> StateGraph:
     # Add nodes
     graph.add_node("validate_input", validate_input)
     graph.add_node("classify", classify)
+    graph.add_node("hybrid_classify", hybrid_classify_node)
     graph.add_node("mizan_subspace_continuity", mizan_subspace_continuity_node)
     graph.add_node("retrieve", retrieve)
     graph.add_node("mizan_retrieval_judge", mizan_retrieval_judge_node)
@@ -111,18 +113,18 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # Conditional edge from classify: greeting/spec -> format_response, question -> mizan_subspace_continuity
+    # Conditional edge from classify: greeting/spec -> format_response, question -> hybrid_classify
     graph.add_conditional_edges(
         "classify",
         should_route_after_classify,
         {
             "format_response": "format_response",
-            "retrieve": "mizan_subspace_continuity",
+            "retrieve": "hybrid_classify",
         },
     )
     
-    # Subspace continuity -> retrieve
-    graph.add_edge("mizan_subspace_continuity", "retrieve")
+    # Hybrid classify -> subspace continuity -> retrieve
+    graph.add_edge("hybrid_classify", "mizan_subspace_continuity")
     
     # Conditional after retrieve: clarify vs mizan_retrieval_judge
     graph.add_conditional_edges(

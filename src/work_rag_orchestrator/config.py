@@ -125,6 +125,14 @@ class Settings(BaseSettings):
             return float(self.evidence_min_score_general)
         return float(self.evidence_min_score)
 
+    # Hybrid classifier + Gemma escalation (thresholded hybrid architecture)
+    # Classifier (SVM-RBF) runs first; if confidence < threshold, escalate to Gemma.
+    hybrid_classifier_enabled: bool = True
+    hybrid_classifier_confidence_threshold: float = 0.60
+    hybrid_classifier_gemma_model: str = "gemma-4-31b-triton-trt"
+    hybrid_classifier_gemma_max_tokens: int = 16
+    hybrid_classifier_gemma_temperature: float = 0.0
+
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
 
