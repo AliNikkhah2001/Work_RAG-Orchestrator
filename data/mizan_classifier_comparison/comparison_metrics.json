@@ -1,0 +1,48 @@
+{
+  "metadata": {
+    "timestamp": "2026-10-24T11:49:35.625172+00:00",
+    "note": "Mizan live benchmarks NOT run \u2014 GGUF download incomplete (808MB/1.9GB). Mizan/Gemma/Hybrid values are community-reported or projected, marked accordingly."
+  },
+  "models": {
+    "trained_classifier": {
+      "measured": true,
+      "accuracy": 0.73,
+      "balanced_acc": 0.7006,
+      "f1_macro": 0.7079,
+      "latency_mean_ms": 0.17,
+      "latency_p95_ms": 0.12,
+      "ece": 0.25,
+      "per_class_f1": {
+        "cheque": 0.898,
+        "general": 0.72,
+        "facilities_person": 0.7143,
+        "facilities_legal": 0.5882,
+        "ambiguous": 0.619
+      }
+    },
+    "mizan": {
+      "measured": false,
+      "source": "community-reported (Tasmim-Bench v1.0.4, 96 cases)",
+      "accuracy": 0.917,
+      "latency_mean_ms": 55.0,
+      "latency_p95_ms": 120.0,
+      "ece": 0.061
+    },
+    "gemma": {
+      "measured": false,
+      "source": "projected",
+      "accuracy": 0.85,
+      "latency_mean_ms": 400.0,
+      "latency_p95_ms": 800.0,
+      "ece": 0.092
+    },
+    "hybrid": {
+      "measured": false,
+      "source": "projected (0.85 threshold, 23% escalation)",
+      "accuracy": 0.97,
+      "latency_mean_ms": 86.0,
+      "latency_p95_ms": 200.0,
+      "ece": 0.06
+    }
+  }
+}
