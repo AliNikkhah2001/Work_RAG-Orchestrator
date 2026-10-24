@@ -96,6 +96,8 @@ class RAGState(TypedDict):
     ambiguity_ambiguous: NotRequired[Optional[bool]]
     ambiguity_source: NotRequired[Optional[str]]
     subspace_sims: NotRequired[Optional[Dict[str, float]]]
+    ambiguity_intra_spread: NotRequired[Optional[Dict[str, float]]]
+    ambiguity_proto_coverage: NotRequired[Optional[Dict[str, float]]]
 
 
 def record_timing(state: "RAGState", stage: str, elapsed_ms: float) -> None:

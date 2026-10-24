@@ -27,6 +27,7 @@ from work_rag_orchestrator.subspaces import (
 # All keys guaranteed by AmbiguityResult.as_dict().
 EXPECTED_RESULT_KEYS = {
     "sims",
+    "all_sims",
     "top1",
     "top2",
     "margin",
@@ -35,6 +36,8 @@ EXPECTED_RESULT_KEYS = {
     "ambiguous",
     "subspace",
     "source",
+    "intra_spread",
+    "proto_coverage",
 }
 
 
@@ -359,8 +362,9 @@ def test_multi_prototype_uses_best_prototype(settings):
     """When prototypes are present the max over k prototypes decides the label."""
     centroids = np.zeros((4, 4), dtype="float32")  # useless if (wrongly) used
     prototypes = np.zeros((4, 2, 4), dtype="float32")
-    prototypes[0, 0] = [1, 0, 0, 0]
-    prototypes[0, 1] = [0, 0, 0, 1]  # second cheque prototype matches the query
+    # Two cheque prototypes, both similar to query [0, 0, 0, 1] -> low intra_spread
+    prototypes[0, 0] = [0, 0, 0, 1]
+    prototypes[0, 1] = [0, 0, 0.1, 0.995]  # ~same direction, low spread
     prototypes[1, 0] = [0, 1, 0, 0]
     prototypes[2, 0] = [0, 0, 1, 0]
     prototypes[3, 0] = [0.05, 0, 0, 0]

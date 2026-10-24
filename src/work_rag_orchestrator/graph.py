@@ -18,6 +18,7 @@ from .nodes import (
 )
 from .nodes.generate_clarification import generate_clarification
 from .nodes.classify import classify
+from .nodes.mizan_retrieval_judge import mizan_retrieval_judge_node, mizan_subspace_continuity_node
 
 
 def should_continue_after_validation(state: RAGState) -> str:
@@ -88,7 +89,9 @@ def create_graph() -> StateGraph:
     # Add nodes
     graph.add_node("validate_input", validate_input)
     graph.add_node("classify", classify)
+    graph.add_node("mizan_subspace_continuity", mizan_subspace_continuity_node)
     graph.add_node("retrieve", retrieve)
+    graph.add_node("mizan_retrieval_judge", mizan_retrieval_judge_node)
     graph.add_node("build_context", build_context)
     graph.add_node("guarded_generate", guarded_generate)
     graph.add_node("format_response", format_response)
@@ -108,25 +111,52 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # Conditional edge from classify: greeting/spec -> format_response, question -> retrieve
+    # Conditional edge from classify: greeting/spec -> format_response, question -> mizan_subspace_continuity
     graph.add_conditional_edges(
         "classify",
         should_route_after_classify,
         {
             "format_response": "format_response",
-            "retrieve": "retrieve",
+            "retrieve": "mizan_subspace_continuity",
         },
     )
     
-    # Conditional after retrieve: clarify vs continue
+    # Subspace continuity -> retrieve
+    graph.add_edge("mizan_subspace_continuity", "retrieve")
+    
+    # Conditional after retrieve: clarify vs mizan_retrieval_judge
     graph.add_conditional_edges(
         "retrieve",
         should_clarify,
         {
             "clarify": "generate_clarification",
-            "continue": "build_context",
+            "continue": "mizan_retrieval_judge",
         },
     )
+    
+    # Mizan retrieval judge: route based on action
+    def route_after_mizan_judge(state: RAGState) -> str:
+        """Route after Mizan retrieval judgment."""
+        action = state.get("mizan_retrieval_judgment", {}).get("action", "accept")
+        if action == "retrieve_again":
+            return "retrieve_again"
+        if action == "change_subspace":
+            return "change_subspace"
+        if action == "reject":
+            return "rejected"
+        return "continue"
+    
+    graph.add_conditional_edges(
+        "mizan_retrieval_judge",
+        route_after_mizan_judge,
+        {
+            "continue": "build_context",
+            "retrieve_again": "retrieve",  # Re-enter retrieve with broadened params
+            "change_subspace": "retrieve",  # Re-enter retrieve with new subspace
+            "rejected": "build_context",    # Continue to build_context (will trigger G5 refusal)
+        },
+    )
+    
     graph.add_edge("generate_clarification", END)
     graph.add_edge("build_context", "guarded_generate")
     graph.add_edge("guarded_generate", "format_response")

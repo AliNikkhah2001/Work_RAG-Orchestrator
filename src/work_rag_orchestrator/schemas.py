@@ -88,7 +88,9 @@ class AuditTrail(BaseModel):
     ambiguity_entropy: Optional[float] = Field(default=None, description="Normalized softmax entropy of subspace sims in [0,1]")
     ambiguity_ambiguous: Optional[bool] = Field(default=None, description="Whether the ambiguity thresholds flagged the query")
     ambiguity_source: Optional[str] = Field(default=None, description="Scorer source: protos|classifier|fallback|disabled")
-    subspace_sims: Optional[Dict[str, float]] = Field(default=None, description="Per-subspace cosine similarity map")
+    subspace_sims: Optional[Dict[str, float]] = Field(default=None, description="Per-subspace cosine similarity map (best prototype)")
+    ambiguity_intra_spread: Optional[Dict[str, float]] = Field(default=None, description="Per-subspace std over prototype similarities")
+    ambiguity_proto_coverage: Optional[Dict[str, float]] = Field(default=None, description="Per-subspace fraction of prototypes above coverage threshold")
 
 
 class ChatCompletionResponse(BaseModel):

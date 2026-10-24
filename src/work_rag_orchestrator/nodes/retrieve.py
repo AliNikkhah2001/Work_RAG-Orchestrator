@@ -728,6 +728,28 @@ async def retrieve(state: RAGState) -> RAGState:
     if "broaden_used" not in state or state["broaden_used"] is None:
         state["broaden_used"] = False
 
+    # --- Mizan-driven re-retrieval ---
+    # If Mizan judged we need to retrieve again or change subspace, apply those params
+    mizan_retry = state.get("mizan_retrieve_again")
+    mizan_change_subspace = state.get("mizan_change_subspace")
+    mizan_retry_params = state.get("mizan_retry_params", {})
+    mizan_new_subspace = state.get("mizan_new_subspace")
+    
+    # Clear Mizan flags so they don't trigger on subsequent retries
+    if mizan_retry:
+        state["mizan_retrieve_again"] = False
+        log.info("Mizan retrieve_again for request %s: params=%s", request_id, mizan_retry_params)
+    if mizan_change_subspace:
+        state["mizan_change_subspace"] = False
+        log.info("Mizan change_subspace for request %s: new_subspace=%s", request_id, mizan_new_subspace)
+    
+    # If Mizan wants subspace change, override applied_subspace
+    if mizan_change_subspace and mizan_new_subspace and mizan_new_subspace != "auto":
+        state["applied_subspace"] = mizan_new_subspace
+    elif mizan_change_subspace and mizan_new_subspace == "auto":
+        # Mizan detected mismatch but didn't specify - will infer from query
+        state["applied_subspace"] = None
+
     faq_answer = find_direct_answer(query)
     if faq_answer:
         state["direct_faq_answer"] = faq_answer
@@ -821,6 +843,8 @@ async def retrieve(state: RAGState) -> RAGState:
         state["ambiguity_ambiguous"] = _amb.ambiguous
         state["ambiguity_source"] = _amb.source
         state["subspace_sims"] = _amb.sims
+        state["ambiguity_intra_spread"] = _amb.intra_spread
+        state["ambiguity_proto_coverage"] = _amb.proto_coverage
     except Exception as _amb_err:
         log.warning("subspace ambiguity scoring failed: %s", _amb_err)
     settings = get_settings()
@@ -834,6 +858,15 @@ async def retrieve(state: RAGState) -> RAGState:
     # comparable across paths.
     query_tokens = len(search_query.split())
     primary_top_k = 30 if query_tokens <= 6 else top_k
+
+    # Mizan retry params override (from mizan_retrieval_judge)
+    if mizan_retry and mizan_retry_params:
+        primary_top_k = mizan_retry_params.get("top_k", primary_top_k)
+        # If Mizan says broaden, use whole KB (no filter)
+        if mizan_retry_params.get("broaden", False):
+            explicit_filter = None
+            state["applied_subspace"] = None
+            log.info("Mizan broaden=True for request %s - using whole KB", request_id)
 
     # F7 scope picker: if caller supplied explicit filter_path, honor it
     explicit_filter = (state.get("filter_path") or "").strip() if state.get("filter_path") else None

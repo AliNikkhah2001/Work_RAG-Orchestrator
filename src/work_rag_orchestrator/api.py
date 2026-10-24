@@ -851,6 +851,8 @@ def create_app() -> FastAPI:
                 ambiguity_ambiguous=final_state.get("ambiguity_ambiguous"),
                 ambiguity_source=final_state.get("ambiguity_source"),
                 subspace_sims=final_state.get("subspace_sims"),
+                ambiguity_intra_spread=final_state.get("ambiguity_intra_spread"),
+                ambiguity_proto_coverage=final_state.get("ambiguity_proto_coverage"),
             )
         except Exception as e:
             log.warning(f"Failed to build audit trail: {e}")

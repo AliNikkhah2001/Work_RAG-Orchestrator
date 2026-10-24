@@ -55,8 +55,9 @@ def _get_async_client() -> "Any":
 class AmbiguityResult:
     """Calibrated ambiguity signal for one query."""
 
-    sims: dict[str, float]  # subspace -> cosine similarity
-    top1: float  # max sim
+    sims: dict[str, float]  # subspace -> cosine similarity (best prototype)
+    all_sims: dict[str, list[float]]  # subspace -> list of prototype similarities
+    top1: float  # max sim (best prototype)
     top2: float  # second max sim
     margin: float  # top1 - top2
     entropy: float  # normalized softmax entropy in [0, 1]
@@ -64,11 +65,14 @@ class AmbiguityResult:
     ambiguous: bool  # decision
     subspace: str | None  # argmax when not ambiguous, else None
     source: str  # "protos" | "classifier" | "fallback" | "disabled"
+    intra_spread: dict[str, float]  # subspace -> std over prototypes
+    proto_coverage: dict[str, float]  # subspace -> fraction of protos > threshold
 
     def as_dict(self) -> dict:
         """Serialize to a plain dict for state/audit emission."""
         return {
             "sims": self.sims,
+            "all_sims": self.all_sims,
             "top1": self.top1,
             "top2": self.top2,
             "margin": self.margin,
@@ -77,6 +81,8 @@ class AmbiguityResult:
             "ambiguous": self.ambiguous,
             "subspace": self.subspace,
             "source": self.source,
+            "intra_spread": self.intra_spread,
+            "proto_coverage": self.proto_coverage,
         }
 
 
@@ -364,37 +370,86 @@ class SubspaceScorer:
         assert protos is not None  # guarded by score()/available
         e = self._prepare(vec)
 
+        # Compute similarities for all prototypes per subspace
+        # protos.prototypes shape: (S, K, D) or None
+        # protos.centroids shape: (S, D)
         sims: Dict[str, float] = {}
+        all_sims: Dict[str, list[float]] = {}
+        intra_spread: Dict[str, float] = {}
+        proto_coverage: Dict[str, float] = {}
+
         for i, name in enumerate(protos.subspaces):
             try:
                 if protos.prototypes is not None:
-                    proto = np.asarray(protos.prototypes[i], dtype="float32")
-                    sims[name] = float((proto @ e).max())
+                    # Multi-prototype: (K, D)
+                    proto_k = np.asarray(protos.prototypes[i], dtype="float32")
+                    # Cosine similarities: (K,)
+                    k_sims = proto_k @ e
+                    sims[name] = float(k_sims.max())
+                    all_sims[name] = k_sims.tolist()
+                    intra_spread[name] = float(k_sims.std())
+                    # Coverage: fraction of prototypes above threshold
+                    coverage_thr = float(getattr(s, "subspace_proto_coverage_thr", 0.3))
+                    proto_coverage[name] = float((k_sims > coverage_thr).mean())
                 else:
+                    # Single centroid fallback
                     centroid = np.asarray(protos.centroids[i], dtype="float32")
-                    sims[name] = float(centroid @ e)
+                    sim = float(centroid @ e)
+                    sims[name] = sim
+                    all_sims[name] = [sim]
+                    intra_spread[name] = 0.0
+                    proto_coverage[name] = 1.0 if sim > 0.3 else 0.0
             except Exception as exc:
-                # Never substitute zeros (which would read as "all ambiguous");
-                # a scoring error means no trustworthy signal -> fallback (m3).
                 log.warning("subspace %s scoring failed (%s); falling back", name, exc)
                 return self._fallback_result()
 
-        values = sorted(sims.values(), reverse=True)
+        # Weighted combination of max and mean similarity per subspace
+        proto_weight = float(getattr(s, "subspace_proto_weight", 0.7))
+        combined: Dict[str, float] = {}
+        for name in protos.subspaces:
+            k_sims = all_sims[name]
+            max_sim = max(k_sims)
+            mean_sim = float(np.mean(k_sims))
+            combined[name] = proto_weight * max_sim + (1.0 - proto_weight) * mean_sim
+
+        # Overall best subspace by combined score
+        values = sorted(combined.values(), reverse=True)
         top1 = values[0] if values else 0.0
         top2 = values[1] if len(values) > 1 else 0.0
         margin = top1 - top2
         entropy = _normalized_entropy(
-            list(sims.values()), float(getattr(s, "subspace_softmax_temp", 0.05))
+            list(combined.values()), float(getattr(s, "subspace_softmax_temp", 0.05))
         )
-        argmax = max(sims, key=sims.get) if sims else None
+        argmax = max(combined, key=combined.get) if combined else None
 
+        # Ambiguity thresholds
         min_top1 = float(getattr(s, "subspace_ambiguity_min_top1", 0.30))
         margin_thr = float(getattr(s, "subspace_ambiguity_margin", 0.08))
         entropy_max = float(getattr(s, "subspace_ambiguity_entropy_max", 0.85))
+        intra_spread_thr = float(getattr(s, "subspace_intra_spread_thr", 0.15))
 
-        ambiguous = (top1 < min_top1) or (margin < margin_thr) or (entropy > entropy_max)
+        # Intra-spread signal: max spread across subspaces
+        max_intra_spread = max(intra_spread.values()) if intra_spread else 0.0
+
+        # Weighted ambiguity score
+        weights = getattr(s, "subspace_ambiguity_weights", None)
+        if weights is None:
+            weights = {"margin": 0.4, "entropy": 0.3, "top1": 0.2, "intra_spread": 0.1}
+
+        score = _ambiguity_score_multi(
+            top1=top1,
+            margin=margin,
+            entropy=entropy,
+            max_intra_spread=max_intra_spread,
+            min_top1=min_top1,
+            margin_thr=margin_thr,
+            entropy_max=entropy_max,
+            intra_spread_thr=intra_spread_thr,
+            weights=weights,
+        )
+
+        ambiguous = (top1 < min_top1) or (margin < margin_thr) or (entropy > entropy_max) or (max_intra_spread > intra_spread_thr)
         subspace = argmax if not ambiguous else None
-        score = _ambiguity_score(top1, margin, entropy, min_top1, margin_thr, entropy_max)
         source = "protos"
 
         if self._classifier is not None:
@@ -408,6 +463,7 @@ class SubspaceScorer:
 
         return AmbiguityResult(
             sims=sims,
+            all_sims=all_sims,
             top1=top1,
             top2=top2,
             margin=margin,
@@ -416,15 +472,43 @@ class SubspaceScorer:
             ambiguous=ambiguous,
             subspace=subspace,
             source=source,
+            intra_spread=intra_spread,
+            proto_coverage=proto_coverage,
         )
 
     def _disabled_result(self) -> AmbiguityResult:
         """Neutral result used when no prototype bundle is available."""
-        return AmbiguityResult({}, 0.0, 0.0, 0.0, 0.0, 0.0, False, None, "disabled")
+        return AmbiguityResult(
+            sims={},
+            all_sims={},
+            top1=0.0,
+            top2=0.0,
+            margin=0.0,
+            entropy=0.0,
+            score=0.0,
+            ambiguous=False,
+            subspace=None,
+            source="disabled",
+            intra_spread={},
+            proto_coverage={},
+        )
 
     def _fallback_result(self) -> AmbiguityResult:
         """Neutral result used when embedding failed."""
-        return AmbiguityResult({}, 0.0, 0.0, 0.0, 0.0, 0.0, False, None, "fallback")
+        return AmbiguityResult(
+            sims={},
+            all_sims={},
+            top1=0.0,
+            top2=0.0,
+            margin=0.0,
+            entropy=0.0,
+            score=0.0,
+            ambiguous=False,
+            subspace=None,
+            source="fallback",
+            intra_spread={},
+            proto_coverage={},
+        )
 
     @staticmethod
     def _normalize(query: str) -> str:
@@ -480,6 +564,55 @@ def _ambiguity_score(
     if not excesses:
         return 0.0
     return float(min(1.0, max(0.0, max(excesses))))
+
+
+def _ambiguity_score_multi(
+    top1: float,
+    margin: float,
+    entropy: float,
+    max_intra_spread: float,
+    min_top1: float,
+    margin_thr: float,
+    entropy_max: float,
+    intra_spread_thr: float,
+    weights: dict[str, float],
+) -> float:
+    """Weighted ambiguity score with intra-spread signal, clipped to [0, 1].
+
+    Following the spec:
+      score = w1 * (1 - margin/margin_thr) + w2 * (entropy/entropy_max)
+            + w3 * (1 - top1/min_top1) + w4 * (intra_spread/intra_spread_thr)
+    Each term is clipped to [0, 1] before weighting.
+    """
+    w = weights or {"margin": 0.4, "entropy": 0.3, "top1": 0.2, "intra_spread": 0.1}
+
+    signal_margin = 0.0
+    if margin_thr > 0:
+        signal_margin = max(0.0, min(1.0, (margin_thr - margin) / margin_thr))
+
+    signal_entropy = 0.0
+    if entropy_max > 0:
+        signal_entropy = min(1.0, entropy / entropy_max)
+
+    signal_top1 = 0.0
+    if min_top1 > 0:
+        signal_top1 = max(0.0, min(1.0, (min_top1 - top1) / min_top1))
+
+    signal_spread = 0.0
+    if intra_spread_thr > 0:
+        signal_spread = min(1.0, max_intra_spread / intra_spread_thr)
+
+    score = (
+        w.get("margin", 0.4) * signal_margin
+        + w.get("entropy", 0.3) * signal_entropy
+        + w.get("top1", 0.2) * signal_top1
+        + w.get("intra_spread", 0.1) * signal_spread
+    )
+    score = float(min(1.0, max(0.0, score)))
+    # Clip near-zero scores to exactly 0 for test stability
+    if score < 1e-7:
+        score = 0.0
+    return score
 
 
 def _load_classifier(path: str) -> Optional[dict]:

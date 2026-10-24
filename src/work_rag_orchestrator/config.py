@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     embed_base_url: str = "http://127.0.0.1:8003"
     embed_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
 
+    # Multi-prototype subspace scoring (see docs/SUBSPACE_AMBIGUITY.md).
+    subspace_proto_k: int = 4
+    subspace_proto_weight: float = 0.7
+    subspace_intra_spread_thr: float = 0.15
+    subspace_proto_coverage_thr: float = 0.3
+    subspace_ambiguity_weights: dict = {
+        "margin": 0.4,
+        "entropy": 0.3,
+        "top1": 0.2,
+        "intra_spread": 0.1,
+    }
+
     # D: Per-subspace BM25 keyword_boost passed to the KB on scoped (filtered)
     # retrieval calls. Cheque docs are Q&A pairs where exact keywords
     # (چک، برگشتی، صیاد) dominate relevance, so that subspace gets the
