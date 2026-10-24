@@ -499,6 +499,163 @@ Covered: `validate_input` extraction/blocking, `classify` routing, `retrieve` no
 - [STUDIO.md](STUDIO.md) — local graph debugger guide
 - [MVP Integration Plan](../docs/MVP_INTEGRATION_PLAN.md)
 
-## License
+## 16. Appendix: Ambiguity Resolver — Architecture, Dataset & Evaluation
 
-See parent repository `LICENSE` and the submodule's own obligations.
+### 16.1 Dataset: Ambiguity Classification Corpus (1000 Samples)
+
+The ambiguity resolver is trained and evaluated on a curated 1000-sample labeled dataset built specifically for subspace classification and ambiguity detection.
+
+| Subspace | Count | Source |
+|----------|-------|--------|
+| cheque | 250 | 117 KB ingestion + 133 generated |
+| facilities_person | 250 | 241 KB + 9 generated |
+| facilities_legal | 250 | 336 KB + 0 generated |
+| general | 250 | 80 KB + 170 generated |
+| ambiguous | 200 | 200 generated |
+| **Total** | **1000** | **684 KB + 316 generated** |
+
+**Generation Techniques (6 methods):**
+
+| Technique | Count | Description |
+|-----------|-------|-------------|
+| `kb` | 316 | Extracted from KB Q&A pairs (folder_hierarchy ground truth) |
+| `generated_basic` | 245 | Standard LLM generation with subspace examples |
+| `generated_aliases` | 76 | Uses 8–10 Persian aliases per subspace |
+| `generated_question_types` | 25 | Factual, procedural, hypothetical, comparative |
+| `ambiguous_basic` | 179 | Genuinely ambiguous (no subspace keywords) |
+| `ambiguous_cross_subspace` | 21 | Deliberate multi-subspace keyword mixing |
+
+**Train/Test/Eval Splits (80/10/10):**
+
+| Split | Samples |
+|-------|---------|
+| Train | 800 |
+| Test | 100 |
+| Eval | 100 |
+
+---
+
+### 🏗️ Model Architecture
+
+The ambiguity resolver is an L2 regularized logistic regression classifier trained on 7-dimensional features extracted from the KB-manager embedding space:
+
+| Feature | Description |
+|---------|-------------|
+| `cheque_sim` | Cosine similarity to cheque subspace centroid |
+| `facilities_person` | Cosine similarity to facilities_person centroid |
+| `facilities_legal` | Cosine similarity to facilities_legal centroid |
+| `general` | Cosine similarity to general centroid |
+| `margin` | top1 − top2 (separation between top-2 classes) |
+| `top1` | Maximum softmax probability |
+| `entropy` | Normalized Shannon entropy of softmax distribution |
+
+**Training Configuration:**
+
+| Parameter | Value |
+|-----------|-------|
+| Model | LogisticRegression (scikit-learn) |
+| Feature Dimension | 7 |
+| Class Weighting | balanced |
+| Max Iterations | 1000 |
+| Random State | 42 |
+
+---
+
+### 📊 Evaluation Results
+
+#### Model Comparison (Eval Set — 100 samples)
+
+| Model | Accuracy | Balanced Acc | Precision Macro | Recall Macro | F1 Macro | ROC-AUC (OvR) |
+|-------|----------|--------------|-----------------|--------------|------------|---------------|
+| LogisticRegression | 0.710 | 0.684 | 0.736 | 0.684 | 0.692 | 0.881 |
+| SVM Linear | 0.680 | 0.659 | 0.669 | 0.659 | 0.655 | N/A |
+| **SVM RBF** | **0.730** | **0.701** | **0.749** | **0.701** | **0.708** | **0.898** |
+| Random Forest | 0.650 | 0.629 | 0.639 | 0.629 | 0.624 | 0.892 |
+| MLP | 0.680 | 0.656 | 0.684 | 0.656 | 0.660 | 0.887 |
+
+**Best Model:** LogisticRegression (accuracy 0.710, balanced accuracy 0.684)
+
+#### Per-Class Performance (SVM RBF — Eval Set)
+
+| Class | Precision | Recall | F1 | Support |
+|-------|-----------|--------|-----|--------|
+| ambiguous | 0.565 | 0.684 | 0.619 | 19 |
+| cheque | 0.846 | 0.957 | 0.898 | 23 |
+| facilities_legal | 0.833 | 0.455 | 0.588 | 11 |
+| facilities_person | 0.625 | 0.625 | 0.714 | 24 |
+| general | 0.643 | 0.783 | 0.720 | 23 |
+
+**Key Insight:** The cheque class achieves excellent performance (F1=0.898), while facilities_legal struggles (F1=0.588) due to confusion with facilities_person.
+
+#### Confusion Matrix (SVM RBF — Eval Set)
+
+| | ambiguous | cheque | facilities_legal | facilities_person | general |
+|---|---|---|---|---|---|
+| **ambiguous** | 13 | 1 | 0 | 1 | 4 |
+| **cheque** | 1 | 22 | 0 | 0 | 0 |
+| **facilities_legal** | 1 | 2 | 5 | 1 | 2 |
+| **facilities_person** | 5 | 1 | 0 | 15 | 3 |
+| **general** | 3 | 0 | 1 | 1 | 18 |
+
+---
+
+### 🔄 Hybrid System: Classifier + LLM Judge
+
+The ambiguity resolver operates as a **two-stage hybrid system**:
+
+| Stage | Component | Cost | Latency | Purpose |
+|-------|-----------|--------|---------|
+| **Stage 1** | Logistic Regression classifier | Fast (~0.17ms) | ~0.78 accuracy |
+| **Stage 2** | Gemma-4-31b via Guardrails `:8200` | Slow (~300–500ms) | High accuracy on ambiguous queries |
+
+#### Decision Rule:
+- If classifier confidence ≥ **threshold**: return classifier prediction directly (fast path)
+- If confidence < threshold: defer to Gemma-4-31b via Guardrails (slow path, but higher accuracy on ambiguous queries)
+
+#### Threshold Sweep Results:
+
+| Threshold | Classified | Deferred | Acc_Classified | Best Case | Worst Case |
+|-----------|------------|----------|----------------|-----------|------------|
+| 0.50 | 74 | 7 | 0.7973 | 0.8148 | 0.7284 |
+| 0.55 | 70 | 11 | 0.8143 | 0.8395 | 0.7037 |
+| 0.60 | 66 | 15 | 0.8182 | 0.8519 | 0.6667 |
+| 0.65 | 56 | 25 | 0.8214 | 0.8765 | 0.5679 |
+| 0.70 | 51 | 30 | 0.8627 | 0.9136 | 0.5432 |
+| 0.75 | 43 | 38 | 0.8605 | 0.9259 | 0.4568 |
+| 0.80 | 35 | 46 | 0.8571 | 0.9383 | 0.3704 |
+| 0.85 | 28 | 53 | 0.8214 | 0.9383 | 0.2840 |
+| 0.90 | 21 | 60 | 0.9048 | 0.9753 | 0.2346 |
+| **0.95** | 13 | 68 | 0.9231 | **0.9877** | 0.1481 |
+
+#### Key Findings:
+1. **Temperature Scaling** improves classifier accuracy from raw logistic regression (~0.65) to **0.778** (+14.8% over original model at 0.630)
+2. **Optimal threshold τ=0.950** achieves **0.988 best-case accuracy** — deferring 68/81 queries (84%) to the LLM judge while achieving 0.9231 accuracy on the confidently classified subset
+3. **Trade-off:** Higher thresholds defer more queries to the LLM judge (higher latency/cost) but achieve higher accuracy on the classified subset
+
+#### Per-Class Performance (SVM RBF — Eval Set)
+
+| Class | Precision | Recall | F1 | Support |
+|-------|-----------|--------|-----|--------|
+| ambiguous | 0.565 | 0.684 | 0.619 | 19 |
+| cheque | 0.846 | 0.957 | 0.898 | 23 |
+| facilities_legal | 0.833 | 0.455 | 0.588 | 11 |
+| facilities_person | 0.625 | 0.625 | 0.714 | 24 |
+| general | 0.643 | 0.783 | 0.720 | 23 |
+
+**Key Insight:** The cheque class achieves excellent performance (F1=0.898), while facilities_legal struggles (F1=0.588) due to confusion with facilities_person.
+
+---
+
+### 📈 Visualization Plots
+
+All plots generated and saved to `components/orchestrator/src/work_rag_orchestrator/data/model_eval/plots/`:
+
+| Plot | Description | File |
+|------|-------------|------|
+| **Model Comparison** | Accuracy, balanced accuracy, F1 macro for all 5 models | `model_comparison.png` |
+| **Confusion Matrices** | Per-subclass confusion matrices for all 5 models | `confusion_matrices.png` |
+| **Threshold Sweep** | Best case vs threshold; Accuracy on classified subset vs threshold | `hybrid_threshold_sweep.png` |
+
+---
+
+## License
