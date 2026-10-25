@@ -1,26 +1,30 @@
-"""Validate input node - calls Guardrails input rail check."""
+"""Validate input node - local signal detection only (no LLM call).
 
+Extracts latest user message and runs basic local checks.
+Does NOT call TRT-LLM/Gemma - that happens once in guarded_generate.
+"""
 from __future__ import annotations
 
 import logging
 import time
 from ..state import RAGState, record_timing
-from ..clients.guardrails import GuardrailsClient
 
 log = logging.getLogger(__name__)
 
 
 async def validate_input(state: RAGState) -> RAGState:
     """
-    Extract latest user message and call Guardrails input rail check.
-    
+    Extract latest user message and run local signal detection only.
+
     If blocked, set blocked=True and refusal_message.
     If allowed, continue to retrieve node.
+
+    Does NOT call TRT-LLM/Gemma - that happens once in guarded_generate.
     """
     t0 = time.monotonic()
     request_id = state["request_id"]
     messages = state["messages"]
-    
+
     # Extract latest user message
     user_messages = [m for m in messages if m.get("role") == "user"]
     if not user_messages:
@@ -30,35 +34,25 @@ async def validate_input(state: RAGState) -> RAGState:
         elapsed = round((time.monotonic() - t0) * 1000, 1)
         record_timing(state, "validate_input", elapsed)
         return state
-    
+
     query = user_messages[-1]["content"]
     state["query"] = query
     log.info("validate_input query=%r request_id=%s", query[:200], request_id)
-    
-    # Call Guardrails input check
-    async with GuardrailsClient() as client:
-        decision = await client.check_rails("input", query, request_id)
-    log.info("validate_input decision allowed=%s categories=%s reason=%r", decision.allowed, decision.categories, decision.reason)
-    
-    state["guardrail_decision"] = decision.model_dump()
 
-    try:
-        from ..tracing import trace_span
-        trace_span(
-            request_id,
-            "validate_input",
-            span_input=query,
-            span_output={"allowed": decision.allowed, "categories": decision.categories, "reason": decision.reason},
-        )
-    except Exception:
-        pass
+    # Local signal detection only - no LLM call
+    blocked = False
+    refusal_reason = None
 
-    if not decision.allowed:
-        log.info("Input blocked by guardrails: %s", decision.reason)
-        state["blocked"] = True
-        state["refusal_message"] = decision.reason or "I cannot comply with that request."
-    else:
-        state["blocked"] = False
+    low = query.strip().lower()
+    if not low:
+        blocked = True
+        refusal_reason = "Empty query"
+
+    state["blocked"] = blocked
+    state["refusal_message"] = refusal_reason
+
+    if blocked:
+        log.info("Input blocked locally: %s", refusal_reason)
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
