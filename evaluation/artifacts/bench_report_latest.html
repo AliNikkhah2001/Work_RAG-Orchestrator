@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work Credit RAG — Benchmark Report</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 24px; color: #222; background: #f8f9fa; line-height: 1.5; }
+  .container { max-width: 1100px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  h1 { font-size: 26px; margin: 0 0 6px 0; color: #111; }
+  h2 { font-size: 18px; margin: 32px 0 12px 0; padding-bottom: 6px; border-bottom: 2px solid #e3f2fd; color: #1565c0; }
+  h3 { font-size: 15px; margin: 20px 0 8px 0; color: #333; }
+  .subtitle { color: #666; font-size: 13px; margin-bottom: 18px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 16px 0 20px 0; }
+  .kpi { background: #f5f7fb; border: 1px solid #e0e7ff; border-radius: 10px; padding: 12px 14px; text-align: center; }
+  .kpi .val { font-size: 22px; font-weight: 700; color: #1565c0; }
+  .kpi .lbl { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px 0; font-size: 13px; }
+  th { background: #f5f7fb; color: #333; font-weight: 600; padding: 8px 6px; border: 1px solid #dde3ea; text-align: center; }
+  td { padding: 7px 6px; border: 1px solid #e6e8eb; text-align: center; vertical-align: top; }
+  tr:nth-child(even) { background: #fafbfc; }
+  .rtl { direction: rtl; text-align: right; font-family: Tahoma, "DejaVu Sans", sans-serif; background: #fffbe6; padding: 4px 8px; border-radius: 4px; }
+  .pass { color: #2e7d32; font-weight: 700; }
+  .fail { color: #c62828; font-weight: 700; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-stop { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+  .badge-clarify { background: #fff8e1; color: #f57f17; border: 1px solid #ffe082; }
+  .badge-greeting { background: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+  .badge-error { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+  .snippet { font-size: 12px; color: #444; text-align: left; max-width: 260px; word-break: break-word; }
+  .chunk-preview { font-size: 11px; color: #555; text-align: left; background: #f6f8fa; padding: 6px; border-radius: 4px; max-width: 260px; }
+  .alert { padding: 12px 16px; border-radius: 8px; margin: 12px 0; font-size: 13px; }
+  .alert-info { background: #e3f2fd; border: 1px solid #90caf9; color: #0d47a1; }
+  .alert-warn { background: #fff3e0; border: 1px solid #ffcc80; color: #e65100; }
+  .alert-success { background: #e8f5e9; border: 1px solid #a5d6a7; color: #1b5e20; }
+  .alert-danger { background: #ffebee; border: 1px solid #ef9a9a; color: #b71c1c; }
+  .timeline-wrap { overflow-x: auto; padding: 8px 0; }
+  svg { display: block; margin: 12px auto; max-width: 100%; height: auto; }
+  .toc { background: #f5f7fb; border: 1px solid #e0e7ff; border-radius: 8px; padding: 12px 18px; margin: 12px 0 20px 0; }
+  .toc a { color: #1565c0; text-decoration: none; font-size: 13px; }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin: 4px 0; }
+  .persian { direction: rtl; font-family: Tahoma, sans-serif; }
+  @media print {
+    body { background: #fff; padding: 0; font-size: 11pt; }
+    .container { box-shadow: none; border: none; padding: 12px; max-width: none; }
+    .kpi-grid { grid-template-columns: repeat(5, 1fr); }
+    table { page-break-inside: auto; }
+    tr { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
+    svg { page-break-inside: avoid; }
+  }
+  @media (max-width: 700px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Work Credit RAG — Benchmark Report</h1>
+<div class="subtitle">Generated 2026-10-14 09:52 UTC &nbsp;·&nbsp; model: ics-helper-agent &nbsp;·&nbsp; bench: 2026-10-14T09:52:18.539841+00:00 &nbsp;·&nbsp; ragas judge: gemma-4-31b (http://127.0.0.1:9000/v1/chat/completions)</div>
+<div class="kpi-grid">
+<div class="kpi"><div class="val">41</div><div class="lbl">total turns</div></div>
+<div class="kpi"><div class="val">12</div><div class="lbl">total conversations</div></div>
+<div class="kpi"><div class="val">4938 ms</div><div class="lbl">avg latency</div></div>
+<div class="kpi"><div class="val">0.0%</div><div class="lbl">error rate</div></div>
+<div class="kpi"><div class="val">4872 ms</div><div class="lbl">p50 latency</div></div>
+</div>
+<div class="toc"><strong>Contents</strong><ol><li><a href="#overall">Overall Metrics</a></li><li><a href="#subspace">Per-Subspace Comparison</a></li><li><a href="#convs">Per-Conversation Drill-Down</a></li><li><a href="#hallucination">Hallucination Details (G5)</a></li><li><a href="#ambiguity">Ambiguity Resolution Scatter</a></li><li><a href="#sticky">Sticky Persistence Timeline</a></li><li><a href="#kbprobe">Direct Retrieval Probe</a></li><li><a href="#fallback">Retry / Fallback Observability</a></li></ol></div>
+<h2 id="overall">1. Overall Metrics</h2>
+<table><tr><th>Metric</th><th>Score (0–1)</th><th>Interpretation</th></tr>
+<tr><td>faithfulness</td><td><strong>0.461</strong></td><td>higher is better</td></tr>
+<tr><td>answer_relevancy</td><td><strong>0.568</strong></td><td>higher is better</td></tr>
+<tr><td>context_relevancy</td><td><strong>0.283</strong></td><td>higher is better</td></tr>
+<tr><td>context_recall</td><td><strong>0.340</strong></td><td>higher is better</td></tr>
+<tr><td>hallucination <span style="color:#666">(inverted: 1 − hallucination)</span></td><td><strong>0.746</strong> <span style="color:#777;font-size:11px;">(raw hallucination 0.254)</span></td><td>higher is better — not hallucinating</td></tr>
+<tr><td>ambiguity_resolution</td><td><strong>1.000</strong></td><td>higher is better</td></tr>
+<tr><td>sticky_persistence</td><td><strong>0.683</strong></td><td>higher is better</td></tr>
+<tr><td>retrieval_hit</td><td><strong>0.780</strong></td><td>higher is better</td></tr>
+</table>
+<svg width="820" height="374" viewBox="0 0 820 374" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Overall metrics">
+<rect width="820" height="374" fill="#ffffff" rx="8"/>
+<text x="410" y="22" text-anchor="middle" font-size="14" font-weight="700" fill="#222">Overall Metrics (0 — 1, higher is better; hallucination inverted)</text>
+<text x="190" y="53" text-anchor="end" font-size="11" fill="#333">faithfulness</text>
+<rect x="200" y="40" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="40" width="258" height="18" rx="4" fill="#2e7d32" />
+<text x="768" y="53" font-size="11" fill="#222" font-weight="600">0.461</text>
+<text x="190" y="91" text-anchor="end" font-size="11" fill="#333">answer_relevancy</text>
+<rect x="200" y="78" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="78" width="318" height="18" rx="4" fill="#1565c0" />
+<text x="768" y="91" font-size="11" fill="#222" font-weight="600">0.568</text>
+<text x="190" y="129" text-anchor="end" font-size="11" fill="#333">context_relevancy</text>
+<rect x="200" y="116" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="116" width="158" height="18" rx="4" fill="#00838f" />
+<text x="768" y="129" font-size="11" fill="#222" font-weight="600">0.283</text>
+<text x="190" y="167" text-anchor="end" font-size="11" fill="#333">context_recall</text>
+<rect x="200" y="154" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="154" width="191" height="18" rx="4" fill="#6a1b9a" />
+<text x="768" y="167" font-size="11" fill="#222" font-weight="600">0.340</text>
+<text x="190" y="205" text-anchor="end" font-size="11" fill="#333">hallucination (inv)</text>
+<rect x="200" y="192" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="192" width="418" height="18" rx="4" fill="#4caf50" />
+<text x="768" y="205" font-size="11" fill="#222" font-weight="600">0.746</text>
+<text x="190" y="243" text-anchor="end" font-size="11" fill="#333">ambiguity_resolution</text>
+<rect x="200" y="230" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="230" width="560" height="18" rx="4" fill="#ef6c00" />
+<text x="768" y="243" font-size="11" fill="#222" font-weight="600">1.000</text>
+<text x="190" y="281" text-anchor="end" font-size="11" fill="#333">sticky_persistence</text>
+<rect x="200" y="268" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="268" width="382" height="18" rx="4" fill="#4527a0" />
+<text x="768" y="281" font-size="11" fill="#222" font-weight="600">0.683</text>
+<text x="190" y="319" text-anchor="end" font-size="11" fill="#333">retrieval_hit</text>
+<rect x="200" y="306" width="560" height="18" rx="4" fill="#eceff1" />
+<rect x="200" y="306" width="437" height="18" rx="4" fill="#00695c" />
+<text x="768" y="319" font-size="11" fill="#222" font-weight="600">0.780</text>
+<line x1="200" y1="38" x2="200" y2="364" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="200" y="372" text-anchor="middle" font-size="10" fill="#777">0</text>
+<line x1="480" y1="38" x2="480" y2="364" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="480" y="372" text-anchor="middle" font-size="10" fill="#777">0.5</text>
+<line x1="760" y1="38" x2="760" y2="364" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="760" y="372" text-anchor="middle" font-size="10" fill="#777">1.0</text>
+</svg>
+<h3>Stage Timing (ms) p50 / p95 / avg</h3>
+<table><tr><th>Stage</th><th>p50</th><th>p95</th><th>avg</th><th>count</th></tr>
+<tr><td>validate_input</td><td>57.6</td><td>66.3</td><td>115.49</td><td>41</td></tr>
+<tr><td>retrieve</td><td>909.9</td><td>1208.6</td><td>777.98</td><td>27</td></tr>
+<tr><td>build_context</td><td>0.3</td><td>0.4</td><td>0.31</td><td>21</td></tr>
+<tr><td>guarded_generate</td><td>5782.4</td><td>8296.6</td><td>5437.29</td><td>21</td></tr>
+<tr><td>format_response</td><td>0.8</td><td>1386.6</td><td>550.94</td><td>35</td></tr>
+</table>
+<h2 id="subspace">2. Per-Subspace Comparison</h2>
+<p style="font-size:12px;color:#666;">Columns: count, faithfulness, answer_relevancy, context_relevancy, hallucination (inverted), ambiguity_resolution, sticky_persistence, retrieval_hit, p50 latency. Hallucination shown as 1 − hallucination so higher is better. “overall” row is weighted mean across all turns.</p>
+<table><tr><th>Subspace</th><th>count</th><th>faithfulness</th><th>answer_relevancy</th><th>context_relevancy</th><th>hallucination (inv)</th><th>ambiguity</th><th>sticky</th><th>retrieval_hit</th><th>p50 latency</th></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#1976d2;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>cheque</td><td>9</td><td>0.422</td><td>0.400</td><td>0.267</td><td>0.667</td><td>1.000</td><td>0.444</td><td>0.667</td><td>5420 ms</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#388e3c;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>facilities_person</td><td>6</td><td>0.967</td><td>0.500</td><td>0.367</td><td>0.500</td><td>1.000</td><td>0.667</td><td>0.500</td><td>9376 ms</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#f57c00;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>facilities_legal</td><td>3</td><td>0.917</td><td>0.100</td><td>0.067</td><td>0.667</td><td>1.000</td><td>0.333</td><td>0.667</td><td>7402 ms</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#7b1fa2;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>general</td><td>10</td><td>0.655</td><td>0.670</td><td>0.160</td><td>0.900</td><td>1.000</td><td>0.600</td><td>0.800</td><td>6981 ms</td></tr>
+<tr style="background:#e8f0fe;font-weight:600;"><td>overall</td><td>41</td><td>0.461</td><td>0.568</td><td>0.283</td><td>0.746</td><td>1.000</td><td>0.683</td><td>0.780</td><td>4872 ms</td></tr>
+</table>
+<svg width="860" height="822" viewBox="0 0 860 822" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-subspace bars">
+<rect width="860" height="822" fill="#ffffff" rx="8"/>
+<text x="430" y="22" text-anchor="middle" font-size="14" font-weight="700" fill="#222">Per-Subspace Comparison (hallucination inverted)</text>
+<rect x="180" y="32" width="14" height="14" rx="2" fill="#1976d2"/>
+<text x="198" y="43" font-size="11" fill="#333">cheque</text>
+<rect x="330" y="32" width="14" height="14" rx="2" fill="#388e3c"/>
+<text x="348" y="43" font-size="11" fill="#333">facilities_person</text>
+<rect x="480" y="32" width="14" height="14" rx="2" fill="#f57c00"/>
+<text x="498" y="43" font-size="11" fill="#333">facilities_legal</text>
+<rect x="630" y="32" width="14" height="14" rx="2" fill="#7b1fa2"/>
+<text x="648" y="43" font-size="11" fill="#333">general</text>
+<rect x="780" y="32" width="14" height="14" rx="2" fill="#455a64"/>
+<text x="798" y="43" font-size="11" fill="#333">overall</text>
+<text x="170" y="99" text-anchor="end" font-size="11" font-weight="600" fill="#222">faithfulness</text>
+<rect x="180" y="55" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="55" width="266" height="12" rx="3" fill="#1976d2" />
+<text x="442" y="64" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.42</text>
+<rect x="180" y="71" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="71" width="609" height="12" rx="3" fill="#388e3c" />
+<text x="785" y="80" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.97</text>
+<rect x="180" y="87" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="87" width="578" height="12" rx="3" fill="#f57c00" />
+<text x="754" y="96" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.92</text>
+<rect x="180" y="103" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="103" width="413" height="12" rx="3" fill="#7b1fa2" />
+<text x="589" y="112" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.66</text>
+<rect x="180" y="119" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="119" width="290" height="12" rx="3" fill="#455a64" />
+<text x="466" y="128" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.46</text>
+<line x1="180" y1="153" x2="810" y2="153" stroke="#f0f0f0"/>
+<text x="170" y="205" text-anchor="end" font-size="11" font-weight="600" fill="#222">answer_relevancy</text>
+<rect x="180" y="161" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="161" width="252" height="12" rx="3" fill="#1976d2" />
+<text x="428" y="170" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.40</text>
+<rect x="180" y="177" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="177" width="315" height="12" rx="3" fill="#388e3c" />
+<text x="491" y="186" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.50</text>
+<rect x="180" y="193" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="193" width="63" height="12" rx="3" fill="#f57c00" />
+<text x="239" y="202" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.10</text>
+<rect x="180" y="209" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="209" width="422" height="12" rx="3" fill="#7b1fa2" />
+<text x="598" y="218" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="225" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="225" width="358" height="12" rx="3" fill="#455a64" />
+<text x="534" y="234" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.57</text>
+<line x1="180" y1="259" x2="810" y2="259" stroke="#f0f0f0"/>
+<text x="170" y="311" text-anchor="end" font-size="11" font-weight="600" fill="#222">context_relevancy</text>
+<rect x="180" y="267" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="267" width="168" height="12" rx="3" fill="#1976d2" />
+<text x="344" y="276" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.27</text>
+<rect x="180" y="283" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="283" width="231" height="12" rx="3" fill="#388e3c" />
+<text x="407" y="292" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.37</text>
+<rect x="180" y="299" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="299" width="42" height="12" rx="3" fill="#f57c00" />
+<text x="218" y="308" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.07</text>
+<rect x="180" y="315" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="315" width="101" height="12" rx="3" fill="#7b1fa2" />
+<text x="277" y="324" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.16</text>
+<rect x="180" y="331" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="331" width="178" height="12" rx="3" fill="#455a64" />
+<text x="354" y="340" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.28</text>
+<line x1="180" y1="365" x2="810" y2="365" stroke="#f0f0f0"/>
+<text x="170" y="417" text-anchor="end" font-size="11" font-weight="600" fill="#222">hallucination (inv)</text>
+<rect x="180" y="373" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="373" width="420" height="12" rx="3" fill="#1976d2" />
+<text x="596" y="382" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="389" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="389" width="315" height="12" rx="3" fill="#388e3c" />
+<text x="491" y="398" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.50</text>
+<rect x="180" y="405" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="405" width="420" height="12" rx="3" fill="#f57c00" />
+<text x="596" y="414" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="421" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="421" width="567" height="12" rx="3" fill="#7b1fa2" />
+<text x="743" y="430" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.90</text>
+<rect x="180" y="437" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="437" width="470" height="12" rx="3" fill="#455a64" />
+<text x="646" y="446" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.75</text>
+<line x1="180" y1="471" x2="810" y2="471" stroke="#f0f0f0"/>
+<text x="170" y="523" text-anchor="end" font-size="11" font-weight="600" fill="#222">ambiguity_resolution</text>
+<rect x="180" y="479" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="479" width="630" height="12" rx="3" fill="#1976d2" />
+<text x="806" y="488" text-anchor="end" font-size="9" fill="#fff" font-weight="600">1.00</text>
+<rect x="180" y="495" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="495" width="630" height="12" rx="3" fill="#388e3c" />
+<text x="806" y="504" text-anchor="end" font-size="9" fill="#fff" font-weight="600">1.00</text>
+<rect x="180" y="511" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="511" width="630" height="12" rx="3" fill="#f57c00" />
+<text x="806" y="520" text-anchor="end" font-size="9" fill="#fff" font-weight="600">1.00</text>
+<rect x="180" y="527" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="527" width="630" height="12" rx="3" fill="#7b1fa2" />
+<text x="806" y="536" text-anchor="end" font-size="9" fill="#fff" font-weight="600">1.00</text>
+<rect x="180" y="543" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="543" width="630" height="12" rx="3" fill="#455a64" />
+<text x="806" y="552" text-anchor="end" font-size="9" fill="#fff" font-weight="600">1.00</text>
+<line x1="180" y1="577" x2="810" y2="577" stroke="#f0f0f0"/>
+<text x="170" y="629" text-anchor="end" font-size="11" font-weight="600" fill="#222">sticky_persistence</text>
+<rect x="180" y="585" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="585" width="280" height="12" rx="3" fill="#1976d2" />
+<text x="456" y="594" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.44</text>
+<rect x="180" y="601" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="601" width="420" height="12" rx="3" fill="#388e3c" />
+<text x="596" y="610" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="617" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="617" width="210" height="12" rx="3" fill="#f57c00" />
+<text x="386" y="626" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.33</text>
+<rect x="180" y="633" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="633" width="378" height="12" rx="3" fill="#7b1fa2" />
+<text x="554" y="642" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.60</text>
+<rect x="180" y="649" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="649" width="430" height="12" rx="3" fill="#455a64" />
+<text x="606" y="658" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.68</text>
+<line x1="180" y1="683" x2="810" y2="683" stroke="#f0f0f0"/>
+<text x="170" y="735" text-anchor="end" font-size="11" font-weight="600" fill="#222">retrieval_hit</text>
+<rect x="180" y="691" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="691" width="420" height="12" rx="3" fill="#1976d2" />
+<text x="596" y="700" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="707" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="707" width="315" height="12" rx="3" fill="#388e3c" />
+<text x="491" y="716" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.50</text>
+<rect x="180" y="723" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="723" width="420" height="12" rx="3" fill="#f57c00" />
+<text x="596" y="732" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.67</text>
+<rect x="180" y="739" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="739" width="504" height="12" rx="3" fill="#7b1fa2" />
+<text x="680" y="748" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.80</text>
+<rect x="180" y="755" width="630" height="12" rx="3" fill="#eceff1"/>
+<rect x="180" y="755" width="492" height="12" rx="3" fill="#455a64" />
+<text x="668" y="764" text-anchor="end" font-size="9" fill="#fff" font-weight="600">0.78</text>
+<line x1="180" y1="789" x2="810" y2="789" stroke="#f0f0f0"/>
+<line x1="180" y1="50" x2="180" y2="789" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="180" y="818" text-anchor="middle" font-size="10" fill="#777">0</text>
+<line x1="495" y1="50" x2="495" y2="789" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="495" y="818" text-anchor="middle" font-size="10" fill="#777">0.5</text>
+<line x1="810" y1="50" x2="810" y2="789" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="810" y="818" text-anchor="middle" font-size="10" fill="#777">1.0</text>
+</svg>
+<h2 id="convs">3. Per-Conversation Drill-Down</h2>
+<p style="font-size:12px;color:#666;">12 multi-turn conversations + 12 single baselines. Turn-by-turn: query (RTL), expected vs actual finish_reason (green=match/red=mismatch), subspace, latency, faithfulness, content snippet (200 chars), retrieved chunks preview.</p>
+<h3 style="margin-top:18px;">conv_cheque_01 — <span style="font-weight:400;color:#555;">greeting -&gt; cheque granular -&gt; cheque sticky follow-up</span> <span style="font-size:11px;color:#777;">[cheque] elapsed 15567 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">سلام</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">greeting/no-retrieve shortcut</div></td><td><span style="font-size:11px;">greeting</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>1104 ms</td><td title="The answer contains claims about the assistant&#x27;s identity and capabilities that are not supported by any provided context.">0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">چک برگشتی چیست و چگونه رفع سوء اثر می‌شود؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">first granular cheque query, sets sticky to cheque</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">∅</span><br><span class="fail">✗ mismatch</span></td><td>5420 ms</td><td title="The answer states that no information was found, but the contexts provide detailed information about the impact of bounced checks (چک برگشتی) and the process/effect of clearing their negative impact (رفع سوء اثر).">0.000</td><td><div class="snippet" dir="rtl">بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.030</span><br>کد دلیل: DCH3-6
+متن دلیل: فرد در یک ماه گذشته سابقه رفع سوء اثر چک داشته است.
+توضیح کوتاه: سابقه چک برگشتی مهمترین عامل </div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.027</span><br>سوال: من چکم پارسال (یا چار سال پیش یا ده سال قبل) برگشت خورده هنوز تو رتبه (امتیاز)م موثره؟
+پاسخ کوتاه: اثر منفی چک برگ</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">اگر چکم بدون موجودی باشد چه کار کنم؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">anaphoric follow-up — should stay cheque via sticky</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">∅</span><br><span class="fail">✗ keep</span></td><td>7964 ms</td><td title="The first two paragraphs are supported by Context 1, which mentions that lack of funds affects the credit score and that timely removal of the negative effect (رفع سوءاثر) prevents further negative impact. However, the final paragraph regarding &#x27;average bank balance over the past year&#x27; is not mentioned in any of the provided contexts.">0.600</td><td><div class="snippet" dir="rtl">برگشت خوردن چک به دلیل فقدان یا کمبود موجودی، به طور مستقیم بر محاسبه امتیاز اعتباری شما اثر منفی می‌گذارد. این موضوع به دلیل اینکه نشان‌دهنده ناتوانی مالی در پرداخت تعهدات است، باعث کاهش رتبه اعتباری</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.027</span><br>سوال: کدوم دلایل برگشت چک توی امتیاز مهمه؟
+پاسخ کوتاه: چک‌هایی که به دلیل «فقدان موجودی»، «کمبود موجودی» یا «مسدودی حساب</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.027</span><br>سوال: آیا در محاسبه امتیاز چک، علت برگشت چک در نظر گرفته می‌شود؟
+پاسخ کوتاه: بله، فقط چکهایی که به علت کسری یا فقدان موج</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_cheque_02 — <span style="font-weight:400;color:#555;">scattered clarify -&gt; cheque spec -&gt; cheque sticky granular</span> <span style="font-size:11px;color:#777;">[cheque] elapsed 18420 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">scattered/ambiguous — expect clarify with options</div></td><td><span style="font-size:11px;">clarify</span> → <span class="badge badge-clarify">clarify</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>3056 ms</td><td title="The answer does not provide any information based on the provided contexts; instead, it asks clarifying questions that are not grounded in the source text.">0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ها؟</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.024</span><br>کد دلیل: OTN1
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام بسیار زیادی نیز بوده است.
+توضیح کوتاه</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.024</span><br>کد دلیل: OTN2
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام زیادی نیز بوده است.
+توضیح کوتاه: در م</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">چک</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">short re-spec to cheque</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">cheque</span><br><span class="pass">✓ match</span></td><td>1125 ms</td><td title="The answer provides a response based on a selected domain, but there are no contexts provided to ground or support this claim.">0.000</td><td><div class="snippet" dir="rtl">حوزه «گزارش اعتباری چک» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">تاثیر چک برگشتی بر امتیاز اعتباری چقدر است؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">granular cheque — should keep sticky cheque</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">cheque</span><br><span class="pass">✓ keep</span></td><td>13288 ms</td><td title="Most claims are well-supported by the contexts, including the importance of returned checks, the impact of amount/frequency/recency, the 5-year window for settled checks, and the impact of guarantee checks. However, the specific mention of &#x27;Rank E3 and score 1&#x27; and the reference to &#x27;Sayyad and Central Bank systems&#x27; are not present in the provided contexts.">0.800</td><td><div class="snippet" dir="rtl">سابقه چک‌های برگشتی حیاتی‌ترین عامل در تعیین امتیاز اعتباری چک یک شخص است. به طور کلی هرچه تعداد چک‌های برگشتی بیشتر باشد و مبالغ آن‌ها افزایش یابد، میزان کاهش امتیاز اعتباری شدیدتر خواهد بود.
+
+علاوه </div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.032</span><br>سوال: آیا چک‌های ضمانت که در وجه بانک صادر شده و برگشت خورده است، در گزارش اعتبارسنجی چک  اثر گذار است؟
+پاسخ کوتاه: خیر </div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.026</span><br>سوال: چن سال از سوابقم موثره توی امتیاز چک؟
+پاسخ کوتاه: سوابق چک (چک‌های برگشتی تسویه‌شده و چک‌های باز) تا ۵ سال در محاس</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_facilities_person_01 — <span style="font-weight:400;color:#555;">clarify -&gt; facilities_person -&gt; sticky -&gt; cheque re-spec</span> <span style="font-size:11px;color:#777;">[facilities_person] elapsed 15054 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">same scattered probe as cheque_02 T1</div></td><td><span style="font-size:11px;">clarify</span> → <span class="badge badge-clarify">clarify</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>2307 ms</td><td title="The answer does not provide any information based on the provided contexts; instead, it asks clarifying questions that are not grounded in the source text.">0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ها؟</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.024</span><br>کد دلیل: OTN1
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام بسیار زیادی نیز بوده است.
+توضیح کوتاه</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.024</span><br>کد دلیل: OTN2
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام زیادی نیز بوده است.
+توضیح کوتاه: در م</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">تسهیلات اشخاص حقیقی</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">re-spec to facilities_person</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_person</span> → <span style="font-size:11px;">facilities_person</span><br><span class="pass">✓ match</span></td><td>1127 ms</td><td title="The answer is a conversational acknowledgment of the selected topic and does not make any factual claims that require grounding in the provided contexts.">1.000</td><td><div class="snippet" dir="rtl">حوزه «تسهیلات اشخاص حقیقی» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">آیا میزان درآمد یا گردش حساب من هم در بهبود رتبه اعتباری تاثیر دارد؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">follow-up should stay facilities_person via sticky</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_person</span> → <span style="font-size:11px;">facilities_person</span><br><span class="pass">✓ keep</span></td><td>9376 ms</td><td title="All claims in the answer are directly supported by the provided contexts. The lack of impact of income and account turnover (Context 1, 2, 3), the applicability to high/low/irregular income earners (Context 1, 2, 5), the primary importance of timely repayment (Context 1, 2, 3, 5), the possibility of income being added in future versions (Context 1, 3), and the gradual reflection of positive financial behavior (Context 4) are all explicitly mentioned.">1.000</td><td><div class="snippet" dir="rtl">در نسخه فعلی مدل امتیاز اعتبارسنجی تسهیلات، میزان درآمد یا گردش حساب شما هیچ تاثیری بر امتیاز و رتبه اعتباری ندارد. این موضوع برای تمامی افراد، اعم از کسانی که درآمد بالایی دارند، درآمدشان پایین است ی</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.031</span><br>سوال: من درآمدم بالا هستش (n تومنه) چرا رتبه‌م B2 (یا هر رتبه‌ای) ه؟
+پاسخ کوتاه: میزان درآمد در نسخه فعلی مدل امتیاز اعت</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.031</span><br>سوال: من درآمد پایینی دارم. چرا نتونم رتبه اعتباری بالایی داشته باشم؟
+پاسخ کوتاه: میزان درآمد در نسخه فعلی مدل امتیاز اع</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>4</td><td><div class="rtl" dir="rtl">چک</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">explicit re-spec to cheque — sticky should switch</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">cheque</span><br><span class="pass">✓ match</span></td><td>821 ms</td><td title="The answer provides a response based on a selected domain, but there are no contexts provided to ground or support this claim.">0.000</td><td><div class="snippet" dir="rtl">حوزه «گزارش اعتباری چک» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_facilities_person_02 — <span style="font-weight:400;color:#555;">greeting -&gt; scattered -&gt; facilities_person granular</span> <span style="font-size:11px;color:#777;">[facilities_person] elapsed 5818 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">سلام خوبی؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">informal greeting</div></td><td><span style="font-size:11px;">greeting</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>1067 ms</td><td title="The answer contains specific claims about the assistant&#x27;s identity and purpose that are not supported by any provided context.">0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">بدهکار شدم چیکار کنم</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">scattered informal — expect clarify</div></td><td><span style="font-size:11px;">clarify</span> → <span class="badge badge-clarify">clarify</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>2862 ms</td><td title="The answer asks clarifying questions to the user instead of providing information grounded in the provided contexts. None of the claims in the answer are derived from the contexts.">0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظور شما بدهکاری در زمینه تسهیلات (شخصی یا شرکتی) است یا مربوط به چک‌های برگشتی؟</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.031</span><br>سوال: با سلام من حدود 23سال پیش با حساب خودم برای خواهرم 200هزار تومان وام گرفتم ولی ایشان اینطور که فهمیدم نصفش رو بیشت</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.028</span><br>سوال: توی گزارش امتیاز اعتباری من نوشته “دارای وضعیت منفی (معوق/ مشکوک‌الوصول)  در تسهیلات بر اساس استعلام از بانک مرکزی</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">اعتبارسنجی تسهیلات برای اشخاص حقیقی</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">explicit facilities_person granular</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_person</span> → <span style="font-size:11px;">facilities_person</span><br><span class="pass">✓ match</span></td><td>847 ms</td><td title="The answer does not make any factual claims about the topic; it is a conversational response acknowledging the selection of a category and asking for a specific question.">1.000</td><td><div class="snippet" dir="rtl">حوزه «تسهیلات اشخاص حقیقی» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_facilities_legal_01 — <span style="font-weight:400;color:#555;">facilities_legal granular -&gt; board-role re-spec to general</span> <span style="font-size:11px;color:#777;">[facilities_legal] elapsed 17854 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">محدودیت‌های تسهیلات برای اشخاص حقوقی چیست؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">direct facilities_legal granular</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_legal</span> → <span style="font-size:11px;">∅</span><br><span class="fail">✗ mismatch</span></td><td>7402 ms</td><td title="The first three paragraphs are fully supported by Context 1 and Context 3. However, the final paragraph regarding bank guarantees and the specific impact of fulfilling obligations on a legal entity&#x27;s credit rating is not mentioned anywhere in the provided contexts.">0.750</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز و بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+در مورد اشخاص حقوقی، شر</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=1.000</span><br>سوابق تسهیلاتی، چک و مالیاتی شرکت‌ها تا ۵ سال در پایگاه داده محاسبه می‌شود. اما با گذشت زمان اثر مثبت و منفی آن‌ کمرنگ‌ت</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.217</span><br>سوال: محدوده امتیاز اعتباری چقدر است و معنای آن چیست؟
+پاسخ کوتاه: در نسخه فعلی امتیاز اعتبارسنجی تسهیلات اشخاص حقیقی، مح</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">هیات مدیره چه نقشی دارد؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">board-member query — general subspace, tests re-spec away from facilities_legal</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">general</span> → <span style="font-size:11px;">general</span><br><span class="pass">✓ match</span></td><td>9767 ms</td><td title="Most claims regarding the roles and backgrounds of Komil Shaeri, Reza Ghasempour, and Mohsen Sadeghi are supported. However, the mention of &#x27;Mehdi Ahmadi&#x27; as a board member is not present in the contexts, and the general description of the board&#x27;s &#x27;strategic guidance&#x27; and &#x27;supervision of infrastructure&#x27; is an inference not explicitly stated in the text.">0.700</td><td><div class="snippet" dir="rtl">هیئت مدیره شرکت اعتبارسنجی ایران متشکل از متخصصانی در حوزه‌های مدیریت مالی، ریاضیات کاربردی و اقتصاد است که هدایت استراتژیک سازمان را بر عهده دارند. این تیم با بهره‌گیری از تجربیات گسترده در بازارهای </div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.029</span><br>Key: محسن صادقی | Value: نائب رئیس هیئت مدیره | محسن صادقی، دانش‌آموخته دکتری مدیریت مالی از دانشگاه شهید بهشتی، سابقه‌ا</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.030</span><br>...‌بازپرداخت و توان مالی برای تعیین اعتبار قابل تخصیص، ضرورت این سازوکار به دلیل رشد این کسب‌وکارها و خطر انتقال زنجیره</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_facilities_legal_02 — <span style="font-weight:400;color:#555;">greeting -&gt; facilities_legal short spec</span> <span style="font-size:11px;color:#777;">[facilities_legal] elapsed 2609 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">سلام</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">greeting</div></td><td><span style="font-size:11px;">greeting</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>824 ms</td><td title="The answer contains claims about the assistant&#x27;s identity and capabilities that are not supported by any provided context.">0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">تسهیلات اشخاص حقوقی</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">short facilities_legal spec</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_legal</span> → <span style="font-size:11px;">facilities_legal</span><br><span class="pass">✓ match</span></td><td>1087 ms</td><td title="The answer is a conversational acknowledgment of the selected topic and does not make any factual claims that require grounding in the contexts.">1.000</td><td><div class="snippet" dir="rtl">حوزه «تسهیلات اشخاص حقوقی» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_general_01 — <span style="font-weight:400;color:#555;">general entity -&gt; general intro -&gt; cheque re-spec</span> <span style="font-size:11px;color:#777;">[general] elapsed 15447 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">قاسم بور کیه</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">named entity in general subspace — no clarify expected</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">general</span> → <span style="font-size:11px;">general</span><br><span class="pass">✓ match</span></td><td>8328 ms</td><td title="The first three paragraphs are fully supported by Context 1. However, the final paragraph regarding his media appearances, emphasis on a national credit score, and goals for economic transparency is not mentioned in the provided contexts.">0.750</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌هایی نظیر گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+رضا قاسم‌پور مدیرع</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.032</span><br>Key: رضا قاسم‌پور | Value: مدیرعامل و عضو هیئت مدیره | رضا قاسم‌پور، دانش‌آموخته دکتری ریاضی کاربردی و کارشناسی ارشد اقت</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.024</span><br>سوال: کسی (اسم شخص، پسرخاله، همکار یا پدر) بدون اجازه من گزارش اعتباریمو رو گرفته. چی کار کنم؟
+پاسخ کوتاه: دریافت گزارش </div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">معرفی شرکت اعتبارسنجی ایران</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">general intro — should keep general sticky</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">general</span> → <span style="font-size:11px;">general</span><br><span class="pass">✓ keep</span></td><td>1127 ms</td><td title="The answer does not provide any information about the company requested in the question and is not grounded in any provided context (as no contexts were retrieved).">0.000</td><td><div class="snippet" dir="rtl">حوزه «پایگاه دانش عمومی» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">چک برگشتی چیست</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">explicit re-spec to cheque</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">general</span><br><span class="fail">✗ mismatch</span></td><td>4956 ms</td><td title="The answer correctly states that no information was found in the provided contexts to answer the question.">1.000</td><td><div class="snippet" dir="rtl">بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.032</span><br>سوال: در صورتی که وجه پرداختی به حساب «اعتباریتو» واریز شده ولی گزارش صادر نشده باشد، چه مدارکی برای پیگیری لازم است؟
+پا</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.027</span><br>سوال: من از شما شکایت دارم.
+پاسخ کوتاه: متأسفم که تجربه خوبی نداشتید؛ لطفاً بفرمایید مشکل چیست تا بررسی کنیم.
+پاسخ کامل:</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_general_02 — <span style="font-weight:400;color:#555;">clarify -&gt; general rejection with manager query</span> <span style="font-size:11px;color:#777;">[general] elapsed 8526 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">scattered clarify</div></td><td><span style="font-size:11px;">clarify</span> → <span class="badge badge-clarify">clarify</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>2366 ms</td><td title="The answer does not provide any information based on the provided contexts; instead, it asks clarifying questions that are not grounded in the source text.">0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظور شما بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ها؟</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.024</span><br>کد دلیل: OTN1
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام بسیار زیادی نیز بوده است.
+توضیح کوتاه</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.024</span><br>کد دلیل: OTN2
+متن دلیل: فرد در ماه‌هایی که وضعیت منفی داشته همزمان دارای مانده وام زیادی نیز بوده است.
+توضیح کوتاه: در م</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">هیچکدوم موارد بالا نیست، مدیر عامل شرکت کیه؟</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">reject clarify options, ask general board/manager</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">general</span> → <span style="font-size:11px;">∅</span><br><span class="fail">✗ mismatch</span></td><td>5480 ms</td><td title="All claims in the answer regarding the CEO&#x27;s name, education, previous roles, and achievements are directly supported by Context 1.">1.000</td><td><div class="snippet" dir="rtl">مدیرعامل فعلی شرکت اعتبارسنجی ایران دکتر رضا قاسم‌پور هستند. ایشان دارای مدرک دکتری در رشته ریاضی کاربردی و کارشناسی ارشد در رشته اقتصاد از دانشگاه تهران می‌باشند.
+
+این مدیرعامل پیش از تصدی پست فعلی، </div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=1.000</span><br>دکتر رضا قاسم‌پور در حال حاضر مدیرعامل شرکت اعتبارسنجی ایران است. این شخص دانش‌آموخته دکتری ریاضی کاربردی و کارشناسی ارش</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.033</span><br>سوال: سابقه مدیر عامل روی رتبه شرکت موثره؟
+پاسخ کوتاه: خیر، سابقه مدیرعامل بر رتبه اعتباری شرکت تأثیری ندارد.
+پاسخ کامل:</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_mixed_01 — <span style="font-weight:400;color:#555;">cheque -&gt; facilities_person re-spec</span> <span style="font-size:11px;color:#777;">[mixed] elapsed 2585 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">چک</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">single-token cheque spec</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">cheque</span> → <span style="font-size:11px;">cheque</span><br><span class="pass">✓ match</span></td><td>813 ms</td><td title="The answer provides a response based on a selected domain, but there are no contexts provided to ground or support this claim.">0.000</td><td><div class="snippet" dir="rtl">حوزه «گزارش اعتباری چک» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">حالا درباره تسهیلات اشخاص حقیقی بگو</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">explicit re-spec to facilities_person</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">facilities_person</span> → <span style="font-size:11px;">facilities_person</span><br><span class="pass">✓ match</span></td><td>1092 ms</td><td title="The answer does not make any factual claims about the topic; it simply acknowledges the selection of the topic and asks for a specific question, which is a conversational response and does not require external grounding.">1.000</td><td><div class="snippet" dir="rtl">حوزه «تسهیلات اشخاص حقیقی» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_greeting_01 — <span style="font-weight:400;color:#555;">greeting x2 -&gt; scattered clarify</span> <span style="font-size:11px;color:#777;">[greeting] elapsed 5525 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">سلام</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">greeting 1</div></td><td><span style="font-size:11px;">greeting</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>817 ms</td><td title="The answer contains claims about the assistant&#x27;s identity and capabilities that are not supported by any provided context.">0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>2</td><td><div class="rtl" dir="rtl">سلام علیکم</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">greeting 2 — still no retrieval</div></td><td><span style="font-size:11px;">greeting</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>1116 ms</td><td title="The answer contains claims about the assistant&#x27;s identity and purpose that are not supported by any provided context.">0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td><div class="chunk-preview"><span style="color:#999;font-size:11px;">— no chunks (0)</span></div></td></tr>
+<tr><td>3</td><td><div class="rtl" dir="rtl">اعتبارسنجی چیست</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">overly broad — expect clarify not direct answer</div></td><td><span style="font-size:11px;">clarify</span> → <span class="badge badge-clarify">clarify</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>2575 ms</td><td title="The answer does not provide any information or claims based on the contexts; it only asks clarifying questions to the user.">0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، آیا منظور شما آشنایی کلی با اعتبارسنجی است یا مایلید درباره اعتبارسنجی تسهیلات (افراد و شرکت‌ها) و گزارش چک بدانید؟</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.030</span><br>سوال: آیا سابقه سفته در سامانه اعتبارسنجی ثبت می‌شود و بر رتبه و امتیاز من اثر می‌گذارد؟
+پاسخ کوتاه: خیر. در حال حاضر دا</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.020</span><br>سوال: هدف از اعتبارسنجی چیست؟
+پاسخ کوتاه: هدف از اعتبارسنجی، ارزیابی میزان اعتماد به یک شخص حقیقی یا کسب و کار با استفاد</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_hallucination_01 — <span style="font-weight:400;color:#555;">hallucination guard: fake G5 grade must not be hallucinated</span> <span style="font-size:11px;color:#777;">[general] elapsed 7745 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">نمره اعتباری من G5 است چه امتیازی میگیرم</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">non-existent grade G5 — expect no hallucinated grade, top_score low or refusal/no-evidence message, no invented tier</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">—</span> → <span style="font-size:11px;">∅</span><br><span class="pass">— sticky N/A</span></td><td>7403 ms</td><td title="The answer provides information about credit ratings (A to E) and denies the existence of a G5 rating, but none of this information is present in the provided contexts.">0.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+در مورد سوال شما باید اشاره کن</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.016</span><br>سوال: امتیاز چک از چند تا چنده؟
+پاسخ کوتاه: امتیاز چک عددی بین 0 تا 100 است و  هر چه به 100نزدیکتر باشد، نشان دهنده ی خو</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.025</span><br>سوال: چند درصد از امتیاز اعتباری من وابسته به سابقه من در چک است؟
+پاسخ کوتاه: برای افراد، 12 درصد و برای کسب و کارها، 6 </div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3 style="margin-top:18px;">conv_supplement_01 — <span style="font-weight:400;color:#555;">supplemental entity list: shareholders</span> <span style="font-size:11px;color:#777;">[general] elapsed 5915 ms</span></h3>
+<table><tr><th>#</th><th>Query (RTL)</th><th>Expected → Actual <br>finish_reason</th><th>Expected → Actual <br>subspace</th><th>Latency</th><th>Faithfulness</th><th>Content snippet (200)</th><th>Retrieved chunks</th></tr>
+<tr><td>1</td><td><div class="rtl" dir="rtl">سهامداران شرکت اعتبارسنجی ایران چه کسانی هستند</div><div style="font-size:10px;color:#888;margin-top:4px;text-align:left;">should return supplemental entity list (shareholders), not just chunks</div></td><td><span style="font-size:11px;">stop</span> → <span class="badge badge-stop">stop</span><br><span class="pass">✓ match</span></td><td><span style="font-size:11px;">general</span> → <span style="font-size:11px;">facilities_legal</span><br><span class="fail">✗ mismatch</span></td><td>5558 ms</td><td title="The answer correctly states that no information regarding the shareholders of the company was found in the provided contexts.">1.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌هایی نظیر گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+بر اساس اطلاعات مو</div></td><td><div class="chunk-preview"><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#1 score=0.029</span><br>سوال: چگونه می‌توانم از صحت اطلاعات مربوط به تاریخچه پرداخت‌های خود در گزارش اعتباری اطمینان حاصل کنم؟
+پاسخ کوتاه: با چک</div><div style="margin-bottom:4px;"><span style="font-size:10px;color:#78909c;">#2 score=0.074</span><br>سوال: اگر یک بانک اطلاعات بازپرداخت اقساط مرا به شرکت اعتبارسنجی ارسال نکند (اطلاعات بازپرداخت اقساط وام در گزارش اعتبار</div><div style="font-size:10px;color:#999;">+3 more</div></div></td></tr>
+</table>
+<h3>Single-Turn Baselines</h3>
+<table><tr><th>ID</th><th>Query (RTL)</th><th>Expected → Actual</th><th>Latency</th><th>Faithfulness</th><th>Content snippet</th><th>Retrieved</th></tr>
+<tr><td>single_cheque_granular<br><span style="font-size:10px;color:#777;">cheque</span></td><td><div class="rtl" dir="rtl">چک برگشتی چیست و چگونه رفع اثر می‌شود؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>10301 ms</td><td>0.800</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+چک برگشتی زمانی رخ می‌دهد که در زم</div></td><td>10</td></tr>
+<tr><td>single_facilities_person_granular<br><span style="font-size:10px;color:#777;">facilities_person</span></td><td><div class="rtl" dir="rtl">امتیاز اعتباری اشخاص حقیقی چگونه محاسبه می‌شود؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>10718 ms</td><td>0.800</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+امتیاز اعتباری اشخاص حقیقی بر </div></td><td>10</td></tr>
+<tr><td>single_facilities_legal_granular<br><span style="font-size:10px;color:#777;">facilities_legal</span></td><td><div class="rtl" dir="rtl">الزامات وثایق برای اشخاص حقوقی چیست؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>10196 ms</td><td>1.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌هایی نظیر گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+بر اساس اطلاعات موجود در</div></td><td>10</td></tr>
+<tr><td>single_general_granular<br><span style="font-size:10px;color:#777;">general</span></td><td><div class="rtl" dir="rtl">تاریخچه شرکت اعتبارسنجی ایران را بگو</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>10063 ms</td><td>0.700</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+شرکت اعتبارسنجی ایران یک</div></td><td>10</td></tr>
+<tr><td>single_cheque_bounce_effect<br><span style="font-size:10px;color:#777;">cheque</span></td><td><div class="rtl" dir="rtl">تاثیر چک برگشتی بر امتیاز اعتباری چقدر است؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>10979 ms</td><td>0.600</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و مسائل مربوط به چک‌ها به شما کمک کنم.
+
+برگشت خوردن هر </div></td><td>10</td></tr>
+<tr><td>single_facilities_person_income<br><span style="font-size:10px;color:#777;">facilities_person</span></td><td><div class="rtl" dir="rtl">آیا میزان درآمد یا گردش حساب در رتبه اعتباری تاثیر دارد؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>9421 ms</td><td>1.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز و بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+در نسخه فعلی مدل محاسبه</div></td><td>10</td></tr>
+<tr><td>single_facilities_legal_board<br><span style="font-size:10px;color:#777;">general</span></td><td><div class="rtl" dir="rtl">هیات مدیره شرکت اعتبارسنجی ایران چه کسانی هستند؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>8766 ms</td><td>0.600</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌هایی نظیر گزارش و امتیاز اعتباری، روش‌های بهبود امتیاز، بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+هیئت مدیره شرکت اعتبارسنجی ایران</div></td><td>10</td></tr>
+<tr><td>single_general_shareholders<br><span style="font-size:10px;color:#777;">general</span></td><td><div class="rtl" dir="rtl">سهامداران شرکت اعتبارسنجی ایران چه کسانی هستند؟</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>4872 ms</td><td>1.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌هایی نظیر گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+بر اساس اطلاعات موجود در</div></td><td>10</td></tr>
+<tr><td>single_greeting<br><span style="font-size:10px;color:#777;">greeting</span></td><td><div class="rtl" dir="rtl">سلام</div></td><td>greeting → <span class="badge badge-stop">stop</span></td><td>725 ms</td><td>0.000</td><td><div class="snippet" dir="rtl">سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.</div></td><td>0</td></tr>
+<tr><td>single_scattered<br><span style="font-size:10px;color:#777;">cheque</span></td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td>clarify → <span class="badge badge-clarify">clarify</span></td><td>2141 ms</td><td>0.000</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ها؟</div></td><td>10</td></tr>
+<tr><td>single_hallucination_probe<br><span style="font-size:10px;color:#777;">general</span></td><td><div class="rtl" dir="rtl">نمره اعتباری من G5 است چه امتیازی میگیرم</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>6226 ms</td><td>0.000</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+در مورد سوال شما باید اشاره کن</div></td><td>10</td></tr>
+<tr><td>single_qasem_bour<br><span style="font-size:10px;color:#777;">general</span></td><td><div class="rtl" dir="rtl">قاسم بور کیه</div></td><td>stop → <span class="badge badge-stop">stop</span></td><td>6981 ms</td><td>0.800</td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، بررسی سوابق منفی و چک‌ها به شما کمک کنم.
+
+رضا قاسم‌پور مدیرعامل و </div></td><td>10</td></tr>
+</table>
+<h2 id="hallucination">4. Hallucination Details — G5 Grade Guard</h2>
+<div class="alert alert-info">Expected behaviour: <strong>non-existent grade G5</strong> must <em>not</em> be hallucinated. Correct response contains <span dir="rtl" class="persian">پاسخی یافت نشد</span> or “وجود ندارد / نامعتبر / یافت نشد” and does <strong>not</strong> invent a score / tier. Hallucination metric = 1.0 if hallucinated (bad), 0.0 if correct (good).</div>
+<div class="alert alert-success" style="border-left: 6px solid #2e7d32;"><strong>conv_hallucination_01 T1</strong> — Hallucination: <strong>✓ PASS — not hallucinated</strong> — non_hallucination 1.000 — faithfulness 0.000<br><span style="font-size:12px;color:#555;">Reason: abstention phrase -&gt; not hallucinated (correct abstention)</span></div>
+<table><tr><th style="width:30%">Query (RTL)</th><th>Response (200 chars)</th><th style="width:18%">Checks</th><th style="width:16%">Metrics</th></tr>
+<tr><td><div class="rtl" dir="rtl">نمره اعتباری من G5 است چه امتیازی میگیرم</div></td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+در مورد سوال شما باید اشاره کنم که در سیستم اعتبارسنجی تسهیلات برای اشخاص حقیقی، رتبه‌بندی‌ها از رتبه A تا E تعریف شده‌اند و رتبه‌</div></td><td style="font-size:12px;text-align:left;">پاسخی یافت نشد: <span class='fail'>✗ missing</span><br>وجود ندارد/یافت نشد/نامعتبر: <span class='pass'>✓ present</span><br>Invented G5 in answer: <span class='pass'>no G5 tier invented</span></td><td>hallucination 0.000<br>non_hall 1.000<br>faith 0.000</td></tr>
+</table>
+<div style="font-size:11px;color:#666;margin:6px 0 14px 0;">Retrieved chunks for G5 turn: سوال: امتیاز چک از چند تا چنده؟
+پاسخ کوتاه: امتیاز چک عددی بین 0 تا 100 است و  ه; سوال: چند درصد از امتیاز اعتباری من وابسته به سابقه من در چک است؟
+پاسخ کوتاه: بر</div>
+<div class="alert alert-success" style="border-left: 6px solid #2e7d32;"><strong>single_hallucination_probe T1</strong> — Hallucination: <strong>✓ PASS — not hallucinated</strong> — non_hallucination 1.000 — faithfulness 0.000<br><span style="font-size:12px;color:#555;">Reason: abstention phrase -&gt; not hallucinated (correct abstention)</span></div>
+<table><tr><th style="width:30%">Query (RTL)</th><th>Response (200 chars)</th><th style="width:18%">Checks</th><th style="width:16%">Metrics</th></tr>
+<tr><td><div class="rtl" dir="rtl">نمره اعتباری من G5 است چه امتیازی میگیرم</div></td><td><div class="snippet" dir="rtl">سلام، من دستیار هوشمند شرکت اعتبارسنجی ایران هستم و می‌توانم در زمینه‌های گزارش اعتباری، امتیاز و رتبه اعتباری، روش‌های بهبود امتیاز، سوابق منفی و چک‌ها به شما کمک کنم.
+
+در مورد سوال شما باید اشاره کنم که در سیستم اعتبارسنجی تسهیلات برای اشخاص حقیقی، رتبه‌بندی‌ها از رتبه A تا E تعریف شده‌اند و رتبه‌</div></td><td style="font-size:12px;text-align:left;">پاسخی یافت نشد: <span class='fail'>✗ missing</span><br>وجود ندارد/یافت نشد/نامعتبر: <span class='pass'>✓ present</span><br>Invented G5 in answer: <span class='pass'>no G5 tier invented</span></td><td>hallucination 0.000<br>non_hall 1.000<br>faith 0.000</td></tr>
+</table>
+<div style="font-size:11px;color:#666;margin:6px 0 14px 0;">Retrieved chunks for G5 turn: سوال: امتیاز چک از چند تا چنده؟
+پاسخ کوتاه: امتیاز چک عددی بین 0 تا 100 است و  ه; سوال: چند درصد از امتیاز اعتباری من وابسته به سابقه من در چک است؟
+پاسخ کوتاه: بر</div>
+<h2 id="ambiguity">5. Ambiguity Resolution Scatter</h2>
+<p style="font-size:12px;color:#666;">Scattered / ambiguous queries that should trigger <code>clarify</code> (expected_finish = clarify). Green = correctly clarified, red = should have clarified but answered directly. Score is ambiguity_resolution (1.0 = correct, 0.0 = failed).</p>
+<svg width="820" height="220" viewBox="0 0 820 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ambiguity scatter">
+<rect width="820" height="220" fill="#ffffff" rx="8"/>
+<text x="410" y="18" text-anchor="middle" font-size="12" font-weight="700" fill="#222">Ambiguity Resolution: scattered queries (expected clarify) — clarified vs not</text>
+<line x1="50" y1="170" x2="790" y2="170" stroke="#333"/>
+<line x1="50" y1="30" x2="50" y2="170" stroke="#333"/>
+<text x="20" y="100" text-anchor="middle" font-size="10" fill="#555" transform="rotate(-90 20 100)">ambiguity score</text>
+<text x="420" y="212" text-anchor="middle" font-size="10" fill="#555">turn index (scattered queries)</text>
+<line x1="46" y1="170" x2="790" y2="170" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="42" y="173" text-anchor="end" font-size="9" fill="#777">0.0</text>
+<line x1="46" y1="100" x2="790" y2="100" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="42" y="103" text-anchor="end" font-size="9" fill="#777">0.5</text>
+<line x1="46" y1="30" x2="790" y2="30" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<text x="42" y="33" text-anchor="end" font-size="9" fill="#777">1.0</text>
+<circle cx="112" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="112" y="184" text-anchor="middle" font-size="8" fill="#333">conv_cheque_</text>
+<title>conv_cheque_02 T1 — clarified score=1.00 — وضعیت اعتباری چطور است</title>
+<circle cx="235" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="235" y="184" text-anchor="middle" font-size="8" fill="#333">conv_facilit</text>
+<title>conv_facilities_person_01 T1 — clarified score=1.00 — وضعیت اعتباری چطور است</title>
+<circle cx="358" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="358" y="184" text-anchor="middle" font-size="8" fill="#333">conv_facilit</text>
+<title>conv_facilities_person_02 T2 — clarified score=1.00 — بدهکار شدم چیکار کنم</title>
+<circle cx="482" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="482" y="184" text-anchor="middle" font-size="8" fill="#333">conv_general</text>
+<title>conv_general_02 T1 — clarified score=1.00 — وضعیت اعتباری چطور است</title>
+<circle cx="605" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="605" y="184" text-anchor="middle" font-size="8" fill="#333">conv_greetin</text>
+<title>conv_greeting_01 T3 — clarified score=1.00 — اعتبارسنجی چیست</title>
+<circle cx="728" cy="30" r="7" fill="#2e7d32" stroke="#fff" stroke-width="2"/>
+<text x="728" y="184" text-anchor="middle" font-size="8" fill="#333">single_scatt</text>
+<title>single_scattered T1 — clarified score=1.00 — وضعیت اعتباری چطور است</title>
+<rect x="650" y="36" width="10" height="10" fill="#2e7d32" rx="2"/>
+<text x="664" y="44" font-size="9" fill="#333">clarified (pass)</text>
+<rect x="650" y="50" width="10" height="10" fill="#c62828" rx="2"/>
+<text x="664" y="58" font-size="9" fill="#333">not clarified (fail)</text>
+</svg>
+<table><tr><th>Conversation / Turn</th><th>Query (RTL)</th><th>Expected</th><th>Actual</th><th>Ambiguity score</th><th>Result</th><th>Response snippet</th></tr>
+<tr><td>conv_cheque_02 T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ه</div></td></tr>
+<tr><td>conv_facilities_person_01 T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ه</div></td></tr>
+<tr><td>conv_facilities_person_02 T2</td><td><div class="rtl" dir="rtl">بدهکار شدم چیکار کنم</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظور شما بدهکاری در زمینه تسهیلات (شخصی یا شرکتی) است یا مربوط به چک‌های برگشت</div></td></tr>
+<tr><td>conv_general_02 T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظور شما بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌</div></td></tr>
+<tr><td>conv_greeting_01 T3</td><td><div class="rtl" dir="rtl">اعتبارسنجی چیست</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، آیا منظور شما آشنایی کلی با اعتبارسنجی است یا مایلید درباره اعتبارسنجی تسهیلات (افراد و شرکت‌ها) </div></td></tr>
+<tr><td>single_scattered T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td><span class="badge badge-clarify">clarify</span></td><td><span class="badge badge-clarify">clarify</span></td><td>1.000</td><td class="pass">✓ clarified</td><td><div class="snippet" dir="rtl">برای راهنمایی دقیق‌تر، ممکن است بفرمایید منظورتان بررسی وضعیت اعتباری برای اشخاص حقیقی است، حقوقی یا گزارش مربوط به چک‌ه</div></td></tr>
+</table>
+<div class="alert alert-info">Ambiguous queries: 6 total — clarified 6/6 (100%) — missed 0</div>
+<h2 id="sticky">6. Sticky Persistence Timeline</h2>
+<p style="font-size:12px;color:#666;">For each multi-turn conversation, evolution of <code>applied_subspace</code> per turn. Dashed red ring = sticky mismatch (actual ≠ expected). Colors: cheque=blue, facilities_person=green, facilities_legal=orange, general=purple, ∅=grey.</p>
+<h3>conv_cheque_01 <span style="font-weight:400;color:#666;font-size:12px;">— greeting -&gt; cheque granular -&gt; cheque sticky follow-up</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_cheque_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="140.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="140.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="140.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="140.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="266.0,29 266.0,41 274.0,35" fill="#616161"/>
+<circle cx="380.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<circle cx="380.0" cy="35" r="22" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="380.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="380.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="380.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+<polygon points="506.0,29 506.0,41 514.0,35" fill="#616161"/>
+<circle cx="620.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<circle cx="620.0" cy="35" r="22" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="620.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="620.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="620.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">سلام</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>0</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">چک برگشتی چیست و چگونه رفع سوء اثر می‌شود؟</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="fail">0.000</td><td>10</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">اگر چکم بدون موجودی باشد چه کار کنم؟</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>yes</td><td class="fail">0.000</td><td>10</td></tr>
+</table>
+<h3>conv_cheque_02 <span style="font-weight:400;color:#666;font-size:12px;">— scattered clarify -&gt; cheque spec -&gt; cheque sticky granular</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_cheque_02">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="140.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="140.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="140.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="140.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="266.0,29 266.0,41 274.0,35" fill="#616161"/>
+<circle cx="380.0" cy="35" r="18" fill="#1976d2" stroke="#fff" stroke-width="2"/>
+<text x="380.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="380.0" y="14" text-anchor="middle" font-size="9" fill="#333">cheque</text>
+<text x="380.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+<polygon points="506.0,29 506.0,41 514.0,35" fill="#616161"/>
+<circle cx="620.0" cy="35" r="18" fill="#1976d2" stroke="#fff" stroke-width="2"/>
+<text x="620.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="620.0" y="14" text-anchor="middle" font-size="9" fill="#333">cheque</text>
+<text x="620.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>10</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">چک</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#1976d2;color:#fff;font-size:11px;">cheque</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">تاثیر چک برگشتی بر امتیاز اعتباری چقدر است؟</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#1976d2;color:#fff;font-size:11px;">cheque</span></td><td>yes</td><td class="pass">1.000</td><td>10</td></tr>
+</table>
+<h3>conv_facilities_person_01 <span style="font-weight:400;color:#666;font-size:12px;">— clarify -&gt; facilities_person -&gt; sticky -&gt; cheque re-spec</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_facilities_person_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="110.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="110.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="110.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="110.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="206.0,29 206.0,41 214.0,35" fill="#616161"/>
+<circle cx="290.0" cy="35" r="18" fill="#388e3c" stroke="#fff" stroke-width="2"/>
+<text x="290.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="290.0" y="14" text-anchor="middle" font-size="9" fill="#333">facilities_person</text>
+<text x="290.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_person</text>
+<polygon points="386.0,29 386.0,41 394.0,35" fill="#616161"/>
+<circle cx="470.0" cy="35" r="18" fill="#388e3c" stroke="#fff" stroke-width="2"/>
+<text x="470.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="470.0" y="14" text-anchor="middle" font-size="9" fill="#333">facilities_person</text>
+<text x="470.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_person</text>
+<polygon points="566.0,29 566.0,41 574.0,35" fill="#616161"/>
+<circle cx="650.0" cy="35" r="18" fill="#1976d2" stroke="#fff" stroke-width="2"/>
+<text x="650.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T4</text>
+<text x="650.0" y="14" text-anchor="middle" font-size="9" fill="#333">cheque</text>
+<text x="650.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>10</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">تسهیلات اشخاص حقیقی</div></td><td>facilities_person</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#388e3c;color:#fff;font-size:11px;">facilities_person</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">آیا میزان درآمد یا گردش حساب من هم در بهبود رتبه ا</div></td><td>facilities_person</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#388e3c;color:#fff;font-size:11px;">facilities_person</span></td><td>yes</td><td class="pass">1.000</td><td>10</td></tr>
+<tr><td>T4</td><td><div class="rtl" dir="rtl">چک</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#1976d2;color:#fff;font-size:11px;">cheque</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+</table>
+<h3>conv_facilities_person_02 <span style="font-weight:400;color:#666;font-size:12px;">— greeting -&gt; scattered -&gt; facilities_person granular</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_facilities_person_02">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="140.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="140.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="140.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="140.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="266.0,29 266.0,41 274.0,35" fill="#616161"/>
+<circle cx="380.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="380.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="380.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="380.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="506.0,29 506.0,41 514.0,35" fill="#616161"/>
+<circle cx="620.0" cy="35" r="18" fill="#388e3c" stroke="#fff" stroke-width="2"/>
+<text x="620.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="620.0" y="14" text-anchor="middle" font-size="9" fill="#333">facilities_person</text>
+<text x="620.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_person</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">سلام خوبی؟</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>0</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">بدهکار شدم چیکار کنم</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>10</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">اعتبارسنجی تسهیلات برای اشخاص حقیقی</div></td><td>facilities_person</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#388e3c;color:#fff;font-size:11px;">facilities_person</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+</table>
+<h3>conv_facilities_legal_01 <span style="font-weight:400;color:#666;font-size:12px;">— facilities_legal granular -&gt; board-role re-spec to general</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_facilities_legal_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="200.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<circle cx="200.0" cy="35" r="22" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="200.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="200.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="200.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_legal</text>
+<polygon points="386.0,29 386.0,41 394.0,35" fill="#616161"/>
+<circle cx="560.0" cy="35" r="18" fill="#7b1fa2" stroke="#fff" stroke-width="2"/>
+<text x="560.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="560.0" y="14" text-anchor="middle" font-size="9" fill="#333">general</text>
+<text x="560.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: general</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">محدودیت‌های تسهیلات برای اشخاص حقوقی چیست؟</div></td><td>facilities_legal</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="fail">0.000</td><td>10</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">هیات مدیره چه نقشی دارد؟</div></td><td>general</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#7b1fa2;color:#fff;font-size:11px;">general</span></td><td>no</td><td class="pass">1.000</td><td>10</td></tr>
+</table>
+<h3>conv_facilities_legal_02 <span style="font-weight:400;color:#666;font-size:12px;">— greeting -&gt; facilities_legal short spec</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_facilities_legal_02">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="200.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="200.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="200.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="200.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="386.0,29 386.0,41 394.0,35" fill="#616161"/>
+<circle cx="560.0" cy="35" r="18" fill="#f57c00" stroke="#fff" stroke-width="2"/>
+<text x="560.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="560.0" y="14" text-anchor="middle" font-size="9" fill="#333">facilities_legal</text>
+<text x="560.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_legal</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">سلام</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>0</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">تسهیلات اشخاص حقوقی</div></td><td>facilities_legal</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#f57c00;color:#fff;font-size:11px;">facilities_legal</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+</table>
+<h3>conv_general_01 <span style="font-weight:400;color:#666;font-size:12px;">— general entity -&gt; general intro -&gt; cheque re-spec</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_general_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="140.0" cy="35" r="18" fill="#7b1fa2" stroke="#fff" stroke-width="2"/>
+<text x="140.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="140.0" y="14" text-anchor="middle" font-size="9" fill="#333">general</text>
+<text x="140.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: general</text>
+<polygon points="266.0,29 266.0,41 274.0,35" fill="#616161"/>
+<circle cx="380.0" cy="35" r="18" fill="#7b1fa2" stroke="#fff" stroke-width="2"/>
+<text x="380.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="380.0" y="14" text-anchor="middle" font-size="9" fill="#333">general</text>
+<text x="380.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: general</text>
+<polygon points="506.0,29 506.0,41 514.0,35" fill="#616161"/>
+<circle cx="620.0" cy="35" r="18" fill="#7b1fa2" stroke="#fff" stroke-width="2"/>
+<circle cx="620.0" cy="35" r="22" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="620.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="620.0" y="14" text-anchor="middle" font-size="9" fill="#333">general</text>
+<text x="620.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">قاسم بور کیه</div></td><td>general</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#7b1fa2;color:#fff;font-size:11px;">general</span></td><td>no</td><td class="pass">1.000</td><td>10</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">معرفی شرکت اعتبارسنجی ایران</div></td><td>general</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#7b1fa2;color:#fff;font-size:11px;">general</span></td><td>yes</td><td class="pass">1.000</td><td>0</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">چک برگشتی چیست</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#7b1fa2;color:#fff;font-size:11px;">general</span></td><td>no</td><td class="fail">0.000</td><td>10</td></tr>
+</table>
+<h3>conv_general_02 <span style="font-weight:400;color:#666;font-size:12px;">— clarify -&gt; general rejection with manager query</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_general_02">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="200.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="200.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="200.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="200.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="386.0,29 386.0,41 394.0,35" fill="#616161"/>
+<circle cx="560.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<circle cx="560.0" cy="35" r="22" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="560.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="560.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="560.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: general</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>10</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">هیچکدوم موارد بالا نیست، مدیر عامل شرکت کیه؟</div></td><td>general</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="fail">0.000</td><td>10</td></tr>
+</table>
+<h3>conv_mixed_01 <span style="font-weight:400;color:#666;font-size:12px;">— cheque -&gt; facilities_person re-spec</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_mixed_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="200.0" cy="35" r="18" fill="#1976d2" stroke="#fff" stroke-width="2"/>
+<text x="200.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="200.0" y="14" text-anchor="middle" font-size="9" fill="#333">cheque</text>
+<text x="200.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: cheque</text>
+<polygon points="386.0,29 386.0,41 394.0,35" fill="#616161"/>
+<circle cx="560.0" cy="35" r="18" fill="#388e3c" stroke="#fff" stroke-width="2"/>
+<text x="560.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="560.0" y="14" text-anchor="middle" font-size="9" fill="#333">facilities_person</text>
+<text x="560.0" y="62" text-anchor="middle" font-size="7" fill="#666">exp: facilities_person</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">چک</div></td><td>cheque</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#1976d2;color:#fff;font-size:11px;">cheque</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">حالا درباره تسهیلات اشخاص حقیقی بگو</div></td><td>facilities_person</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#388e3c;color:#fff;font-size:11px;">facilities_person</span></td><td>no</td><td class="pass">1.000</td><td>0</td></tr>
+</table>
+<h3>conv_greeting_01 <span style="font-weight:400;color:#666;font-size:12px;">— greeting x2 -&gt; scattered clarify</span></h3>
+<div class="timeline-wrap"><svg width="760" height="70" viewBox="0 0 760 70" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticky timeline conv_greeting_01">
+<rect width="760" height="70" fill="#fafafa" rx="8" stroke="#e0e0e0"/>
+<line x1="40" y1="35" x2="720" y2="35" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+<circle cx="140.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="140.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T1</text>
+<text x="140.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="140.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="266.0,29 266.0,41 274.0,35" fill="#616161"/>
+<circle cx="380.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="380.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T2</text>
+<text x="380.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="380.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+<polygon points="506.0,29 506.0,41 514.0,35" fill="#616161"/>
+<circle cx="620.0" cy="35" r="18" fill="#78909c" stroke="#fff" stroke-width="2"/>
+<text x="620.0" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">T3</text>
+<text x="620.0" y="14" text-anchor="middle" font-size="9" fill="#333">∅</text>
+<text x="620.0" y="62" text-anchor="middle" font-size="7" fill="#999">exp: —</text>
+</svg></div>
+<table><tr><th>Turn</th><th>Query (RTL)</th><th>Expected subspace</th><th>Actual subspace</th><th>Should keep sticky</th><th>Sticky score</th><th>Retrieved</th></tr>
+<tr><td>T1</td><td><div class="rtl" dir="rtl">سلام</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>0</td></tr>
+<tr><td>T2</td><td><div class="rtl" dir="rtl">سلام علیکم</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>0</td></tr>
+<tr><td>T3</td><td><div class="rtl" dir="rtl">اعتبارسنجی چیست</div></td><td>—</td><td><span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#78909c;color:#fff;font-size:11px;">∅</span></td><td>no</td><td class="">1.000</td><td>10</td></tr>
+</table>
+<h2 id="kbprobe">7. Direct Retrieval Probe — with vs without filter</h2>
+<p style="font-size:12px;color:#666;">12 probes: direct KB <code>POST /search/api</code> with and without <code>filter_path</code> (top1 score + preview). Hit = top1 exists with rerank_score &gt; 0.</p>
+<table><tr><th>ID / Subspace</th><th>Query (RTL)</th><th>no_filter top1 score / has_results</th><th>with_filter top1 score / has_results</th><th>filter improves?</th><th>top1 preview (with_filter)</th></tr>
+<tr><td><strong>single_cheque_granular</strong><br><span style="font-size:10px;color:#777;">cheque · filter=گزارش اعتباری چک</span></td><td><div class="rtl" dir="rtl">چک برگشتی چیست و چگونه رفع اثر می‌شود؟</div></td><td>0.961 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 111 ms</span></td><td>— <br><span style="font-size:10px;color:#c62828;">✗ empty</span><br><span style="font-size:10px;color:#999;">lat 24 ms</span></td><td>—</td><td><div class="snippet"></div></td></tr>
+<tr><td><strong>single_facilities_person_granular</strong><br><span style="font-size:10px;color:#777;">facilities_person · filter=اشخاص حقیقی/اعتبارسنجی تسهیلات</span></td><td><div class="rtl" dir="rtl">امتیاز اعتباری اشخاص حقیقی چگونه محاسبه می‌شود؟</div></td><td>0.939 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 95 ms</span></td><td>0.939 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 60 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">سوال: محدوده امتیاز اعتباری چقدر است و معنای آن چیست؟
+پاسخ کوتاه: در نسخه فعلی امتیاز اعتبارسنجی تسهیلات اشخاص حقیقی، محدوده امتیاز به صورت مقابل است: 640-900 ،</div></td></tr>
+<tr><td><strong>single_facilities_legal_granular</strong><br><span style="font-size:10px;color:#777;">facilities_legal · filter=اشخاص حقوقی/اعتبارسنجی تسهیلات</span></td><td><div class="rtl" dir="rtl">الزامات وثایق برای اشخاص حقوقی چیست؟</div></td><td>0.500 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 45 ms</span></td><td>0.012 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 68 ms</span></td><td><span class='fail'>✗ no</span></td><td><div class="snippet">...‌برای مثال، اگر اثر تسهیلات +4.20 باشد، 4.20 امتیاز به امتیاز مبنا اضافه می‌شود و اگر -4.20 باشد، 4.20 امتیاز از امتیاز مبنا کم می‌شود.‌...
+SectionTitle: شاخ</div></td></tr>
+<tr><td><strong>single_general_granular</strong><br><span style="font-size:10px;color:#777;">general · filter=پایگاه دانش عمومی</span></td><td><div class="rtl" dir="rtl">تاریخچه شرکت اعتبارسنجی ایران را بگو</div></td><td>0.858 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 34 ms</span></td><td>0.992 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 15 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">...‌نوع شرکت (سهامی خاص)، سال تاسیس (1385)، نهاد ناظر (بانک مرکزی)، حامی اصلی (وزارت امور اقتصادی و دارایی) و ترکیب سهام‌داران (بانک‌ها، بیمه‌ها و لیزینگ‌ها).‌.</div></td></tr>
+<tr><td><strong>single_cheque_bounce_effect</strong><br><span style="font-size:10px;color:#777;">cheque · filter=گزارش اعتباری چک</span></td><td><div class="rtl" dir="rtl">تاثیر چک برگشتی بر امتیاز اعتباری چقدر است؟</div></td><td>0.997 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 23 ms</span></td><td>— <br><span style="font-size:10px;color:#c62828;">✗ empty</span><br><span style="font-size:10px;color:#999;">lat 26 ms</span></td><td>—</td><td><div class="snippet"></div></td></tr>
+<tr><td><strong>single_facilities_person_income</strong><br><span style="font-size:10px;color:#777;">facilities_person · filter=اشخاص حقیقی/اعتبارسنجی تسهیلات</span></td><td><div class="rtl" dir="rtl">آیا میزان درآمد یا گردش حساب در رتبه اعتباری تاثیر دارد؟</div></td><td>0.998 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 23 ms</span></td><td>1.000 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 66 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">سوال: اگر نسبت گردش حساب به درآمد من بالا باشد، امتیاز منفی اعمال می شود؟
+پاسخ کوتاه: گردش حساب و  میزان درآمد در نسخه فعلی مدل امتیاز اعتبارسنجی تسهیلات، در ام</div></td></tr>
+<tr><td><strong>single_facilities_legal_board</strong><br><span style="font-size:10px;color:#777;">general · filter=پایگاه دانش عمومی</span></td><td><div class="rtl" dir="rtl">هیات مدیره شرکت اعتبارسنجی ایران چه کسانی هستند؟</div></td><td>0.994 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 63 ms</span></td><td>0.994 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 38 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">Key: رضا قاسم‌پور | Value: مدیرعامل و عضو هیئت مدیره | رضا قاسم‌پور، دانش‌آموخته دکتری ریاضی کاربردی و کارشناسی ارشد اقتصاد از دانشگاه تهران، پیش از ورود به حوز</div></td></tr>
+<tr><td><strong>single_general_shareholders</strong><br><span style="font-size:10px;color:#777;">general · filter=پایگاه دانش عمومی</span></td><td><div class="rtl" dir="rtl">سهامداران شرکت اعتبارسنجی ایران چه کسانی هستند؟</div></td><td>0.999 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 27 ms</span></td><td>0.984 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 55 ms</span></td><td><span class='fail'>✗ no</span></td><td><div class="snippet">...‌نوع شرکت (سهامی خاص)، سال تاسیس (1385)، نهاد ناظر (بانک مرکزی)، حامی اصلی (وزارت امور اقتصادی و دارایی) و ترکیب سهام‌داران (بانک‌ها، بیمه‌ها و لیزینگ‌ها).‌.</div></td></tr>
+<tr><td><strong>single_greeting</strong><br><span style="font-size:10px;color:#777;">greeting · filter=∅</span></td><td><div class="rtl" dir="rtl">سلام</div></td><td>0.956 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 93 ms</span></td><td>0.956 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 15 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">سوال: اگر در یک روز از چندین بانک مختلف استعلام اعتباری بگیرم، آیا این موضوع به عنوان چندین استعلام مجزا ثبت می‌شود؟
+پاسخ کوتاه: بله استعلام از بانک ها درگزارش </div></td></tr>
+<tr><td><strong>single_scattered</strong><br><span style="font-size:10px;color:#777;">unknown · filter=∅</span></td><td><div class="rtl" dir="rtl">وضعیت اعتباری چطور است</div></td><td>0.739 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 37 ms</span></td><td>0.739 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 15 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">سوال: آیا وضعیت تاهل بر رتبه اعتباری تاثیر دارد؟
+پاسخ کوتاه: وضعیت تأهل بر رتبه اعتباری تأثیری ندارد.
+پاسخ کامل: خیر. امتیاز اعتباری به صورت دقیق، ولی عادلانه م</div></td></tr>
+<tr><td><strong>single_hallucination_probe</strong><br><span style="font-size:10px;color:#777;">unknown · filter=∅</span></td><td><div class="rtl" dir="rtl">نمره اعتباری من G5 است چه امتیازی میگیرم</div></td><td>0.500 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 15 ms</span></td><td>0.500 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 15 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">سوال: امتیاز چک از چند تا چنده؟
+پاسخ کوتاه: امتیاز چک عددی بین 0 تا 100 است و  هر چه به 100نزدیکتر باشد، نشان دهنده ی خوش حسابی شخص صادرکننده چک است.
+پاسخ کامل:</div></td></tr>
+<tr><td><strong>single_qasem_bour</strong><br><span style="font-size:10px;color:#777;">general · filter=پایگاه دانش عمومی</span></td><td><div class="rtl" dir="rtl">قاسم بور کیه</div></td><td>0.500 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 77 ms</span></td><td>0.500 <br><span style="font-size:10px;color:#2e7d32;">✓ has_results</span><br><span style="font-size:10px;color:#999;">lat 21 ms</span></td><td><span class='pass'>✓ yes</span></td><td><div class="snippet">Key: رضا قاسم‌پور | Value: مدیرعامل و عضو هیئت مدیره | رضا قاسم‌پور، دانش‌آموخته دکتری ریاضی کاربردی و کارشناسی ارشد اقتصاد از دانشگاه تهران، پیش از ورود به حوز</div></td></tr>
+</table>
+<h3>Hit@K Summary per Subspace (Hit = has_results)</h3>
+<table><tr><th>Subspace</th><th>count</th><th>Hit no_filter</th><th>Hit with_filter</th><th>Δ (with − without)</th></tr>
+<tr><td>cheque</td><td>2</td><td>1.00</td><td>0.00</td><td class="fail">-1.00</td></tr>
+<tr><td>facilities_legal</td><td>1</td><td>1.00</td><td>1.00</td><td class="pass">+0.00</td></tr>
+<tr><td>facilities_person</td><td>2</td><td>1.00</td><td>1.00</td><td class="pass">+0.00</td></tr>
+<tr><td>general</td><td>4</td><td>1.00</td><td>1.00</td><td class="pass">+0.00</td></tr>
+<tr><td>greeting</td><td>1</td><td>1.00</td><td>1.00</td><td class="pass">+0.00</td></tr>
+<tr><td>unknown</td><td>2</td><td>1.00</td><td>1.00</td><td class="pass">+0.00</td></tr>
+</table>
+<svg width="700" height="346" viewBox="0 0 700 346" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KB probe hit">
+<rect width="700" height="346" fill="#ffffff" rx="8"/>
+<text x="350" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#222">Direct Retrieval Probe — Hit@K per subspace (top1 exists)</text>
+<text x="170" y="46" text-anchor="end" font-size="11" fill="#333">cheque</text>
+<rect x="180" y="36" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="36" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="46" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="54" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="54" width="0" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="64" font-size="10" fill="#444">0.00 with_filter</text>
+<line x1="180" y1="78" x2="660" y2="78" stroke="#f0f0f0"/>
+<text x="170" y="92" text-anchor="end" font-size="11" fill="#333">facilities_person</text>
+<rect x="180" y="82" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="82" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="92" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="100" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="100" width="480" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="110" font-size="10" fill="#444">1.00 with_filter</text>
+<line x1="180" y1="124" x2="660" y2="124" stroke="#f0f0f0"/>
+<text x="170" y="138" text-anchor="end" font-size="11" fill="#333">facilities_legal</text>
+<rect x="180" y="128" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="128" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="138" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="146" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="146" width="480" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="156" font-size="10" fill="#444">1.00 with_filter</text>
+<line x1="180" y1="170" x2="660" y2="170" stroke="#f0f0f0"/>
+<text x="170" y="184" text-anchor="end" font-size="11" fill="#333">general</text>
+<rect x="180" y="174" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="174" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="184" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="192" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="192" width="480" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="202" font-size="10" fill="#444">1.00 with_filter</text>
+<line x1="180" y1="216" x2="660" y2="216" stroke="#f0f0f0"/>
+<text x="170" y="230" text-anchor="end" font-size="11" fill="#333">greeting</text>
+<rect x="180" y="220" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="220" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="230" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="238" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="238" width="480" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="248" font-size="10" fill="#444">1.00 with_filter</text>
+<line x1="180" y1="262" x2="660" y2="262" stroke="#f0f0f0"/>
+<text x="170" y="276" text-anchor="end" font-size="11" fill="#333">unknown</text>
+<rect x="180" y="266" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="266" width="480" height="14" rx="3" fill="#90a4ae"/>
+<text x="666" y="276" font-size="10" fill="#444">1.00 no_filter</text>
+<rect x="180" y="284" width="480" height="14" rx="3" fill="#eceff1"/>
+<rect x="180" y="284" width="480" height="14" rx="3" fill="#1976d2"/>
+<text x="666" y="294" font-size="10" fill="#444">1.00 with_filter</text>
+<line x1="180" y1="308" x2="660" y2="308" stroke="#f0f0f0"/>
+<line x1="180" y1="36" x2="180" y2="306" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<line x1="420" y1="36" x2="420" y2="306" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+<line x1="660" y1="36" x2="660" y2="306" stroke="#e0e0e0" stroke-dasharray="3 3"/>
+</svg>
+<div class="alert alert-info">Overall Hit: no_filter 12/12 (100.0%) vs with_filter 10/12 (83.3%) across 12 probes.</div>
+<h2 id="fallback">8. Retry / Fallback Observability (T7)</h2>
+<div class="alert alert-info">Total turns 41 — <strong>fallback_used 0</strong> (0.0% if 41 else "0%") — <strong>broaden_used 0</strong> (0.0% if 41 else "0%"). Fallback = filtered→whole-KB retry (T1) when filtered evidence &lt; threshold; broaden = second-leg broadened retry (T2, top_k 30, boost 1.5).</div>
+<table><tr><th>Subspace</th><th>turns</th><th>fallback_used</th><th>fallback rate</th><th>broaden_used</th><th>broaden rate</th></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#1976d2;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>cheque</td><td>12</td><td>0</td><td>0.0%</td><td>0</td><td>0.0%</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#f57c00;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>facilities_legal</td><td>4</td><td>0</td><td>0.0%</td><td>0</td><td>0.0%</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#388e3c;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>facilities_person</td><td>9</td><td>0</td><td>0.0%</td><td>0</td><td>0.0%</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#7b1fa2;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>general</td><td>12</td><td>0</td><td>0.0%</td><td>0</td><td>0.0%</td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#0288d1;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>greeting</td><td>4</td><td>0</td><td>0.0%</td><td>0</td><td>0.0%</td></tr>
+</table>
+<div class="alert alert-success">No fallback or broaden retries triggered in this bench run — all retrievals had sufficient evidence on first attempt (or were greetings/clarify with no retrieval).</div>
+<hr style="margin:28px 0;border:none;border-top:1px solid #e0e0e0;">
+<div style="font-size:11px;color:#888;text-align:center;">Work Credit RAG Benchmark Report — generated 2026-10-14 09:52 UTC · total turns 41 · error rate 0.0% · judge gemma-4-31b<br>Artifacts: bench_results_latest.json + ragas_results_latest.json → bench_report_latest.html</div>
+</div></body></html>
