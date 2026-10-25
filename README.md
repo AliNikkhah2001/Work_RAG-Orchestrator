@@ -7,7 +7,7 @@ LangGraph orchestration and public OpenAI-compatible chat API for the Work Credi
 <!-- docs-toc:start -->
 ## Documentation Index
 
-> Auto-generated from this repository's tracked Markdown notes (**2** files). Refresh with `python scripts/gen_readme_toc.py` — the `docs-toc` workflow does this automatically on push.
+> Auto-generated from this repository's tracked Markdown notes (**3** files). Refresh with `python scripts/gen_readme_toc.py` — the `docs-toc` workflow does this automatically on push.
 
 ### Repository root
 
@@ -16,6 +16,10 @@ LangGraph orchestration and public OpenAI-compatible chat API for the Work Credi
 ### `docs/`
 
 - [Subspace Ambiguity Score — Design Spec (frozen interface)](docs/SUBSPACE_AMBIGUITY.md) — Goal: replace brittle keyword-only ambiguity detection with a calibrated embedding
+
+### `evaluation/`
+
+- [Work Credit RAG — Benchmark Report](evaluation/artifacts/bench_report_latest.md) — Artifacts: bench_results_latest.json + ragas_results_latest.json → bench_report_latest.html / .md
 
 <!-- docs-toc:end -->
 
