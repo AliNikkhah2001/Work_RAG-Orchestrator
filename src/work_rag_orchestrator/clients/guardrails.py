@@ -152,6 +152,31 @@ class GuardrailsClient:
             headers=headers,
         ) as resp:
                 resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+
+                if "text/event-stream" not in content_type:
+                    body = await resp.aread()
+                    text = body.decode("utf-8", errors="replace").strip()
+                    if text:
+                        try:
+                            data = json.loads(text)
+                            choices = data.get("choices") or []
+                            content = ""
+                            if choices:
+                                choice = choices[0] or {}
+                                content = (
+                                    (choice.get("message") or {}).get("content")
+                                    or (choice.get("delta") or {}).get("content")
+                                    or ""
+                                )
+                            if content:
+                                yield content
+                            elif text:
+                                yield text
+                        except json.JSONDecodeError:
+                            yield text
+                    return
+
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -160,9 +185,10 @@ class GuardrailsClient:
                         break
                     try:
                         data = json.loads(payload)
-                        # Guardrails streams as {"choices":[{"delta":{"content":"..."}}]}
-                        delta = data.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
+                        choice = data.get("choices", [{}])[0] or {}
+                        content = (choice.get("delta") or {}).get("content")
+                        if not content:
+                            content = (choice.get("message") or {}).get("content")
                         if content:
                             yield content
                     except Exception:

@@ -103,7 +103,9 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
         # Load the trained classifier
         import joblib
 
-        clf_path = settings.subspace_clf_path
+        clf_path = Path(settings.subspace_clf_path)
+        if not clf_path.is_absolute() and not clf_path.exists():
+            clf_path = Path(__file__).resolve().parents[3] / clf_path
         obj = joblib.load(clf_path)
         clf = obj["clf"]
         classes = list(obj["subspaces"])
@@ -115,7 +117,9 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
 
         state["hybrid_classifier_source"] = "classifier"
         state["hybrid_classifier_confidence"] = confidence
-        state["applied_subspace"] = pred_label
+        state["applied_subspace"] = pred_label if pred_label in SUBSPACES else None
+        if pred_label not in SUBSPACES:
+            state["ambiguity_ambiguous"] = True
 
         # Also record ambiguity signals from the scorer for audit
         state["ambiguity_score"] = float(feats.get("ambiguity_score", 0.0)) if isinstance(feats, dict) else 0.0

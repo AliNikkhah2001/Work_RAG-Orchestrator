@@ -71,7 +71,9 @@ async def classify(state: RAGState) -> RAGState:
             state["applied_subspace"]="cheque"
         elif is_general_kw:
             state["applied_subspace"]="general"
-        elif "حقوقی" in text or ("شرکت" in text and has_facility_kw):
+        elif "شخصی" in text or "حقیقی" in text:
+            state["applied_subspace"]="facilities_person"
+        elif "شرکتی" in text or "حقوقی" in text or ("شرکت" in text and has_facility_kw):
             state["applied_subspace"]="facilities_legal"
         elif "شرکت" in text and not has_facility_kw and not has_cheque_kw:
             # "شرکت" alone without تسهیلات/چک → عمومی (معرفی شرکت)

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ORCH_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -39,8 +43,8 @@ class Settings(BaseSettings):
     # routing/clarification from the score and defaults False.
     subspace_ambiguity_enabled: bool = True
     subspace_ambiguity_route: bool = False
-    subspace_protos_path: str = "data/subspace_protos.npz"
-    subspace_clf_path: str = "data/subspace_clf.joblib"
+    subspace_protos_path: str = str(_ORCH_ROOT / "data/subspace_protos.npz")
+    subspace_clf_path: str = str(_ORCH_ROOT / "data/subspace_clf.joblib")
     subspace_ambiguity_margin: float = 0.08
     subspace_ambiguity_min_top1: float = 0.30
     subspace_ambiguity_entropy_max: float = 0.85
@@ -127,7 +131,7 @@ class Settings(BaseSettings):
 
     # Hybrid classifier + Gemma escalation (thresholded hybrid architecture)
     # Classifier (SVM-RBF) runs first; if confidence < threshold, escalate to Gemma.
-    hybrid_classifier_enabled: bool = True
+    hybrid_classifier_enabled: bool = False
     hybrid_classifier_confidence_threshold: float = 0.60
     hybrid_classifier_gemma_model: str = "gemma-4-31b-triton-trt"
     hybrid_classifier_gemma_max_tokens: int = 16

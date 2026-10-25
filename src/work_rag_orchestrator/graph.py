@@ -29,11 +29,17 @@ def should_continue_after_validation(state: RAGState) -> str:
 
 
 def should_route_after_classify(state: RAGState) -> str:
-    """Conditional edge after LLM classify: greeting/spec go directly to format_response, question -> hybrid_classify."""
+    """Conditional edge after LLM classify: greeting/spec go directly to format_response, question -> retrieve."""
     cat = state.get("classify")
     if cat in ("greeting", "specification"):
         return "format_response"
-    return "hybrid_classify"
+    try:
+        from .config import get_settings
+        if get_settings().hybrid_classifier_enabled:
+            return "hybrid_classify"
+    except Exception:
+        pass
+    return "retrieve"
 
 
 def should_clarify(state: RAGState) -> str:
@@ -117,6 +123,7 @@ def create_graph() -> StateGraph:
         {
             "format_response": "format_response",
             "hybrid_classify": "hybrid_classify",
+            "retrieve": "retrieve",
         },
     )
     

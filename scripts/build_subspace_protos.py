@@ -41,6 +41,8 @@ SUBSPACES: tuple[str, ...] = ("cheque", "facilities_person", "facilities_legal",
 # via config.embed_model; this is metadata only.
 DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
+_ST_MODEL_CACHE: dict[str, object] = {}
+
 DEFAULT_DB_URL = "postgresql://postgres:postgres@127.0.0.1:5433/kb_manager"
 DEFAULT_NPZ = (
     "/splunk-data/v1/Work_Credit-RAG_Phase1/components/knowledgebase/"
@@ -451,7 +453,10 @@ def embed_texts(
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     from sentence_transformers import SentenceTransformer
 
-    st = SentenceTransformer(resolve_model_path(model))
+    st = _ST_MODEL_CACHE.get(model)
+    if st is None:
+        st = SentenceTransformer(resolve_model_path(model))
+        _ST_MODEL_CACHE[model] = st
     return np.asarray(st.encode(texts, normalize_embeddings=False), dtype=np.float32)
 
 

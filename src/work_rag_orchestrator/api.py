@@ -356,6 +356,11 @@ def create_app() -> FastAPI:
                     low2 = hc.lower()
                     if "general" in low2 or "عام" in hc or "عمومی" in hc:
                         sticky_applied = "general"; break
+                _hc_decl = hc.strip().replace("ي", "ی").replace("ك", "ک")
+                if _hc_decl in ("شخصی", "حقیقی"):
+                    sticky_applied = "facilities_person"; break
+                if _hc_decl in ("شرکتی", "حقوقی"):
+                    sticky_applied = "facilities_legal"; break
                 if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general","مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام"):
                     low = hc.lower()
                     if "چک" in hc or "cheque" in low:
@@ -387,6 +392,41 @@ def create_app() -> FastAPI:
         # If current query explicitly says "سوالات عمومی" or contains board member names, treat as general
         if "سوالات عمومی" in cur_q or "سوال عمومی" in cur_q or "قاسم" in cur_q or "بور" in cur_q or "هیات مدیره" in cur_q or "هیئت مدیره" in cur_q or "معرفی شرکت" in cur_q:
             sticky_applied = "general"
+        # Declaration follow-up: a short reply like "شخصی"/"شرکتی"/"چک"/"عمومی"
+        # after a clarify selects the subspace AND carries the prior question forward
+        # so the next step retrieves an answer instead of asking the user to re-ask.
+        _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", cur_q).replace("ي", "ی").replace("ك", "ک")
+        _declarations = {
+            "شخصی": "facilities_person",
+            "حقیقی": "facilities_person",
+            "شرکتی": "facilities_legal",
+            "حقوقی": "facilities_legal",
+            "چک": "cheque",
+            "cheque": "cheque",
+            "عمومی": "general",
+            "general": "general",
+        }
+        _decl = _declarations.get(_decl_key)
+        _declared_filter = None
+        if _decl:
+            sticky_applied = _decl
+            _prev_q = None
+            for _pm in reversed(request.messages[:-1]):
+                if _pm.get("role") != "user":
+                    continue
+                _pq = str(_pm.get("content") or "").strip()
+                if not _pq:
+                    continue
+                if "؟" in _pq or "?" in _pq or any(w in _pq for w in ["چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "کیه"]):
+                    _prev_q = _pq
+                    break
+            if _prev_q:
+                cur_q = _prev_q
+            try:
+                _declared_filter = get_settings().subspace_map.get(_decl)
+            except Exception:
+                pass
+            log.info("Declaration follow-up %r -> subspace=%s query=%r", _decl_key, _decl, cur_q[:80])
         # T4: Carry sticky correctly for generic follow-ups - preserve checkpoint sticky even when current query is generic/ambiguous
         # Previous logic mined history skipping interrogatives, but a generic follow-up (e.g. "آیا میزان درآمد...") has no subspace keywords
         # yet is in same thread => should inherit sticky. Checkpoint sticky already captured above; ensure generic query doesn't clear it.
@@ -427,7 +467,7 @@ def create_app() -> FastAPI:
         # clarify or a fresh subspace inference).
         if sticky_applied is not None:
             try:
-                _decay_kws = ["چک", "تسهیلات", "حقیقی", "حقوقی", "شرکت", "عمومی", "معرفی", "مدیر", "سهامدار"]
+                _decay_kws = ["چک", "تسهیلات", "حقیقی", "حقوقی", "شخصی", "شرکتی", "شرکت", "عمومی", "معرفی", "مدیر", "سهامدار"]
                 _generic_turns = 0
                 for _dm in reversed(request.messages):
                     if _dm.get("role") != "user":
@@ -449,6 +489,8 @@ def create_app() -> FastAPI:
                 pass  # decay check must never break the request path
         # Ensure filter_path from request overrides sticky (explicit scope is authoritative)
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
+        if not _req_filter_path and _declared_filter:
+            _req_filter_path = _declared_filter
         # T4: Inject sticky filter_path for generic follow-ups when no explicit filter_path supplied
         # This ensures retrieve.py receives filter_path even for generic queries, so sticky is enforced at KB layer
         if not _req_filter_path and sticky_applied is not None:
@@ -510,8 +552,8 @@ def create_app() -> FastAPI:
         initial_state: RAGState = {
             "request_id": request_id,
             "messages": request.messages,
-            "query": "",
-            "rewritten_query": "",
+            "query": cur_q,
+            "rewritten_query": cur_q if cur_q != (request.messages[-1].get("content", "") if request.messages else "") else "",
             "guardrail_decision": None,
             "retrieved_chunks": [],
             "prompt_messages": [],
@@ -565,9 +607,7 @@ def create_app() -> FastAPI:
                     from .clients.guardrails import GuardrailsClient
                     from .schemas import GuardrailsChatRequest
 
-                    # Validate + Retrieve in PARALLEL (query set upfront; retrieve doesn't need validate output)
-                    # Saves ~30ms overlap since retrieve (11s) dwarfs check_rails (30ms).
-                    query = initial_state["messages"][-1]["content"] if initial_state.get("messages") else ""
+                    query = initial_state.get("query") or (initial_state["messages"][-1]["content"] if initial_state.get("messages") else "")
                     initial_state["query"] = query
                     yield ": agent validate_input + retrieve running\n\n"
                     t_retrieve = time.monotonic()
