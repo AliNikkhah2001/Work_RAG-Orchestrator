@@ -92,7 +92,7 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
         scorer = get_scorer()
         vectors = embed_texts([text], model=settings.embed_model)
 
-        feats = score_features(vectors, scorer.protos, temp=settings.subspace_softmax_temp)
+        feats = score_features(vectors, scorer._protos, temp=settings.subspace_softmax_temp)
 
         cols = [feats["sims"]]
         cols.append(feats["margin"].reshape(-1, 1))
@@ -105,8 +105,8 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
 
         clf_path = settings.subspace_clf_path
         obj = joblib.load(clf_path)
-        clf = obj["model"]
-        classes = list(obj["classes"])
+        clf = obj["clf"]
+        classes = list(obj["subspaces"])
 
         pred = clf.predict(X)[0]
         pred_label = str(pred)

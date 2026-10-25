@@ -4,7 +4,7 @@ No DB, no checkpointer: WebUI already sends the full ``messages`` history on
 every request, so the rewrite is a pure function of the incoming messages.
 
 - 0-1 user turns: return the last user message unchanged (no LLM call).
-- 2+ user turns: ask llama-server (:18000) to rewrite the last user message
+- 2+ user turns: ask Manager (:9000, routes to TRT :8010) to rewrite the last user message
   into a standalone question, then strip quotes/whitespace.
 - On ANY error/timeout: fall back to the raw last user message (never raise).
 """
@@ -18,8 +18,8 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-REWRITE_URL = "http://127.0.0.1:18000/v1/chat/completions"
-REWRITE_MODEL = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
+REWRITE_URL = "http://127.0.0.1:9000/v1/chat/completions"
+REWRITE_MODEL = "gemma-4-31b-triton-trt"
 REWRITE_TIMEOUT_S = 60.0
 REWRITE_MAX_TOKENS = 128
 

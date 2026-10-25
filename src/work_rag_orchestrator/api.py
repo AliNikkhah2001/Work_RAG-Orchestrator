@@ -315,7 +315,7 @@ def create_app() -> FastAPI:
                 log.warning("Langfuse trace init failed: %s", e)
         
         # Validate model — primary is ICS Helper Agent; keep legacy aliases for backward compat
-        allowed_models = {"ics-helper-agent", "work-rag-agent", "gemma-4-31b", "unsloth/gemma-4-31B-it-GGUF", "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", get_settings().upstream_llm_model}
+        allowed_models = {"ics-helper-agent", "work-rag-agent", "gemma-4-31b", "gemma-4-31b-triton-trt", get_settings().upstream_llm_model}
         if request.model not in allowed_models:
             log.warning("Unsupported model requested: %s", request.model)
         

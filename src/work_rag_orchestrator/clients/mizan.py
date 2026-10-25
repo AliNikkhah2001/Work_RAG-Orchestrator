@@ -18,7 +18,7 @@ from ..config import get_settings
 log = logging.getLogger(__name__)
 
 # System-1 API endpoint (via Manager :9000 -> Mizan backend :8083)
-_MIZAN_BASE_URL = os.getenv("MIZAN_BASE_URL", "http://127.0.0.1:9000/v1")
+_MIZAN_BASE_URL = os.getenv("MIZAN_BASE_URL", "http://127.0.0.1:8083/v1")
 _MIZAN_MODEL = os.getenv("MIZAN_MODEL", "mizan-v3-3b")
 _MIZAN_API_KEY = os.getenv("MIZAN_API_KEY", "sk-local-dev")
 _MIZAN_TIMEOUT = float(os.getenv("MIZAN_TIMEOUT", "30"))

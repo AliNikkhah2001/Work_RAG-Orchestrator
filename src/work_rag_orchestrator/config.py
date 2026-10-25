@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     hybrid_classifier_gemma_temperature: float = 0.0
 
     # Upstream LLM model (Vast Gemma)
-    upstream_llm_model: str = "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
+    upstream_llm_model: str = "gemma-4-31b-triton-trt"
 
     @property
     def kb_search_url(self) -> str:
