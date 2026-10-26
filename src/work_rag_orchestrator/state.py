@@ -70,6 +70,10 @@ class RAGState(TypedDict):
     stage_timing_ms: Dict[str, float]
 
     applied_subspace: Optional[str]
+    # Cross-turn sticky subspace (scorer-driven switch/keep). Kept SEPARATE from
+    # applied_subspace so the subspace can persist for the next turn's
+    # scorer-driven decision without scoping retrieval/filter_path this turn.
+    sticky_subspace: NotRequired[Optional[str]]
     needs_clarification: bool
     clarifying_question: Optional[str]
     available_subspaces: Optional[List[str]]

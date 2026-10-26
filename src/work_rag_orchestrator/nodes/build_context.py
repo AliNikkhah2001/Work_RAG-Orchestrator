@@ -10,8 +10,11 @@ from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
 log = logging.getLogger(__name__)
 
 # Max context size — 20-chunk generation upgrade: wider recall window for
-# hybrid (RRF + CE rerank) retrieval; KB context capped at 9000 chars.
-MAX_CONTEXT_CHARS = 9000
+# hybrid (RRF + CE rerank) retrieval. 9000 chars silently truncated the tail
+# of 14-source contexts (10430+ chars) which are routine now, dropping
+# on-topic answers and causing spurious "پاسخی یافت نشد" refusals
+# (~14000 chars ≈ 4-5k tokens fits the Gemma 8k window with system+prompt).
+MAX_CONTEXT_CHARS = 14000
 MAX_CHUNKS = 20
 
 
@@ -161,6 +164,15 @@ async def build_context(state: RAGState) -> RAGState:
         context_parts.append(context_entry)
     
     context_text = "\n\n".join(context_parts)
+
+    # Opt-in diagnostic (ORCH_DEBUG=1): verify the generation context actually
+    # carried source text (empty/short context would surface as LLM "یافت نشد").
+    try:
+        import os
+        if os.environ.get("ORCH_DEBUG") == "1":
+            log.info("Built context len=%d head=%r tail=%r", len(context_text), context_text[:160], context_text[-160:])
+    except Exception:
+        pass
 
     # Stateless memory: last 2 exchanges (prior turns only, not the current
     # question) as a plain-text block, capped at 1000 chars.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -29,6 +30,11 @@ from .graph import rag_graph
 from .state import RAGState
 
 log = logging.getLogger(__name__)
+
+# Opt-in app-level INFO logging (running under `-m uvicorn` configures only
+# uvicorn's own loggers; without this, app INFO lines never reach stderr).
+if os.environ.get("ORCH_DEBUG") == "1":
+    logging.basicConfig(level=logging.INFO)
 
 # Dependency readiness cache
 _deps_ready: dict[str, bool] = {"kb": False, "guardrails": False}
@@ -325,7 +331,7 @@ def create_app() -> FastAPI:
         try:
             prev = await rag_graph.aget_state(config)
             if prev and getattr(prev, "values", None):
-                sticky_applied = prev.values.get("applied_subspace")
+                sticky_applied = prev.values.get("sticky_subspace") or prev.values.get("applied_subspace")
         except Exception:
             sticky_applied = None
         # Fallback: WebUI's POST /api/chat/completions has no X-Request-ID,
@@ -390,8 +396,10 @@ def create_app() -> FastAPI:
         # Current query general override (strong general keywords in current message itself)
         cur_q = str(request.messages[-1].get("content","")) if request.messages else ""
         # If current query explicitly says "سوالات عمومی" or contains board member names, treat as general
+        _explicit_general = False
         if "سوالات عمومی" in cur_q or "سوال عمومی" in cur_q or "قاسم" in cur_q or "بور" in cur_q or "هیات مدیره" in cur_q or "هیئت مدیره" in cur_q or "معرفی شرکت" in cur_q:
             sticky_applied = "general"
+            _explicit_general = True
         # Declaration follow-up: a short reply like "شخصی"/"شرکتی"/"چک"/"عمومی"
         # after a clarify selects the subspace AND carries the prior question forward
         # so the next step retrieves an answer instead of asking the user to re-ask.
@@ -420,6 +428,14 @@ def create_app() -> FastAPI:
                 if "؟" in _pq or "?" in _pq or any(w in _pq for w in ["چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "کیه"]):
                     _prev_q = _pq
                     break
+            if _prev_q is None and prev and getattr(prev, "values", None):
+                # Bare-API clients carry no history: if the previous turn on
+                # this thread ended in a clarify, its query IS the question the
+                # declaration answers.
+                if prev.values.get("needs_clarification"):
+                    _pvc = str(prev.values.get("query") or "").strip()
+                    if _pvc:
+                        _prev_q = _pvc
             if _prev_q:
                 cur_q = _prev_q
             try:
@@ -427,6 +443,86 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
             log.info("Declaration follow-up %r -> subspace=%s query=%r", _decl_key, _decl, cur_q[:80])
+        # --- C: Per-turn subspace switch by the embedding scorer ---
+        # Sticky subspace is preserved ONLY while the CURRENT query scores
+        # ambiguous AND sticky is still competitive with the argmax candidate.
+        # A confident (non-ambiguous) scorer decision switches the subspace
+        # even against sticky. Declaration follow-ups ("شخصی"/"شرکتی"/...) and
+        # the explicit general override above stay authoritative — the scorer
+        # never runs on those single-word replies.
+        _sc_target = None       # confident scorer subspace (switch/keep)
+        _sc_keep_sticky = None  # True/False when ambiguous; None = scorer unavailable
+        _sc_top1_thr = 0.20     # argmax sim floor for a scored conf-switch
+        if _decl is None and not _explicit_general:
+            try:
+                from .subspaces import get_scorer
+                _scorer = get_scorer()
+                if _scorer.available:
+                    # Context-aware scoring: short colloquial follow-ups
+                    # ("اعتبار رو چ") carry almost no signal alone — prepend
+                    # the previous user turn so the embedding scorer sees the
+                    # thread topic. Long queries carry enough signal raw.
+                    _sc_q = cur_q
+                    if sticky_applied and len(cur_q.split()) <= 5:
+                        # prev user turn: from message history (WebUI sends it),
+                        # else from the graph checkpoint state (bare API clients)
+                        _prev_u = None
+                        for _pm in reversed(request.messages[:-1]):
+                            if _pm.get("role") == "user":
+                                _pu = str(_pm.get("content") or "").strip()
+                                if _pu:
+                                    _prev_u = _pu
+                                    break
+                        if _prev_u is None and prev and getattr(prev, "values", None):
+                            _pvq = str(prev.values.get("query") or "").strip()
+                            if _pvq:
+                                _prev_u = _pvq
+                        if _prev_u:
+                            _sc_q = _prev_u + " " + cur_q
+                    log.info("Subspace scorer ctx: sticky=%r short=%r scored_q=%r", sticky_applied, len(cur_q.split()) <= 5, _sc_q[:100])
+                    _sc = await _scorer.ascore(_sc_q)
+                    _amb_margin = float(get_settings().subspace_ambiguity_margin)
+                    if not _sc.ambiguous and _sc.subspace:
+                        _sc_target = _sc.subspace
+                    else:
+                        _cand = max(_sc.sims, key=lambda s: _sc.sims[s]) if _sc.sims else None
+                        if sticky_applied is None or _cand is None or sticky_applied == _cand:
+                            _sc_keep_sticky = True
+                        else:
+                            # keep sticky only while still competitive with argmax
+                            _diff = _sc.sims.get(_cand, 0.0) - _sc.sims.get(sticky_applied, 0.0)
+                            if _diff <= _amb_margin:
+                                _sc_keep_sticky = True
+                            elif _sc.sims.get(_cand, 0.0) >= _sc_top1_thr:
+                                # argmax clearly stronger than sticky -> switch
+                                _sc_target = _cand
+                            else:
+                                # sticky stale, argmax too weak -> drop sticky
+                                # so classify/infer path decides (likely clarify)
+                                _sc_keep_sticky = False
+                    log.info(
+                        "Subspace scorer q=%r (scored=%r): switch=%r keep_sticky=%r ambiguous=%s sims=%s",
+                        cur_q[:60], _sc_q[:100], _sc_target, _sc_keep_sticky, _sc.ambiguous,
+                        {k: round(v, 3) for k, v in (_sc.sims or {}).items()},
+                    )
+            except Exception as _sc_err:
+                log.warning("api subspace scorer failed: %s — keyword re-spec heuristics stay in effect", _sc_err)
+                _sc_target = None
+                _sc_keep_sticky = None
+        # Confident scorer decision is authoritative: switch when different.
+        # NOTE: the switched/kept subspace is recorded for STICKY inheritance
+        # (initial_state.sticky_subspace) but NOT injected as filter_path —
+        # topically-matching chunks often live in a sibling subspace's folder
+        # (e.g. "من تو جنگ اول یه چک برگشتی داشتم" is cheque-topic but the best
+        # chunk lives under اشخاص حقوقی/اعتبارسنجی تسهیلات), so forcing the
+        # scope here caused spurious "پاسخی یافت نشد" refusals. Only
+        # declaration replies and the keyword fallback may scope retrieval.
+        if _sc_target and sticky_applied != _sc_target:
+            log.info("Subspace switch by scorer: sticky %s -> %s for q=%r", sticky_applied, _sc_target, cur_q[:60])
+            sticky_applied = _sc_target
+        elif sticky_applied is not None and _sc_keep_sticky is False:
+            log.info("Sticky %s stale by scorer (argmax candidate != sticky) for q=%r — dropping", sticky_applied, cur_q[:60])
+            sticky_applied = None
         # T4: Carry sticky correctly for generic follow-ups - preserve checkpoint sticky even when current query is generic/ambiguous
         # Previous logic mined history skipping interrogatives, but a generic follow-up (e.g. "آیا میزان درآمد...") has no subspace keywords
         # yet is in same thread => should inherit sticky. Checkpoint sticky already captured above; ensure generic query doesn't clear it.
@@ -491,9 +587,7 @@ def create_app() -> FastAPI:
         _req_filter_path = getattr(request, "filter_path", None) or (request.model_extra.get("filter_path") if getattr(request, "model_extra", None) else None)
         if not _req_filter_path and _declared_filter:
             _req_filter_path = _declared_filter
-        # T4: Inject sticky filter_path for generic follow-ups when no explicit filter_path supplied
-        # This ensures retrieve.py receives filter_path even for generic queries, so sticky is enforced at KB layer
-        if not _req_filter_path and sticky_applied is not None:
+        if not _req_filter_path and sticky_applied is not None and _sc_target is None:
             # Check if current query is generic (no explicit different subspace) - same heuristic as above
             _cur_has_cheque2 = "چک" in cur_q
             _cur_has_facility2 = "تسهیلات" in cur_q or "وام" in cur_q
@@ -572,7 +666,10 @@ def create_app() -> FastAPI:
             "faq_verified": False,
             "greeting_only": None,
             "stage_timing_ms": {},
-            "applied_subspace": sticky_applied,
+            "applied_subspace": sticky_applied if _req_filter_path else None,
+            # Cross-turn sticky for the next turn's scorer decision (not used
+            # to scope retrieval this turn — see switch-by-scorer note above).
+            "sticky_subspace": sticky_applied,
             "needs_clarification": False,
             "clarifying_question": None,
             "available_subspaces": None,
