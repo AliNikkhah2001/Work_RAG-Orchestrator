@@ -23,6 +23,28 @@ log = logging.getLogger(__name__)
 _shared_client: Optional[httpx.AsyncClient] = None
 
 
+async def _post_with_reconnect_retry(url: str, json_body: dict, headers: Optional[dict] = None) -> httpx.Response:
+    """POST with a single retry on transport errors (stale pooled keepalive).
+
+    Uvicorn closes idle keep-alive connections under its `--timeout-keep-alive`;
+    a pooled connection that died server-side raises httpx.ReadError/
+    ConnectError on first reuse. Retrying once on a fresh one-off client heals
+    the failure (fail-closed policy would otherwise surface a bogus
+    "Guardrails service error" to the user).
+    """
+    try:
+        client = _get_shared_client(30.0)
+        response = await client.post(url, json=json_body, headers=headers)
+        response.raise_for_status()
+        return response
+    except httpx.TransportError as transport_err:
+        log.warning("Guardrails transport error (%s) — retrying once on a fresh connection", transport_err)
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as fresh:
+            response = await fresh.post(url, json=json_body, headers=headers)
+            response.raise_for_status()
+            return response
+
+
 def _get_shared_client(timeout: float = 30.0) -> httpx.AsyncClient:  # O-C4: timeout now per-request, not per-client
     """Return a module-level shared AsyncClient (created once, reused forever)."""
     global _shared_client
@@ -70,15 +92,13 @@ class GuardrailsClient:
         self, stage: str, text: str, request_id: str
     ) -> RailCheckResponse:
         """Call Guardrails /v1/rails/check endpoint."""
-        client = self._get_client()
         request = RailCheckRequest(stage=stage, text=text, request_id=request_id)
 
         try:
-            response = await client.post(
+            response = await _post_with_reconnect_retry(
                 self.rails_check_url,
-                json=request.model_dump(),
+                request.model_dump(),
             )
-            response.raise_for_status()
             return RailCheckResponse(**response.json())
         except httpx.HTTPStatusError as e:
             log.error("Guardrails rails check failed: %s", e)
@@ -116,18 +136,15 @@ class GuardrailsClient:
         self, request: GuardrailsChatRequest, request_id: str
     ) -> GuardrailsChatResponse:
         """Call Guardrails /v1/chat/completions endpoint."""
-        client = self._get_client()
-
         # Add request_id to headers for tracing
         headers = {"X-Request-ID": request_id}
 
         try:
-            response = await client.post(
+            response = await _post_with_reconnect_retry(
                 self.chat_url,
-                json=request.model_dump(exclude_none=True),
+                request.model_dump(exclude_none=True),
                 headers=headers,
             )
-            response.raise_for_status()
             return GuardrailsChatResponse(**response.json())
         except httpx.HTTPStatusError as e:
             log.error("Guardrails chat completion failed: %s", e)

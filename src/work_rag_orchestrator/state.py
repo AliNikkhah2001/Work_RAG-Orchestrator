@@ -80,6 +80,7 @@ class RAGState(TypedDict):
 
     injected_entities: Optional[List[Dict[str, Any]]]
     supplemental: Optional[List[Dict[str, Any]]]
+    tool_calls: NotRequired[Optional[List[Dict[str, Any]]]]
 
     filter_path: Optional[str]
 

@@ -408,6 +408,26 @@ async def format_response(state: RAGState) -> RAGState:
         finish_reason = "stop"
         citations = []
     else:
+        # --- H1: post-abstention broadened re-retrieve + single regenerate ---
+        # Gemma abstained ("یافت نشد") even though KB may hold on-topic content
+        # that the (possibly history-rewritten) query failed to surface (e.g.
+        # war-period/date phrasing ranked below the cut). Retry exactly once
+        # against the whole KB (filter_path=None) with the ORIGINAL user query;
+        # after one attempt the canonical refusal stands.
+        if (
+            ABSTENTION_PHRASE in answer_raw
+            and not state.get("broaden_after_abstention")
+            and not state.get("broaden_used")
+        ):
+            try:
+                state = await _broaden_retrieve_and_regenerate(state)
+                answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
+                chunks = state["retrieved_chunks"]
+            except Exception as e:
+                log.warning(
+                    "H1 post-abstention broaden regen failed for %s: %s", request_id, e
+                )
+
         # --- G5 hallucination guard: refuse when evidence is too weak ---
         # "رتبه اعتباری G5 چیه" returns 1 noise chunk with rerank 0.008;
         # without this guard the LLM synthesizes "یکی از سطوح...".
@@ -470,6 +490,11 @@ async def format_response(state: RAGState) -> RAGState:
             ranked = sorted(enumerate(chunks), key=lambda t: (_citation_priority(t[1]), t[0]))
             chosen = [c for _, c in ranked[:MAX_CITATIONS]]
         chosen = chosen[:MAX_CITATIONS]
+        # If the (possibly regenerated) answer still abstains, drop citations:
+        # a refusal should not pretend to be grounded in displayed sources.
+        if ABSTENTION_PHRASE in content:
+            citations = []
+            chosen = []
         citations = [
             Citation(
                 chunk_id=c.get("chunk_id", ""),
@@ -564,4 +589,83 @@ async def format_response(state: RAGState) -> RAGState:
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     record_timing(state, "format_response", elapsed)
 
+    return state
+
+
+async def _broaden_retrieve_and_regenerate(state: RAGState) -> RAGState:
+    """
+    H1: after a generation-time "یافت نشد", retry retrieval once against the
+    whole KB (filter_path=None) using the ORIGINAL user query, then regenerate.
+    Used when the history-rewritten query drifted away from matching phrasing
+    (e.g. dates/war terms) so on-topic chunks ranked below the cut. Single
+    attempt only — guarded by broaden_after_abstention / broaden_used flags.
+    """
+    request_id = state["request_id"]
+    query = (state.get("query") or state.get("rewritten_query") or "").strip()
+    log.info(
+        "H1 broaden-regenerate for request %s: query=%r", request_id, query[:80]
+    )
+    from ..clients.knowledgebase import KnowledgebaseClient as _KBClient
+
+    async with _KBClient() as client:
+        result = await client.retrieve(query, 20, request_id, filter_path=None, keyword_boost=1.5)
+
+    fb_chunks: list[dict] = []
+    if isinstance(result, dict):
+        for item in (result.get("rrf") or []) + (result.get("ce") or []):
+            fb_chunks.append(
+                {
+                    "chunk_id": getattr(item, "chunk_id", None)
+                    or item.get("chunk_id", ""),
+                    "document_id": getattr(item, "document_id", None)
+                    or item.get("document_id", ""),
+                    "title": getattr(item, "title", None) or item.get("title", ""),
+                    "heading": getattr(item, "heading", None) or item.get("heading", ""),
+                    "content": getattr(item, "content", None)
+                    or item.get("content", ""),
+                    "score": getattr(item, "score", None)
+                    or item.get("score", 0.0),
+                    "source": getattr(item, "source", None)
+                    or item.get("source", "broaden"),
+                    "rank_rrf": getattr(item, "rank_rrf", None),
+                    "rank_ce": getattr(item, "rank_ce", None),
+                    "hybrid_score": getattr(item, "hybrid_score", None),
+                    "rerank_score": getattr(item, "rerank_score", None),
+                }
+            )
+
+    # De-duplicate by chunk_id, preserve merged (RRF then CE) order.
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for c in fb_chunks:
+        cid = c.get("chunk_id")
+        if cid and cid not in seen:
+            seen.add(cid)
+            deduped.append(c)
+    fb_chunks = deduped[:20]
+
+    state["broaden_after_abstention"] = True
+    state["broaden_used"] = True
+    state["fallback_used"] = True
+    base_reason = state.get("fallback_reason") or "generation abstained"
+    if fb_chunks:
+        state["retrieved_chunks"] = fb_chunks
+        state["fallback_reason"] = (
+            f"{base_reason} | H1 broaden regen: len={len(fb_chunks)}"
+        )
+        log.info(
+            "H1 broaden-regenerate adopted %d chunks for request %s",
+            len(fb_chunks),
+            request_id,
+        )
+    else:
+        state["fallback_reason"] = f"{base_reason} | H1 broaden regen: empty"
+        log.info("H1 broaden-regenerate empty for request %s", request_id)
+
+    # Rebuild context from the broadened chunks and regenerate once.
+    from .build_context import build_context as _bc
+    from .guarded_generate import guarded_generate as _gg
+
+    state = await _bc(state)
+    state = await _gg(state)
     return state

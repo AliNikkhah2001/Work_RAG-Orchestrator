@@ -889,8 +889,11 @@ def create_app() -> FastAPI:
         # with clarify; ensure it is not overwritten by generic stop/error handling
         content = formatted.get("content", "An error occurred.")
         finish_reason = formatted.get("finish_reason", "error")
-        # Preserve clarify if state signals it, even if formatted was malformed
-        if final_state.get("needs_clarification") or finish_reason == "clarify":
+        # Preserve clarify if state signals it, even if formatted was malformed.
+        # Supplemental entity rows are evidence: never downgrade a real answer
+        # to clarify when the entity tool matched (reason code, shareholder...).
+        _has_entity_evidence = bool(final_state.get("supplemental") or final_state.get("injected_entities"))
+        if (final_state.get("needs_clarification") or finish_reason == "clarify") and not _has_entity_evidence:
             finish_reason = "clarify"
             # Ensure content reflects clarifying_question when formatted content missing
             if not content or content == "An error occurred.":

@@ -84,6 +84,121 @@ def _compute_top_score(chunks: list | None) -> float:
     return best
 
 
+# Keywords that signal a query targets a supplementary entity dictionary
+# (reason codes, shareholders, loan titles, ...) and should fire the
+# supplement tool call so the model receives matching dictionary rows.
+_ENTITY_TOOL_KEYWORDS: dict[str, list[str]] = {
+    "reason_codes": [
+        "دلیل", "کد دلیل", "دلایل", "کاهش امتیاز", "reason code", "کد خطا",
+        "دلیل کاهش", "دلیل رد", "کد پاسخ", "return code", "reason_detail",
+    ],
+    "سهامداران": ["سهامدار", "سهام", "مالکیت", "شریک", "سهام‌گذاری"],
+    "لیست و عناوین وام ها": ["وام", "تسهیلات", "سقف وام", "نرخ سود", "قسط", "ضمانت"],
+    "استفاده‌کنندگان گزارش": ["گزارش", "استفاده‌کنندگان", "خریداران گزارش"],
+    "تامین‌کنندگان دیتا": ["تامین‌کننده", "داده", "منبع داده", "دیتا"],
+}
+
+
+def _entity_tool_relevant(query: str, state: dict) -> bool:
+    """Decide whether to fire the supplement entity-list tool call.
+
+    Triggers on keyword match against the query, or when the active
+    filter_path/subspace scope points at an entity-list topic.
+    """
+    q = (query or "").strip()
+    if not q:
+        return False
+    # Scope hint: filter_path / applied_subspace already points at an entity topic
+    for scope in (state.get("filter_path"), state.get("applied_subspace")):
+        if scope and any(k in scope for k in ("دلیل", "reason", "سود", "وام", "سهام", "تسهیلات")):
+            return True
+    qlow = q.lower()
+    for _kws in _ENTITY_TOOL_KEYWORDS.values():
+        if any(kw in qlow for kw in _kws):
+            return True
+    return False
+
+
+def trim_supplemental(
+    entities: list,
+    query: str,
+    *,
+    max_lists: int = 3,
+    max_rows_per_sheet: int = 25,
+    max_chars_per_list: int = 4000,
+) -> list:
+    """Cap entity-list payloads before they reach the LLM.
+
+    One reason-code list is ~20-190KB of rows; the supplement tool happily
+    returns 10+ lists (~660KB total) and injecting all of that overflows the
+    model context, making the upstream generate call fail with HTTP 500.
+    Strategy:
+      1. keep top-N lists by similarity (callers pass them sorted best-first)
+      2. keep only rows matching query tokens (ranked by match count),
+         falling back to the first rows when nothing matches
+      3. hard-cap the serialized JSON per list
+    """
+    import json as _json
+    import re as _re
+
+    if not entities:
+        return []
+    q = (query or "").lower()
+    tokens = [t for t in _re.split(r"[\s،,.؟?!:/()\-]+", q) if len(t) >= 2]
+    # code-like tokens (contain latin letters or digits, e.g. "sbd1")
+    # weigh double: a row containing the actual code outranks generic rows
+    # that merely share the word "کد"/"دلیل".
+    weights = [(2.0 if _re.search(r"[a-z0-9]", t) else 1.0, t) for t in tokens]
+    out: list = []
+    for ent in list(entities)[:max_lists]:
+        ent = dict(ent)
+        content = ent.get("content") or {}
+        if isinstance(content, dict) and tokens:
+            trimmed: dict = {}
+            for sheet, rows in content.items():
+                if not isinstance(rows, list):
+                    trimmed[sheet] = rows
+                    continue
+                scored: list = []
+                for idx, row in enumerate(rows):
+                    if isinstance(row, dict):
+                        blob = " ".join(
+                            str(v) for v in row.values() if v is not None
+                        ).lower()
+                    else:
+                        blob = str(row).lower()
+                    hits = sum(w for w, t in weights if t in blob)
+                    if hits:
+                        scored.append((-hits, idx, row))
+                scored.sort()
+                keep = [r for _, _, r in scored[:max_rows_per_sheet]]
+                if not keep:
+                    keep = rows[:max_rows_per_sheet]
+                trimmed[sheet] = keep
+            content = trimmed
+        elif isinstance(content, dict):
+            content = {
+                s: (rows[:max_rows_per_sheet] if isinstance(rows, list) else rows)
+                for s, rows in content.items()
+            }
+        # shrink until under the per-list char cap
+        blob = _json.dumps(content, ensure_ascii=False)
+        while len(blob) > max_chars_per_list and isinstance(content, dict):
+            shrunk = False
+            for sheet, rows in list(content.items()):
+                if isinstance(rows, list) and len(rows) > 2:
+                    content[sheet] = rows[: max(2, len(rows) - max(1, len(rows) // 4))]
+                    shrunk = True
+                    break
+            if not shrunk:
+                content = {"_truncated": True, "preview": blob[:max_chars_per_list]}
+                break
+            blob = _json.dumps(content, ensure_ascii=False)
+        ent["content"] = content
+        out.append(ent)
+    return out
+
+
 def _has_lexical_evidence_retrieve(query: str, chunks: list | None, applied_subspace: str | None) -> bool:
     """T6 lexical proxy for ctx_rel (retrieve side) — same logic as format_response."""
     if not chunks:
@@ -947,6 +1062,51 @@ async def retrieve(state: RAGState) -> RAGState:
     state["injected_entities"] = injected
     state["supplemental"] = injected
 
+    # --- Proactive entity-list tool call ---
+    # When the query targets a supplementary dictionary (reason codes,
+    # shareholders, loan titles, ...), call the supplement tool so the model
+    # receives matching dictionary rows as tool responses.
+    try:
+        if _entity_tool_relevant(query, state):
+            async with KnowledgebaseClient() as _ent_client:
+                _ents = await _ent_client.supplementary_search(
+                    query, threshold=0.4, request_id=request_id
+                )
+            if _ents:
+                existing = state.get("injected_entities") or []
+                seen = {e.get("list_name") for e in existing}
+                merged = list(existing)
+                for ent in _ents:
+                    if ent.get("list_name") not in seen:
+                        merged.append(ent)
+                        seen.add(ent.get("list_name"))
+                state["injected_entities"] = merged
+                # trimmed copy for the prompt; injected_entities keeps full
+                # lists because downstream only uses them as an evidence flag
+                state["supplemental"] = trim_supplemental(merged, query)
+                state["tool_calls"] = state.get("tool_calls") or []
+                state["tool_calls"].append({
+                    "name": "search/supplement",
+                    "arguments": {"query": query},
+                    "results": merged,
+                })
+                log.info(
+                    "Entity tool call returned %d lists for request %s (query=%r)",
+                    len(merged), request_id, query[:80],
+                )
+    except Exception as _e:
+        log.warning("Entity tool call failed for request %s: %s", request_id, _e)
+
+    # Entity evidence cancels a pending scattered-clarify (classify's T5 gate
+    # pre-sets needs_clarification; with matched dictionary rows the model can
+    # answer the code question directly instead of asking چک vs تسهیلات).
+    if state.get("supplemental") and state.get("needs_clarification"):
+        state["needs_clarification"] = False
+        log.info(
+            "Cancelling pending clarify for request %s: entity supplement matched",
+            request_id,
+        )
+
     def _item_dict(c, default_source: str) -> dict:
         d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
         get = d.get
@@ -1090,7 +1250,7 @@ async def retrieve(state: RAGState) -> RAGState:
                             merged.append(ent)
                             seen.add(ent.get("list_name"))
                     state["injected_entities"] = merged
-                    state["supplemental"] = merged
+                    state["supplemental"] = trim_supplemental(merged, search_query)
                 else:
                     log.info("supplementary_search empty for request %s (G5 no supplement)", request_id)
             except Exception as _se:
@@ -1595,7 +1755,10 @@ async def retrieve(state: RAGState) -> RAGState:
 
             _q_sc = state.get("query", "") or ""
             _has_sticky_sc = bool(state.get("applied_subspace"))
-            if not _has_sticky_sc and _is_scattered_ret(_q_sc):
+            # T5 scattered gate must not force clarify when the entity tool
+            # already matched a dictionary (supplemental rows are sufficient
+            # evidence to answer, e.g. "دلیل کاهش امتیاز MTX1").
+            if not _has_sticky_sc and not state.get("supplemental") and _is_scattered_ret(_q_sc):
                 state["needs_clarification"] = True
                 state["available_subspaces"] = list(SUBSPACES)
                 state["clarifying_question"] = None
@@ -1664,7 +1827,8 @@ async def retrieve(state: RAGState) -> RAGState:
                     else:
                         state["applied_subspace"] = "facilities_person"
                     state["needs_clarification"] = False
-                elif not granular:
+                elif not granular and not state.get("supplemental"):
+                    # (supplemental entity rows count as evidence: skip clarify)
                     sticky = state.get("applied_subspace")
                     if sticky:
                         # Use sticky — will trigger re-retrieve in F5
@@ -1843,8 +2007,9 @@ async def retrieve(state: RAGState) -> RAGState:
             and not state.get("applied_subspace")
             and _amb is not None
         ):
-            if _amb.ambiguous:
+            if _amb.ambiguous and not state.get("supplemental"):
                 # Defer to the existing clarify gate (graph.should_clarify).
+                # (supplemental entity rows are evidence — never clarify past them)
                 state["needs_clarification"] = True
                 if not state.get("available_subspaces"):
                     state["available_subspaces"] = list(SUBSPACES)

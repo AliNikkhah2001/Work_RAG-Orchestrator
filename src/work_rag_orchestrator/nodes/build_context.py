@@ -210,6 +210,7 @@ async def build_context(state: RAGState) -> RAGState:
         "اگر هیچ‌یک از منابع پاسخ پرسش را ندارند، فقط در یک جملهٔ کوتاه بگویید «بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.» و تمام کنید — "
         "اگر در تاریخچهٔ گفت‌وگو پاسخ «یافت نشد» قبلاً داده شده باشد، آن پاسخ منسوخ است و ملاک قرار نمی‌گیرد؛ فقط بر اساس منابع همین پیام دوباره ارزیابی کنید و اگر پاسخ در منابع هست، حتماً پاسخ دهید. "
         "متن را طولانی نکنید و حدس نزنید. "
+        "هرگز نصائح مربوط به اشخاص حقیقی (افراد/فردی) را به اشخاص حقوقی (شرکت/سازمان) تعمیم ندهید، و برعکس: اگر منابع فقط دربارهٔ یک نوع موجودیت بحث می‌کنند در حالی که کاربر دربارهٔ نوع دیگر می‌پرسد، بر اساس همان منابع پاسخ دهید؛ اگر منبع صریحاً «خیر» یا «تعریف نشده» می‌گوید، همان را بگویید. ساخت رتبه یا امتیاز چک برای شرکت‌ها از منابع فردی ممنوع است. "
         "مستقیم و دقیق به خودِ سوال پاسخ دهید؛ مقدمهٔ کلیشه‌ای (مثل «موارد زیر را یافتم») ننویسید و پاسخ را در چند پاراگراف منسجم و کاربردی سازمان دهید. "
         "قالب پاسخ متن سادهٔ فارسی است — از هیچ قالب‌بندی مارک‌داون استفاده نکنید: نه ستاره (*)، نه بولد (**)، نه هشتگ (#)، نه خط تیره در ابتدای خط، نه بک‌تیک. "
         "پاسخ را در چند پاراگراف بنویسید و بین پاراگراف‌ها حتماً یک خط خالی بگذارید؛ هر پاراگراف دقیقاً یک موضوع را پوشش دهد و بیش از ۴ جمله نباشد. "
@@ -239,6 +240,53 @@ async def build_context(state: RAGState) -> RAGState:
         user_content = f"{context_text}\n\n{history_block}\n\n{question_part}"
     else:
         user_content = f"{context_text}\n\n{question_part}"
+
+    # --- Inject entity-list tool-call results into the system message ---
+    # When the retrieve node fired the supplement tool (reason codes,
+    # shareholders, loan titles, ...), render each returned list as an
+    # [Entity Data] block so Gemma (which may not render role="tool" input)
+    # can consume the matching dictionary rows.
+    if state.get("supplemental"):
+        try:
+            import json as _json
+            ent_blocks = []
+            # Hard budget: entity rows share the model context with the RAG
+            # chunks; one reason-code list alone can be ~100KB. The Triton
+            # upstream has an 8192-token window and rejects the request
+            # (HTTP 400 max_seq_len overflow) when the total prompt exceeds
+            # it — keep the entity section small enough that chunk context
+            # + instructions still fit (chars ≈ tokens*3 for Persian).
+            _total_budget = 4000
+            _used = 0
+            for ent in state["supplemental"]:
+                content = ent.get("content")
+                if content is None:
+                    content = {}
+                data_json = _json.dumps(content, ensure_ascii=False)
+                if _used + len(data_json) > _total_budget:
+                    _room = _total_budget - _used
+                    if _room < 200:
+                        break
+                    data_json = data_json[:_room] + "…(truncated)"
+                _used += len(data_json)
+                ent_blocks.append(
+                    f"List: {ent.get('list_name')}\n"
+                    f"Description: {ent.get('description','')}\n"
+                    f"Data: {data_json}"
+                )
+            if not ent_blocks:
+                raise RuntimeError("no room for entity data")
+            entity_section = (
+                "\n\n[Entity Data from supplement tool]\n\n"
+                + "\n\n---\n\n".join(ent_blocks)
+                + "\n\nاگر در بخش [Entity Data] اطلاعاتی مرتبط با پرسش کاربر وجود دارد "
+                "(مثل کد دلیل کاهش امتیاز، نام سهامدار، عنوان وام یا نرخ سود)، از آن‌ها برای پاسخ به پرسش استفاده کنید "
+                "و جزئیات مربوطه را ذکر کنید."
+            )
+            system_message += entity_section
+        except Exception:
+            pass
+
     prompt_messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},

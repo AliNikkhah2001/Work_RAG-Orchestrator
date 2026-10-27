@@ -48,7 +48,13 @@ def should_clarify(state: RAGState) -> str:
     T5: ensure scattered ambiguous queries with no clear subspace always clarify,
     even if retrieve's threshold/general_exempt suppressed the flag. This is a
     safety net in addition to retrieve's early scattered detection.
+
+    Supplemental entity rows short-circuit everything below: when the entity
+    tool matched a dictionary (reason code, shareholder, ...) the model can
+    answer directly, so "چک vs تسهیلات" clarification is counterproductive.
     """
+    if state.get("supplemental") or state.get("injected_entities"):
+        return "continue"
     if state.get("needs_clarification"):
         return "clarify"
     # Stage 3 (route): the embedding ambiguity score can force clarification
