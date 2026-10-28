@@ -6,6 +6,8 @@ import logging
 import time
 from ..state import RAGState, record_timing
 from ..rewrite import last_exchanges_text, HISTORY_MAX_CHARS
+from ..context_compact import compact_history
+from ..config import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -179,23 +181,59 @@ async def build_context(state: RAGState) -> RAGState:
     # Failed exchanges ("not found in KB") are stripped: they carry no
     # information and anchor the model into repeating the refusal even when
     # the current retrieval DID find the answer in another subspace.
+    #
+    # Auto-compacting: when the estimated prompt tokens exceed the configured
+    # threshold (8192-token upstream window), older turns are replaced by a
+    # cached rolling LLM summary; the newest turns stay verbatim. Short
+    # sessions never trigger the summarizer (zero added latency).
+    t_compact = time.monotonic()
+    compacted_messages, compact_info = await compact_history(messages)
+    compact_ms = round((time.monotonic() - t_compact) * 1000, 1)
+
+    history_parts: list[str] = []
+    if compact_info.get("compacted"):
+        summary_text = ""
+        for m in compacted_messages:
+            if m.get("role") == "system" and (m.get("content") or "").startswith("[خلاصهٔ گفتگوی پیشین]"):
+                summary_text = m["content"].split("\n", 1)[-1]
+                break
+        if summary_text:
+            history_parts.append(f"[خلاصهٔ گفتگوی پیشین] {summary_text}")
     history_excerpt = last_exchanges_text(
-        _strip_notfound_exchanges(messages), include_current=False, max_chars=1000
+        _strip_notfound_exchanges(compacted_messages), include_current=False, max_chars=1000
     )
-    history_block = f"[Conversation history]\n{history_excerpt}" if history_excerpt else ""
+    if history_excerpt:
+        history_parts.append(history_excerpt)
+    history_block = f"[Conversation history]\n" + "\n".join(history_parts) if history_parts else ""
+    if compact_info.get("compacted"):
+        record_timing(state, "compact", compact_ms)
+        state["compaction"] = {
+            k: compact_info.get(k)
+            for k in ("compacted", "old_turns", "cached", "summary_chars", "estimate_tokens")
+        }
+        log.info(
+            "Compaction for %s: old_turns=%d cached=%s summary_chars=%d est_tokens=%d",
+            request_id, compact_info.get("old_turns", 0), compact_info.get("cached"),
+            compact_info.get("summary_chars", 0), compact_info.get("estimate_tokens", 0),
+        )
     question_part = f"Question: {query}"
 
-    # Keep everything within MAX_CONTEXT_CHARS — truncate KB context first,
-    # history is already capped above.
+    # Keep everything within the prompt budget — truncate KB context first,
+    # never the question. The budget leaves headroom for the system prompt,
+    # the (possibly injected) entity-data section and the model's answer.
+    settings = get_settings()
+    _entity_reserve = 4200 if state.get("supplemental") else 0
+    _prompt_budget = max(settings.prompt_char_budget - _entity_reserve, 0)
+    _ctx_cap = min(MAX_CONTEXT_CHARS, _prompt_budget)
     if history_block:
-        budget = MAX_CONTEXT_CHARS - len(history_block) - len(question_part) - 4  # separators
+        budget = _ctx_cap - len(history_block) - len(question_part) - 4  # separators
         if budget < 0:  # pathological: drop history rather than the question
             history_block = ""
-            budget = MAX_CONTEXT_CHARS - len(question_part) - 2
+            budget = _ctx_cap - len(question_part) - 2
         if len(context_text) > budget:
             context_text = context_text[: max(budget, 0)] + "\n...[truncated]"
-    elif len(context_text) > MAX_CONTEXT_CHARS:
-        context_text = context_text[:MAX_CONTEXT_CHARS] + "\n...[truncated]"
+    elif len(context_text) > _ctx_cap:
+        context_text = context_text[:_ctx_cap] + "\n...[truncated]"
     
     # Build system message — Persian, helpful, professional, grounded.
     # Long/detailed generation: multi-paragraph answers covering all relevant

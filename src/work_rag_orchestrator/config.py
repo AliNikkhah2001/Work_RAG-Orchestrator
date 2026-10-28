@@ -140,6 +140,35 @@ class Settings(BaseSettings):
     # Upstream LLM model (Vast Gemma)
     upstream_llm_model: str = "gemma-4-31b-triton-trt"
 
+    # Direct OpenAI-compatible endpoint for internal utility calls (context
+    # compaction summarizer). NOT the user-facing generate path — utility
+    # prompts bypass Guardrails rails by design (they are system-generated).
+    upstream_llm_base_url: str = "http://127.0.0.1:9000/v1"
+    upstream_llm_api_key: str = "sk-local-dev"
+
+    # --- Rolling-summary context compaction (auto compacting) ---
+    # The upstream model window is 8192 tokens (TRT-LLM). When the estimated
+    # prompt tokens exceed compact_threshold_tokens, older turns (everything
+    # except the newest compact_recent_turns messages) are replaced by an
+    # LLM-generated rolling summary. Short sessions never trigger a call.
+    compact_enabled: bool = True
+    compact_threshold_tokens: int = 4500
+    compact_recent_turns: int = 4
+    compact_max_summary_chars: int = 1200
+    compact_msg_cap_chars: int = 4000
+    # The summarizer transcript is itself bounded — repetitive Persian can
+    # tokenize as dense as ~3 chars/token on the TRT-LLM upstream, so a 12k
+    # char transcript stays ≤ ~4k tokens (well inside the 8192 window).
+    compact_transcript_chars: int = 12000
+    compact_summary_max_tokens: int = 300
+    compact_llm_timeout_seconds: float = 20.0
+
+    # Hard prompt budget (chars) for the generation prompt assembled in
+    # build_context — system + context + history + question + entity data.
+    # Persian can tokenize as dense as ~3 chars/token; 20000 chars ≤ ~6.7k
+    # tokens worst case, leaving ≥1.2k tokens of the 8192 window for output.
+    prompt_char_budget: int = 20000
+
     @property
     def kb_search_url(self) -> str:
         return f"{self.kb_base_url.rstrip('/')}/search/api"
