@@ -20,6 +20,28 @@ _SPEC_KEYWORDS = {
   "facilities_legal": ["حقوقی","سهامدار"],
   "general": ["معرفی","کاربرد","عمومی","عام","مدیر","هیات مدیره","هیئت مدیره","کاربردها","شرکت"],
 }
+
+# Patterns that indicate an entity lookup question (person/company name)
+# even without explicit question words
+_ENTITY_LOOKUP_PATTERNS = [
+    r"^[\u0600-\u06FF\s]{3,20}$",  # Persian name-like (3-20 chars, Persian letters/spaces)
+]
+def _looks_like_entity_lookup(text: str) -> bool:
+    """Check if text looks like a bare entity name (person/company) without question words."""
+    t = text.strip()
+    # Has question words -> definitely a question
+    if any(w in t for w in ["چیست","چطور","چگونه","آیا","چرا","کیه","کجاست","کیست"]):
+        return True
+    # Short (2-4 words), no subspace keywords, looks like a name
+    words = t.split()
+    if 2 <= len(words) <= 4:
+        has_spec_kw = any(kw in t for lst in _SPEC_KEYWORDS.values() for kw in lst)
+        if not has_spec_kw:
+            # Looks like a Persian name (no Latin, no digits, reasonable length)
+            if all('\u0600' <= ch <= '\u06FF' or ch in ' \u200c' for ch in t):
+                return True
+    return False
+
 def _heuristic_classify(text: str) -> str:
     t = text.strip().lower()
     t = re.sub(r"\.+$","",t).strip()
@@ -37,6 +59,7 @@ CLASSIFY_PROMPT = """دسته‌بندی کن — فقط یک کلمه: greeting
   شاخه‌ها: 1. تسهیلات افراد 2. گزارش چک 3. تسهیلات شرکت‌ها 4. عمومی (معرفی، هیات مدیره، کاربردها)
   نکته: "مدیر"، "هیات مدیره"، "هیئت مدیره"، "معرفی شرکت" و سوال درباره اشخاص (مثلا "قاسم بور کیه") → عمومی است نه تسهیلات. "شرکت" تنها بدون تسهیلات/چک → عمومی؛ "شرکت" + تسهیلات/حقوقی → تسهیلات شرکت‌ها
 - question: سوال واقعی که جواب می‌خواهد، حتی اگر کلمه چک داشته باشد: "چک برگشتی چیست؟" → question، "قاسم بور کیه" → question (درباره شخص)
+  مهم: نام‌های اشخاص/شرکت‌های خالی (مثل "قاسم بور"، "رضا احمدی") بدون کلمات سوال هم → question هستند (جستجوی فرد)
 
 متن: "{text}"
 فقط بنویس: greeting یا specification یا question"""
@@ -46,20 +69,24 @@ async def classify(state: RAGState) -> RAGState:
     if not text:
         state["classify"]="question"
         return state
-    # Try LLM
-    try:
-        settings=get_settings()
-        async with GuardrailsClient() as client:
-            req=GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role":"user","content":CLASSIFY_PROMPT.format(text=text[:500])}], max_tokens=16, temperature=0.0)
-            resp=await client.chat_completion(req, state["request_id"])
-            ans=resp.choices[0].message.get("content","").strip().lower() if resp.choices else ""
-            if "greeting" in ans: cat="greeting"
-            elif "specification" in ans: cat="specification"
-            elif "question" in ans: cat="question"
-            else: cat=_heuristic_classify(text)
-    except Exception as e:
-        log.warning("classify LLM failed: %s", e)
-        cat=_heuristic_classify(text)
+    # Heuristic: bare entity names (person/company) without question words -> question
+    if _looks_like_entity_lookup(text):
+        cat = "question"
+    else:
+        # Try LLM
+        try:
+            settings=get_settings()
+            async with GuardrailsClient() as client:
+                req=GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role":"user","content":CLASSIFY_PROMPT.format(text=text[:500])}], max_tokens=16, temperature=0.0)
+                resp=await client.chat_completion(req, state["request_id"])
+                ans=resp.choices[0].message.get("content","").strip().lower() if resp.choices else ""
+                if "greeting" in ans: cat="greeting"
+                elif "specification" in ans: cat="specification"
+                elif "question" in ans: cat="question"
+                else: cat=_heuristic_classify(text)
+        except Exception as e:
+            log.warning("classify LLM failed: %s", e)
+            cat=_heuristic_classify(text)
     state["classify"]=cat
     # If specification, also set the subspace label
     if cat=="specification":
