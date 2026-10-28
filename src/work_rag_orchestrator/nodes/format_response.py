@@ -243,6 +243,168 @@ def _citation_priority(chunk: dict) -> int:
     return {"both": 0, "ce": 1, "rrf": 2}.get(src, 3)
 
 
+# F2: Patterns that indicate retrieved content says something is NOT available
+_NOT_AVAILABLE_PATTERNS = [
+    "تعریف نشده", "تعریف نشده است", "تعریف نشده‌اند",
+    "وجود ندارد", "ندارد", "نیست",
+    "ارائه نمی‌شود", "ارائه نشده", "ارائه نشده است",
+    "ارائه نمی‌گردد", "ارائه نگردیده",
+    "موجود نیست", "موجود نمی‌باشد",
+    "پشتیبانی نمی‌شود", "پشتیبانی نشده",
+    "فعال نیست", "فعال نشده",
+    "در آینده", "به طور کلی.*نمی‌شود", "به طور کلی.*ندارد",
+]
+
+# Patterns that indicate generated answer provides advice/instructions
+# as if the thing DOES exist
+_ADVICE_PATTERNS = [
+    "برای بهبود", "برای ارتقا", "برای افزایش",
+    "لازم است", "باید", "وصیه می‌شود", "توصیه می‌شود",
+    "اقدام", "مدیریت", "پرهیز", "کاهش", "جلوگیری",
+    "ارتقا", "بهبود", "تسویه", "رفع",
+    "استراتژی", "راهکار", "روش", "نحوه",
+]
+
+
+# F2: Patterns that indicate retrieved content says something is NOT available
+# Be specific: only match explicit "not available for X" or "not defined for X" patterns
+# Avoid generic "ندارد", "نیست" which appear in normal content
+_NOT_AVAILABLE_PATTERNS = [
+    "تعریف نشده", "تعریف نشده است", "تعریف نشده‌اند",
+    "ارائه نمی‌شود", "ارائه نشده", "ارائه نشده است",
+    "ارائه نمی‌گردد", "ارائه نگردیده",
+    "پشتیبانی نمی‌شود", "پشتیبانی نشده",
+    "فعال نیست", "فعال نشده",
+    "در آینده", "به طور کلی.*نمی‌شود", "به طور کلی.*ندارد",
+    # Explicit "not for legal entities" / "not for companies"
+    "برای اشخاص حقوقی.*تعریف نشده", "برای شرکت‌ها.*تعریف نشده",
+    "برای اشخاص حقوقی.*موجود نیست", "برای شرکت‌ها.*موجود نیست",
+    "فقط برای اشخاص حقیقی", "تنها برای اشخاص حقیقی",
+    "مختص اشخاص حقیقی", "اختصاصاً برای اشخاص حقیقی",
+]
+
+# Patterns that indicate generated answer provides advice/instructions
+# as if the thing DOES exist
+_ADVICE_PATTERNS = [
+    "برای بهبود", "برای ارتقا", "برای افزایش",
+    "لازم است", "باید", "وصیه می‌شود", "توصیه می‌شود",
+    "اقدام", "مدیریت", "پرهیز", "کاهش", "جلوگیری",
+    "ارتقا", "بهبود", "تسویه", "رفع",
+    "استراتژی", "راهکار", "روش", "نحوه",
+]
+
+
+async def _check_contradiction(answer: str, chunks: list, request_id: str, applied_subspace: str | None) -> bool:
+    """
+    Check if answer contradicts retrieved chunks that say something is NOT available.
+    
+    Returns True if contradiction detected (should refuse).
+    """
+    # Collect all chunk content
+    chunk_text = " ".join(str(c.get("content") or "") for c in chunks[:10])
+    if not chunk_text:
+        return False
+    
+    # Check if any chunk says "not available" FOR THE RELEVANT ENTITY TYPE
+    chunk_lower = chunk_text.lower()
+    
+    # Only check for unavailability patterns if the subspace matches
+    # For cheque subspace: check if chunks say "not available for legal entities"
+    # For facilities_legal: check if chunks say "not available for companies" for cheque
+    has_not_available = False
+    if applied_subspace == "cheque":
+        # For individual cheque: contradiction if chunks say "not for legal entities" 
+        # AND answer gives advice as if it's available for legal entities
+        # But we don't know if answer is for legal or individual - skip for cheque subspace
+        # since cheque IS available for individuals
+        has_not_available = False
+    elif applied_subspace == "facilities_legal":
+        # For company facilities: check if chunks say cheque not available for companies
+        has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
+                                if "حقوقی" in pat or "شرکت" in pat or "قانونی" in pat)
+    else:
+        # For other subspaces, use general patterns but be conservative
+        has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
+                                if "تعریف نشده" in pat or "ارائه نمی‌شود" in pat or "پشتیبانی نمی‌شود" in pat)
+    
+    if not has_not_available:
+        return False
+    
+    # Check if answer gives advice as if it IS available
+    answer_lower = answer.lower()
+    has_advice = any(pat.lower() in answer_lower for pat in _ADVICE_PATTERNS)
+    
+    if not has_advice:
+        return False
+    
+    # Additional check: answer should not be a direct quote from chunks
+    # (if answer is just repeating the "not available" info, that's fine)
+    not_avail_in_answer = any(pat.lower() in answer_lower for pat in _NOT_AVAILABLE_PATTERNS)
+    if not_avail_in_answer:
+        # Answer acknowledges unavailability - not a contradiction
+        return False
+    
+    log.info(
+        "Contradiction guard fired for request %s: chunks say NOT available, but answer gives advice",
+        request_id
+    )
+    return True
+
+
+# F3: Specific hallucination patterns for subspace mismatches
+# e.g., treating a factor as a standalone model
+_STANDALONE_MODEL_PATTERNS = [
+    "رتبه چک", "امتیاز چک", "رتبه‌بندی چک", "گزارش چک",
+    "رتبه اعتباری چک", "امتیاز اعتباری چک",
+]
+
+# Patterns that indicate the KB only mentions it as a factor/index
+_FACTOR_ONLY_PATTERNS = [
+    "شاخص چک", "شاخص‌های چک", "عامل چک", "شاخص \"چک\"",
+    "تاثیر چک", "اثر چک", "عامل موثر", "شاخص موثر",
+]
+
+
+async def _check_subspace_mismatch(answer: str, chunks: list, request_id: str, applied_subspace: str | None) -> bool:
+    """
+    Check for hallucinations where model treats a factor as a standalone model.
+    
+    E.g., KB says "cheque index is a factor in facilities rating for companies"
+    but model answers "how to improve your cheque rating for companies".
+    """
+    if not applied_subspace or not chunks:
+        return False
+    
+    # Check if applied subspace is facilities_legal and query is about cheque
+    if applied_subspace != "facilities_legal":
+        return False
+    
+    chunk_text = " ".join(str(c.get("content") or "") for c in chunks[:10])
+    if not chunk_text:
+        return False
+    
+    chunk_lower = chunk_text.lower()
+    answer_lower = answer.lower()
+    
+    # Check if answer talks about standalone cheque rating/model
+    has_standalone = any(pat in answer_lower for pat in _STANDALONE_MODEL_PATTERNS)
+    if not has_standalone:
+        return False
+    
+    # Check if chunks only mention cheque as a factor/index, not a standalone model
+    has_factor_only = any(pat in chunk_lower for pat in _FACTOR_ONLY_PATTERNS)
+    has_not_standalone = not any(pat in chunk_lower for pat in ["گزارش چک", "رتبه چک", "امتیاز چک", "رتبه‌بندی چک"])
+    
+    if has_factor_only and has_not_standalone:
+        log.info(
+            "Subspace mismatch guard fired for request %s: KB mentions cheque as factor only, but answer treats as standalone model",
+            request_id
+        )
+        return True
+    
+    return False
+
+
 def _parse_cited_indices(text: str) -> list[int]:
     """Extract ordered, unique [n] source numbers referenced in the answer."""
     import re
@@ -534,6 +696,37 @@ async def format_response(state: RAGState) -> RAGState:
                     request_id, _coverage, _used_top,
                     bool(state.get("fallback_used")), bool(state.get("broaden_used")),
                 )
+
+        # --- F2: contradiction guard ---
+        # Detect when retrieved chunks explicitly state something is NOT available
+        # (e.g., "not defined for legal entities", "not available", "does not exist")
+        # but the model generates advice as if it DOES exist.
+        # This catches hallucinations where model ignores "not available" signals.
+        _contradiction_refused = False
+        if not _faith_refused and ABSTENTION_PHRASE not in content and chunks:
+            try:
+                _contradiction_refused = await _check_contradiction(content, chunks, request_id, state.get("applied_subspace"))
+                if _contradiction_refused:
+                    content = NO_EVIDENCE_MSG
+                    citations = []
+            except Exception as _e:
+                log.warning("Contradiction check failed for %s: %s", request_id, _e)
+
+        # --- F3: subspace mismatch guard ---
+        # Detect hallucinations where model treats a factor as a standalone model.
+        # E.g., KB says "cheque index is a factor in facilities rating for companies"
+        # but model answers "how to improve your cheque rating for companies".
+        _mismatch_refused = False
+        if not _faith_refused and not _contradiction_refused and ABSTENTION_PHRASE not in content and chunks:
+            try:
+                _mismatch_refused = await _check_subspace_mismatch(
+                    content, chunks, request_id, state.get("applied_subspace")
+                )
+                if _mismatch_refused:
+                    content = NO_EVIDENCE_MSG
+                    citations = []
+            except Exception as _e:
+                log.warning("Subspace mismatch check failed for %s: %s", request_id, _e)
         # Append the ground-truth block AFTER cleaning so _to_plain_text /
         # _clean_answer never strip it; the block itself is plain text.
         # Production responses hide it (response_detail setting); verbose shows.

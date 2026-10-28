@@ -666,7 +666,7 @@ def create_app() -> FastAPI:
             "faq_verified": False,
             "greeting_only": None,
             "stage_timing_ms": {},
-            "applied_subspace": sticky_applied if _req_filter_path else None,
+            "applied_subspace": sticky_applied,
             # Cross-turn sticky for the next turn's scorer decision (not used
             # to scope retrieval this turn — see switch-by-scorer note above).
             "sticky_subspace": sticky_applied,
