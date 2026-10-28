@@ -64,6 +64,44 @@ def _extract_subspace(hier: list[str] | str | None) -> str:
         return "facilities_person"
 
 
+def _detect_subspace_shift(query: str, current_sticky: str) -> str | None:
+    """Detect if query explicitly targets a DIFFERENT subspace than current sticky.
+
+    Returns the new subspace label if a shift is detected, else None.
+    This allows the conversation to naturally transition between topics
+    (e.g., from facilities to person lookup in general subspace).
+    """
+    if not current_sticky or not query:
+        return None
+
+    q = query.lower()
+
+    # "معرفی" (introduction) strongly signals general subspace regardless of other words
+    if "معرفی" in q and current_sticky != "general":
+        return "general"
+
+    # Keywords that strongly indicate each subspace
+    shift_keywords = {
+        "cheque": ["چک", "برگشتی", "صك", "صیاد"],
+        "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی", "شخصی"],
+        "facilities_legal": ["حقوقی", "شرکت", "سهامدار", "تسهیلات حقوقی"],
+        "general": [
+            "مدیر", "هیات مدیره", "هیئت مدیره",
+            "قاسم", "بور", "شخصیت", "مشهور", "عمومی", "عام",
+            "سوالات عمومی", "سوال عمومی", "معرفی شرکت"
+        ],
+    }
+
+    # Check each subspace (except current) for explicit keywords
+    for subspace, kws in shift_keywords.items():
+        if subspace == current_sticky:
+            continue
+        if any(kw in q for kw in kws):
+            return subspace
+
+    return None
+
+
 # --- Dynamic retrieval: one re-retrieval then not-enough-context + DLQ ---
 _DLQ_PATH = "/tmp/dlq_retrieval.jsonl"
 
@@ -1319,11 +1357,17 @@ async def retrieve(state: RAGState) -> RAGState:
         # message is NOT a new specification, reuse sticky with filtered re-retrieve
         # (skip granularity/clarify). Default None means whole KB (no filter).
         _sticky = state.get("applied_subspace")
-        # Current query general override — board member / معرفی signals should bypass sticky cheque
         cur_q2 = state.get("query", "") or ""
-        if any(k in cur_q2 for k in ["قاسم", "بور", "هیات مدیره", "هیئت مدیره", "سوالات عمومی", "سوال عمومی", "معرفی شرکت"]):
-            state["applied_subspace"] = "general"
-            _sticky = "general"
+
+        # Detect explicit subspace shift in the current query (e.g., user switches
+        # from facilities to person lookup in general, or from cheque to facilities).
+        # This allows natural topic transitions without forcing clarification.
+        _shifted_subspace = _detect_subspace_shift(cur_q2, _sticky) if _sticky else None
+        if _shifted_subspace:
+            state["applied_subspace"] = _shifted_subspace
+            _sticky = _shifted_subspace
+            log.info("Subspace shift detected: query=%r -> %s", cur_q2[:80], _shifted_subspace)
+
         if _sticky:
             try:
                 from .infer_specification import is_specification as _is_spec_sticky
