@@ -4,6 +4,63 @@ LangGraph orchestration and public OpenAI-compatible chat API for the Work Credi
 
 > **Status:** ✅ **IMPLEMENTED AND LIVE** on Vast.ai (`main`). The runtime described below matches the deployed system and includes the **ambiguity resolver**, **clarifying-question generator**, and **metadata (subspace) filtering** layers.
 
+## 🗂 Code Hierarchy & File Diagram
+
+```mermaid
+graph TD
+    ROOT[orchestrator/]
+    ROOT --> README[README.md]
+    ROOT --> STUDIO[STUDIO.md]
+    ROOT --> LANG[langgraph.json]
+    ROOT --> DOCKER[Dockerfile]
+    ROOT --> ENV[.env.example]
+    ROOT --> PYPROJ[pyproject.toml]
+    ROOT --> SRC[src/work_rag_orchestrator/]
+    SRC --> API[api.py]
+    SRC --> GRAPH[graph.py]
+    SRC --> TRACING[tracing.py]
+    SRC --> CONFIG[config.py]
+    SRC --> STATE[state.py]
+    SRC --> SCHEMAS[schemas.py]
+    SRC --> SUBSPACES[subspaces.py]
+    SRC --> REWRITE[rewrite.py]
+    SRC --> FAQ[faq_direct.py]
+    SRC --> COMPACT[context_compact.py]
+    SRC --> CLIENTS[clients/]
+    CLIENTS --> KG[knowledgebase.py]
+    CLIENTS --> GR[guardrails.py]
+    CLIENTS --> MIZAN[mizan.py]
+    CLIENTS --> FAQV[faq_verifier.py]
+    CLIENTS --> HJ[hybrid_judge.py]
+    SRC --> NODES[nodes/]
+    NODES --> VALIDATE[validate_input.py]
+    NODES --> CLASSIFY[classify.py]
+    NODES --> HYBRID[hybrid_classify.py]
+    NODES --> INFER[infer_specification.py]
+    NODES --> RETRIEVE[retrieve.py]
+    NODES --> BUILDCTX[build_context.py]
+    NODES --> CLARIFY[generate_clarification.py]
+    NODES --> GUARDED[guarded_generate.py]
+    NODES --> FORMAT[format_response.py]
+    NODES --> MIZANJ[ mizan_retrieval_judge.py]
+    ROOT --> DATA[data/]
+    DATA --> AMB[ambiguity_*.jsonl]
+    DATA --> SUBS[subspace_*.json, .joblib, .npz]
+    DATA --> EVAL[gemma_classification_results.json]
+    ROOT --> SCRIPTS[scripts/]
+    SCRIPTS --> BUILD[build_subspace_protos.py]
+    SCRIPTS --> CAL[calibrate_subspace.py]
+    SCRIPTS --> TRAIN[train_subspace_clf.py]
+    SCRIPTS --> EVALM[eval_mizan_on_ambiguity.py]
+    SCRIPTS --> GEN[generate_comparison_plots.py]
+    ROOT --> TESTS[tests/]
+    TESTS --> T1[test_orchestrator.py]
+    TESTS --> T2[test_subspaces.py]
+    TESTS --> T3[test_memory_coref.py]
+
+classDef root fill:#e1f5e1,stroke:#2e7d32,stroke-width:2px
+class ROOT root
+
 <!-- docs-toc:start -->
 ## Documentation Index
 
