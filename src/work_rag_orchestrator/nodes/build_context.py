@@ -317,11 +317,15 @@ async def build_context(state: RAGState) -> RAGState:
             entity_section = (
                 "\n\n[Entity Data from supplement tool]\n\n"
                 + "\n\n---\n\n".join(ent_blocks)
-                + "\n\nاگر در بخش [Entity Data] اطلاعاتی مرتبط با پرسش کاربر وجود دارد "
-                "(مثل کد دلیل کاهش امتیاز، نام سهامدار، عنوان وام یا نرخ سود)، از آن‌ها برای پاسخ به پرسش استفاده کنید "
-                "و جزئیات مربوطه را ذکر کنید."
+                + "\n\n⚠️ مهم: اگر در بخش [Entity Data] اطلاعاتی مرتبط با پرسش کاربر وجود دارد "
+                "(مثل کد دلیل کاهش امتیاز، نام سهامدار، عنوان وام یا نرخ سود)، این اولویت بالاتری نسبت به بخش [Context from Knowledge Base] دارد. "
+                "از آن‌ها برای پاسخ به پرسش استفاده کنید و جزئیات مربوطه را ذکر کنید."
             )
             system_message += entity_section
+            
+            # Also prepend to user content for extra prominence when KB chunks may not be relevant
+            if ent_blocks:
+                user_content = entity_section + "\n\n" + user_content
         except Exception:
             pass
 
