@@ -244,29 +244,6 @@ def _citation_priority(chunk: dict) -> int:
 
 
 # F2: Patterns that indicate retrieved content says something is NOT available
-_NOT_AVAILABLE_PATTERNS = [
-    "تعریف نشده", "تعریف نشده است", "تعریف نشده‌اند",
-    "وجود ندارد", "ندارد", "نیست",
-    "ارائه نمی‌شود", "ارائه نشده", "ارائه نشده است",
-    "ارائه نمی‌گردد", "ارائه نگردیده",
-    "موجود نیست", "موجود نمی‌باشد",
-    "پشتیبانی نمی‌شود", "پشتیبانی نشده",
-    "فعال نیست", "فعال نشده",
-    "در آینده", "به طور کلی.*نمی‌شود", "به طور کلی.*ندارد",
-]
-
-# Patterns that indicate generated answer provides advice/instructions
-# as if the thing DOES exist
-_ADVICE_PATTERNS = [
-    "برای بهبود", "برای ارتقا", "برای افزایش",
-    "لازم است", "باید", "وصیه می‌شود", "توصیه می‌شود",
-    "اقدام", "مدیریت", "پرهیز", "کاهش", "جلوگیری",
-    "ارتقا", "بهبود", "تسویه", "رفع",
-    "استراتژی", "راهکار", "روش", "نحوه",
-]
-
-
-# F2: Patterns that indicate retrieved content says something is NOT available
 # Be specific: only match explicit "not available for X" or "not defined for X" patterns
 # Avoid generic "ندارد", "نیست" which appear in normal content
 _NOT_AVAILABLE_PATTERNS = [
