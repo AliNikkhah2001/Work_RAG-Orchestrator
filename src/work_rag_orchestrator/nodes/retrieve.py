@@ -1098,7 +1098,10 @@ async def retrieve(state: RAGState) -> RAGState:
         ce_chunks = list(result)
         injected = []
     state["injected_entities"] = injected
-    state["supplemental"] = injected
+    # Trim auto-injected entities (Step 8) to prevent huge payloads in final chunk
+    # that exceed OpenWebUI's 128KB SSE line limit. Proactive tool call (below)
+    # will re-trim if it runs, but if it doesn't run we still need trimming here.
+    state["supplemental"] = trim_supplemental(injected, query)
 
     # --- Proactive entity-list tool call ---
     # When the query targets a supplementary dictionary (reason codes,
