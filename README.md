@@ -60,6 +60,7 @@ graph TD
 
 classDef root fill:#e1f5e1,stroke:#2e7d32,stroke-width:2px
 class ROOT root
+```
 
 <!-- docs-toc:start -->
 ## Documentation Index
@@ -92,14 +93,15 @@ flowchart TD
     VI -->|blocked| FR[format_refusal]
     VI -->|allowed| CL[classify]
     CL -->|greeting / specification| FRMT[format_response]
-    CL -->|question| RET[retrieve]
+    FRMT --> END([END])
+    CL -->|question| HC[hybrid_classify]
+    HC --> RET[retrieve]
     RET -->|needs_clarification| GC[generate_clarification]
+    GC --> END
     RET -->|continue| BC[build_context]
     BC --> GG[guarded_generate]
     GG --> FRMT
-    FRMT --> END([END])
-    GC --> END
-    FR --> END
+    REF --> END
 ```
 
 - `validate_input` → calls Work RAG Guardrails `/v1/rails/check` (stage=input)
@@ -149,14 +151,15 @@ flowchart TD
     C -->|no| CL[classify<br/>greeting | specification | question]
     CL --> R{greeting/spec?}
     R -->|yes| FR[format_response<br/>ack / smalltalk, no retrieval]
-    R -->|no| RET[retrieve<br/>KB /search/api + filter_path]
+    FR --> STOP([END])
+    R -->|no| HC[hybrid_classify<br/>SVM-RBF + Gemma escalation]
+    HC --> RET[retrieve<br/>KB /search/api + filter_path]
     RET --> CL2{needs_clarification?}
     CL2 -->|yes| GC[generate_clarification<br/>Persian disambiguation question]
+    GC --> STOP
     CL2 -->|no| BC[build_context<br/>[1..20], ≤9000 chars]
     BC --> GG[guarded_generate<br/>Guardrails /v1/chat/completions]
     GG --> FR
-    FR --> STOP([END])
-    GC --> STOP
     REF --> STOP
 ```
 
