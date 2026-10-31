@@ -89,19 +89,20 @@ The graph is deterministic and now classifies every turn before retrieval so gre
 
 ```mermaid
 flowchart TD
-    START([START]) --> VI[validate_input]
-    VI -->|blocked| FR[format_refusal]
-    VI -->|allowed| CL[classify]
-    CL -->|greeting / specification| FRMT[format_response]
-    FRMT --> END([END])
-    CL -->|question| HC[hybrid_classify]
-    HC --> RET[retrieve]
-    RET -->|needs_clarification| GC[generate_clarification]
-    GC --> END
-    RET -->|continue| BC[build_context]
-    BC --> GG[guarded_generate]
-    GG --> FRMT
-    REF --> END
+    Start((Start)) --> VI[validate_input]
+    VI -->|blocked| Ref[format_refusal]
+    VI -->|allowed| Cl[classify]
+    Cl -->|greeting / specification| Fr[format_response]
+    Fr --> End((End))
+    Cl -->|question| Hc[hybrid_classify]
+    Hc --> Ret[retrieve]
+    Ret -->|needs clarification| Gc[generate_clarification]
+    Gc --> End((End))
+    Ret -->|continue| Bc[build_context]
+    Bc --> Gg[guarded_generate]
+    Gg --> Fr
+    Ref --> End((End))
+```    REF --> END
 ```
 
 - `validate_input` → calls Work RAG Guardrails `/v1/rails/check` (stage=input)
@@ -145,22 +146,19 @@ It does **not** own KB ingestion/retrieval algorithms, safety policy definitions
 
 ```mermaid
 flowchart TD
-    START([START]) --> VI[validate_input<br/>Guardrails /v1/rails/check stage=input]
-    VI --> C{blocked?}
-    C -->|yes| REF[format_refusal<br/>reuses format_response]
-    C -->|no| CL[classify<br/>greeting | specification | question]
-    CL --> R{greeting/spec?}
-    R -->|yes| FR[format_response<br/>ack / smalltalk, no retrieval]
-    FR --> STOP([END])
-    R -->|no| HC[hybrid_classify<br/>SVM-RBF + Gemma escalation]
-    HC --> RET[retrieve<br/>KB /search/api + filter_path]
-    RET --> CL2{needs_clarification?}
-    CL2 -->|yes| GC[generate_clarification<br/>Persian disambiguation question]
-    GC --> STOP
-    CL2 -->|no| BC[build_context<br/>[1..20], ≤9000 chars]
-    BC --> GG[guarded_generate<br/>Guardrails /v1/chat/completions]
-    GG --> FR
-    REF --> STOP
+    Start((Start)) --> VI[validate_input]
+    VI -->|blocked| Ref[format_refusal]
+    VI -->|allowed| Cl[classify]
+    Cl -->|greeting / specification| Fr[format_response]
+    Cl -->|question| Hc[hybrid_classify]
+    Hc --> Ret[retrieve]
+    Ret -->|needs clarification| Gc[generate_clarification]
+    Ret -->|continue| Bc[build_context]
+    Bc --> Gg[guarded_generate]
+    Gg --> Fr
+    Gc --> End((End))
+    Fr --> End((End))
+    Ref --> End((End))
 ```
 
 ### 2.2 Node responsibilities
