@@ -26,9 +26,51 @@ from .config import get_settings
 
 log = logging.getLogger(__name__)
 
-# Empirical Persian-heavy char→token ratio for Gemma (observed: 72k chars ≈
-# 16k tokens on the TRT-LLM upstream → ~4.5 chars/token).
+# Empirical Persian-heavy char→token ratio for Gemma — FALLBACK ONLY, used
+# when the exact tokenizer (settings.tokenizer_path) cannot be loaded.
+# Observed: 72k chars ≈ 16k tokens on the TRT-LLM upstream (~4.5 chars/token);
+# repetitive Persian can be as dense as ~3 chars/token.
 CHARS_PER_TOKEN = 4.5
+
+# Lazily-loaded HF fast tokenizer for exact token counting. Loaded once;
+# any failure downgrades permanently to the char-ratio estimate.
+_TOKENIZER: Any = None
+_TOKENIZER_TRIED = False
+
+
+def _get_tokenizer() -> Any:
+    """Return a tokenizers.Tokenizer for the upstream model, or None.
+
+    Kept lazy + failure-tolerant so compaction never breaks the request
+    path: a missing file or absent `tokenizers` package just means the
+    cheaper (less accurate) char-ratio estimate is used instead.
+    """
+    global _TOKENIZER, _TOKENIZER_TRIED
+    if not _TOKENIZER_TRIED:
+        _TOKENIZER_TRIED = True
+        path = get_settings().tokenizer_path
+        if path:
+            try:
+                from tokenizers import Tokenizer
+
+                _TOKENIZER = Tokenizer.from_file(path)
+                log.info("compact tokenizer loaded (exact token counting): %s", path)
+            except Exception as e:
+                log.warning(
+                    "tokenizer load failed (%s) — falling back to char-ratio estimate", e
+                )
+    return _TOKENIZER
+
+
+def _count_text_tokens(text: str) -> int:
+    """Token count for one message: exact via tokenizer, else chars/ratio."""
+    tok = _get_tokenizer()
+    if tok is None:
+        return int(len(text) / CHARS_PER_TOKEN)
+    try:
+        return len(tok.encode(text).ids)
+    except Exception:
+        return int(len(text) / CHARS_PER_TOKEN)
 
 # Cache: transcript-hash -> summary text. Bounded to avoid unbounded growth.
 _SUMMARY_CACHE: Dict[str, str] = {}
@@ -73,8 +115,9 @@ def _turns(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def estimate_tokens(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (chars / CHARS_PER_TOKEN)."""
-    return int(sum(len(m.get("content") or "") for m in messages) / CHARS_PER_TOKEN)
+    """Token count for a message list — exact Gemma tokenizer when available,
+    char-ratio fallback otherwise."""
+    return sum(_count_text_tokens(m.get("content") or "") for m in messages)
 
 
 def _transcript(old_turns: List[Dict[str, Any]]) -> str:
@@ -172,8 +215,7 @@ def compact_history_sync(
     if not turns:
         return None
     info["estimate_tokens"] = estimate_tokens(turns)
-    budget_chars = settings.compact_threshold_tokens * CHARS_PER_TOKEN
-    if sum(len(m.get("content") or "") for m in turns) <= budget_chars:
+    if info["estimate_tokens"] <= settings.compact_threshold_tokens:
         return None
 
     recent_n = max(settings.compact_recent_turns, 2)

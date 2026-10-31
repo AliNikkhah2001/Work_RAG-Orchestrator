@@ -156,6 +156,12 @@ class Settings(BaseSettings):
     compact_recent_turns: int = 4
     compact_max_summary_chars: int = 1200
     compact_msg_cap_chars: int = 4000
+    # Exact token counting: path to a HF fast tokenizer.json matching the
+    # upstream model (Gemma). Empty/unloadable → char-ratio fallback estimate.
+    tokenizer_path: str = (
+        "/splunk-data/v1/Work_RAG-Server-Setup/offline-prep/models/"
+        "huggingface/google_gemma-4-31b-it/tokenizer.json"
+    )
     # The summarizer transcript is itself bounded — repetitive Persian can
     # tokenize as dense as ~3 chars/token on the TRT-LLM upstream, so a 12k
     # char transcript stays ≤ ~4k tokens (well inside the 8192 window).
