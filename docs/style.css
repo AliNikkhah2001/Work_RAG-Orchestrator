@@ -537,3 +537,39 @@ tr:hover {
   .page { max-width: 100%; }
   .toc { padding: 1rem; }
 }
+
+/* Logo image styling */
+.dana-logo-img {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    object-fit: contain;
+    border: 2px solid var(--dana-crimson);
+    background: white;
+    padding: 2px;
+    display: inline-block;
+}
+.dana-logo-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+}
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    text-decoration: none;
+}
+.logo img {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border: 2px solid var(--dana-crimson);
+    background: white;
+    padding: 1px;
+}
