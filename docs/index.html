@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dana · Work RAG Orchestrator · Overview</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose' });</script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="brand">
+      <span class="logo">Dana</span>
+      <span>Work RAG Orchestrator</span>
+      <span class="repo-tag">components/orchestrator</span>
+    </a>
+    <nav class="site-nav">
+      <div class="nav-inner">
+        <ul class="nav-list">
+          <li class="nav-item"><a href="index.html" class="active">Overview</a></li>
+          <li class="nav-item"><a href="high-level.html">High-Level</a></li>
+          <li class="nav-item"><a href="technical.html">Technical</a></li>
+        </ul>
+        <div class="nav-spacer"></div>
+        <div class="nav-actions">
+          <a href="https://github.com" class="btn btn-primary" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<main class="site-main">
+  <div class="page">
+    <header class="page-header">
+      <span class="page-badge">Page 1 of 3 · Overview</span>
+      <h1 class="page-title">Work RAG Orchestrator</h1>
+      <p class="page-intro">LangGraph orchestration and public OpenAI-compatible chat API for the Work Credit RAG platform. Implemented and live on Vast.ai (<code>main</code>). The runtime matches the deployed system and includes the ambiguity resolver, clarifying-question generator, and metadata (subspace) filtering layers.</p>
+    </header>
+
+    <section>
+      <h2>1. Summary</h2>
+      <p>The Orchestrator owns <strong>request coordination</strong>. It receives a chat completion request, runs it through a deterministic LangGraph workflow, and returns a grounded, citation-shaped response.</p>
+      <p>The graph is deterministic and classifies every turn before retrieval so greetings, subspace specifications, and real questions each take the right path. It never calls Gemma directly — generation is delegated to Guardrails (<code>POST /v1/chat/completions</code> → Gemma <code>:18000</code>).</p>
+
+      <div class="callout">
+        <h4>Status</h4>
+        <p><span class="status-chip implemented">Implemented &amp; live</span> Vast.ai <code>main</code>. Compiled with <code>MemorySaver</code>; exports <code>rag_graph</code> and <code>graph</code> (Studio entry point in <code>langgraph.json</code> → <code>studio_graph.py:graph</code>).</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Graph architecture</h2>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">Variant A — Detailed Technical (all 9 nodes)</div>
+        <div class="mermaid">
+flowchart TD
+    Start((Start)) --> VI
+    VI[validate_input • nodes/validate_input.py:13 • Guardrails /v1/rails/check]
+    Cl[classify • nodes/classify.py:67 • Guardrails /v1/chat/completions]
+    Hc[hybrid_classify • nodes/hybrid_classify.py:67 • SVM→Gemma escalation]
+    Ret[retrieve • nodes/retrieve.py:851 • Knowledgebase /search/api]
+    Gc[generate_clarification • nodes/generate_clarification.py:24 • Guardrails /v1/chat/completions]
+    Bc[build_context • nodes/build_context.py:53 • numbered sources + system prompt]
+    Gg[guarded_generate • nodes/guarded_generate.py:16 • Guardrails /v1/chat/completions → Gemma]
+    Fr[format_response • nodes/format_response.py:492 • citations + finish_reason]
+    Rf[format_refusal • graph.py:109 • alias of format_response]
+    End((End))
+
+    Start --> VI
+    VI -->|should_continue_after_validation (graph.py:24): blocked| Rf
+    VI -->|allowed| Cl
+    Cl -->|should_route_after_classify (graph.py:31): greeting/specification| Fr
+    Cl -->|question + hybrid on| Hc
+    Cl -->|question + hybrid off| Ret
+    Hc --> Ret
+    Rf --> End
+    Fr --> End
+    Ret -->|should_clarify (graph.py:45): needs clarification| Gc
+    Ret -->|continue| Bc
+    Gc --> End
+    Bc --> Gg
+    Gg --> Fr
+        </div>
+      </div>
+
+      <div class="caption">
+        <p>Deterministic LangGraph flow. Entry is <code>validate_input</code> (<code>nodes/validate_input.py:13</code>, calls Guardrails <code>POST /v1/rails/check</code> via <code>clients/guardrails.py:91</code>). <code>should_continue_after_validation</code> (graph.py:24) sends blocked turns to <code>format_refusal</code> → End and allowed turns to <code>classify</code> (<code>nodes/classify.py:67</code>, calls Guardrails <code>/v1/chat/completions</code> via <code>clients/guardrails.py:135</code>). <code>should_route_after_classify</code> (graph.py:31) routes greeting/specification to <code>format_response</code> → End, question-with-hybrid to <code>hybrid_classify</code> (<code>nodes/hybrid_classify.py:67</code>, SVM-RBF with Gemma escalation) → <code>retrieve</code>, and question-without-hybrid directly to <code>retrieve</code> (<code>nodes/retrieve.py:851</code>, calls KB <code>POST /search/api</code> via <code>clients/knowledgebase.py:61</code>). <code>should_clarify</code> (graph.py:45) splits <code>retrieve</code> into <code>generate_clarification</code> → End (needs clarification, calls Guardrails <code>/v1/chat/completions</code>) or <code>build_context</code> → <code>guarded_generate</code> → <code>format_response</code> → End (continue; <code>guarded_generate</code> at <code>nodes/guarded_generate.py:16</code> calls Guardrails <code>/v1/chat/completions</code> → Gemma). <code>format_refusal</code> is registered as a second alias of <code>format_response</code> (graph.py:109).</p>
+      </div>
+      <p class="diagram-note">Validated against <code>src/work_rag_orchestrator/graph.py</code>: <code>validate_input → (blocked → format_refusal → End | allowed → classify) → (greeting/specification → format_response → End | question → hybrid_classify → retrieve | question → retrieve when hybrid disabled) → retrieve → (needs clarification → generate_clarification → End | continue → build_context → guarded_generate → format_response → End)</code>.</p>
+    </section>
+
+    <section>
+      <h2>3. Libraries</h2>
+      <p>Runtime dependencies (<code>pyproject.toml</code>):</p>
+      <table>
+        <thead>
+          <tr><th>Library</th><th>Version</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>fastapi</td><td>&gt;=0.115.0</td></tr>
+          <tr><td>uvicorn[standard]</td><td>&gt;=0.30.0</td></tr>
+          <tr><td>pydantic</td><td>&gt;=2.10.0</td></tr>
+          <tr><td>pydantic-settings</td><td>&gt;=2.5.0</td></tr>
+          <tr><td>httpx</td><td>&gt;=0.27.0</td></tr>
+          <tr><td>langgraph</td><td>&gt;=0.2.0</td></tr>
+          <tr><td>langchain-core</td><td>&gt;=0.3.0</td></tr>
+          <tr><td>python-dotenv</td><td>&gt;=1.0.0</td></tr>
+          <tr><td>langgraph-checkpoint</td><td>&gt;=2.0.0</td></tr>
+          <tr><td>langfuse</td><td>&gt;=2.60.0</td></tr>
+          <tr><td>opentelemetry-api</td><td>&gt;=1.24.0</td></tr>
+          <tr><td>opentelemetry-sdk</td><td>&gt;=1.24.0</td></tr>
+          <tr><td>opentelemetry-exporter-otlp</td><td>&gt;=1.24.0</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Dev dependencies:</code> pytest &gt;=8.0.0, pytest-asyncio &gt;=0.23.0, pytest-cov &gt;=5.0.0, ruff &gt;=0.5.0, mypy &gt;=1.10.0, langgraph-cli[inmem] &gt;=0.3.0.</p>
+      <p>Both HTTP clients (<code>KnowledgebaseClient</code>, <code>GuardrailsClient</code>) use <code>httpx.AsyncClient</code> with <code>trust_env=False</code> so localhost calls bypass the corporate Squid proxy.</p>
+    </section>
+
+    <section>
+      <h2>4. API contract</h2>
+      <table>
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET</code></td><td>/health</td><td>Process health <code>{"status":"ok"}</code></td></tr>
+          <tr><td><code>GET</code></td><td>/ready</td><td>Dependency readiness for KB + Guardrails; ready only when both ready</td></tr>
+          <tr><td><code>GET</code></td><td>/v1/models</td><td>Model discovery (<code>ics-helper-agent</code>)</td></tr>
+          <tr><td><code>POST</code></td><td>/v1/chat/completions</td><td>OpenAI-compatible chat entry point (streaming + non-streaming)</td></tr>
+        </tbody>
+      </table>
+      <p>Graph failure → <code>500 {"detail":"Orchestration failed"}</code>; unhandled exception → <code>500 {"detail":"Internal server error"}</code>.</p>
+    </section>
+
+    <section>
+      <h2>5. Configuration (overview)</h2>
+      <table>
+        <thead>
+          <tr><th>Variable</th><th>Default</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ORCHESTRATOR_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind host</td></tr>
+          <tr><td><code>ORCHESTRATOR_PORT</code></td><td><code>8100</code></td><td></td></tr>
+          <tr><td><code>KB_BASE_URL</code></td><td><code>http://127.0.0.1:8000</code></td><td>KB Manager</td></tr>
+          <tr><td><code>GUARDRAILS_BASE_URL</code></td><td><code>http://127.0.0.1:8200</code></td><td>Guardrails</td></tr>
+          <tr><td><code>REQUEST_TIMEOUT_SECONDS</code></td><td><code>120</code></td><td>Downstream timeout</td></tr>
+          <tr><td><code>RETRIEVAL_TOP_K</code></td><td><code>20</code></td><td>10 RRF + 10 cross-encoder union</td></tr>
+          <tr><td><code>UPSTREAM_LLM_MODEL</code></td><td><code>gemma-4-31b-triton-trt</code></td><td>Judge/generate model</td></tr>
+          <tr><td><code>HYBRID_CLASSIFIER_ENABLED</code></td><td><code>false</code></td><td>Thresholded SVM→Gemma hybrid</td></tr>
+          <tr><td><code>TRACE_ENABLED</td><td><code>true</code></td><td>Langfuse tracing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>6. Tracing (Langfuse)</h2>
+      <p>Every request creates a trace keyed by <code>X-Request-ID</code> with spans: <code>validate_input</code>, <code>classify</code>, <code>query-rewrite</code>, <code>retrieve</code> (+ <code>retrieve-supplement-fallback</code>, <code>retrieve-dlq</code>, <code>retrieve-retry</code>, <code>retrieve-broadened</code>), <code>build_context</code> (+ <code>compact</code>), <code>guarded_generate</code>, <code>format_response</code> / <code>generate_clarification</code>, and a final <code>trace-create</code> upsert with <code>output</code> and <code>metadata</code> (<code>citations</code>, <code>latency_ms</code>, <code>finish_reason</code>). Falls back to the local JSONL collector at <code>:3000</code> when Langfuse <code>:3001</code> is unavailable. View via <code>GET http://127.0.0.1:3000/observe/{request_id}</code> or Langfuse UI <code>:3001</code>.</p>
+    </section>
+
+    <section>
+      <h2>7. Changelog (summary)</h2>
+      <table>
+        <thead>
+          <tr><th>Version</th><th>Summary</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>v0.1.0</code> (current, production)</td>
+            <td>Deterministic LangGraph orchestrator: ambiguity resolver over 4 subspaces (<code>cheque</code>, <code>facilities_person</code>, <code>facilities_legal</code>, <code>general</code>), clarifying-question generator, metadata filtering (<code>filter_path</code>), sticky subspace with T4 injection and B sticky decay, T1–T7 recall fixes, G5 faith/contradiction/subspace-mismatch guards, grounded follow-ups, thresholded hybrid SVM→Gemma classifier, EntityList supplement + DLQ, Langfuse tracing, OpenAI-compatible streaming API</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>8. Running locally &amp; tests</h2>
+      <pre><code>cd components/orchestrator
+PYTHONPATH=./src \
+  KB_BASE_URL=http://127.0.0.1:8000 \
+  GUARDRAILS_BASE_URL=http://127.0.0.1:8200 \
+  /tmp/orch-venv/bin/python -m uvicorn work_rag_orchestrator.api:create_app --factory --host 0.0.0.0 --port 8100</code></pre>
+      <pre><code>cd components/orchestrator
+PYTHONPATH=./src /tmp/orch-venv/bin/python -m pytest tests/ -v</code></pre>
+    </section>
+
+    <section>
+      <h2>9. Links</h2>
+      <ul>
+        <li><a href="#">STUDIO.md</a> — local graph debugger guide (LangGraph Studio)</li>
+        <li><a href="SUBSPACE_AMBIGUITY.md">docs/SUBSPACE_AMBIGUITY.md</a> — subspace ambiguity score design spec (frozen interface)</li>
+        <li><a href="#">Parent README</a> (../README.md)</li>
+      </ul>
+    </section>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <a href="index.html" class="footer-brand">
+      <span class="logo">Dana</span>
+      <span>Orchestrator Docs</span>
+    </a>
+    <ul class="footer-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="high-level.html">High-Level</a></li>
+      <li><a href="technical.html">Technical</a></li>
+    </ul>
+    <p class="footer-note">Dana · Work Credit RAG Platform · GitHub Pages · White / crimson (#DC143C) theme</p>
+  </div>
+</footer>
+
+</body>
+</html>

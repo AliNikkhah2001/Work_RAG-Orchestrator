@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dana · Work RAG Orchestrator · High-Level Detail</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'base', securityLevel: 'loose' });</script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="brand">
+      <span class="logo">Dana</span>
+      <span>Work RAG Orchestrator</span>
+      <span class="repo-tag">components/orchestrator</span>
+    </a>
+    <nav class="site-nav">
+      <div class="nav-inner">
+        <ul class="nav-list">
+          <li class="nav-item"><a href="index.html">Overview</a></li>
+          <li class="nav-item"><a href="high-level.html" class="active">High-Level</a></li>
+          <li class="nav-item"><a href="technical.html">Technical</a></li>
+        </ul>
+        <div class="nav-spacer"></div>
+        <div class="nav-actions">
+          <a href="https://github.com" class="btn btn-primary" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<main class="site-main">
+  <div class="page">
+    <header class="page-header">
+      <span class="page-badge">Page 2 of 3 · High-Level Detail</span>
+      <h1 class="page-title">High-Level Detail</h1>
+      <p class="page-intro">Black-box view of the orchestrator request path and the conditional routing logic that connects validation, classification, retrieval, clarification, generation, and formatting.</p>
+    </header>
+
+    <section>
+      <h2>1. Request path — black box</h2>
+
+      <div class="diagram-wrap">
+        <div class="diagram-title">Variant B — High-Level Black Box</div>
+        <div class="mermaid">
+flowchart TD
+    Input((Input)) --> Validate[Validate]
+    Validate -->|allowed| Classify[Classify]
+    Validate -->|blocked| Refusal[Refusal]
+    Classify -->|greeting / spec| Format[Format]
+    Classify -->|question| Retrieve[Retrieve]
+    Retrieve -->|needs clarification| Clarify[Clarify]
+    Retrieve -->|continue| Generate[Generate]
+    Generate --> Format
+    Clarify --> Output((Output))
+    Refusal --> Output
+    Format --> Output
+        </div>
+      </div>
+
+      <div class="caption">
+        <p>A chat input is <strong>validated</strong>; blocked requests produce a refusal and exit. Allowed requests are <strong>classified</strong>: greetings/subspace specifications go straight to formatting, while real questions proceed to <strong>retrieval</strong>. Retrieval either emits a <strong>clarifying question</strong> (ambiguous) or continues to <strong>generation</strong>. Generation produces the answer, which is formatted with citations and returned as <strong>output</strong>.</p>
+        <ul>
+          <li><strong>Input → Validate:</strong> every chat completion request enters through input validation against Guardrails <code>POST /v1/rails/check</code> (stage=input).</li>
+          <li><strong>Validate → Classify (allowed) | Refusal (blocked):</strong> the <code>should_continue_after_validation</code> conditional edge (graph.py:24) returns <code>"format_refusal"</code> when <code>blocked</code> is true, otherwise <code>"classify"</code>.</li>
+          <li><strong>Classify → Format (greeting/spec) | Retrieve (question):</strong> <code>should_route_after_classify</code> (graph.py:31) routes <code>greeting</code>/<code>specification</code> to <code>format_response</code> → End; real questions proceed to retrieval (directly, or via hybrid_classify when enabled).</li>
+          <li><strong>Retrieve → Clarify (needs clarification) | Generate (continue):</strong> <code>should_clarify</code> (graph.py:45) splits retrieval: ambiguous queries emit a clarifying question; otherwise build context and generate.</li>
+          <li><strong>Generate → Format → Output:</strong> <code>guarded_generate</code> calls Guardrails <code>/v1/chat/completions</code> → Gemma, then <code>format_response</code> adds citations and <code>finish_reason</code>.</li>
+          <li><strong>Refusal → Output:</strong> <code>format_refusal</code> reuses <code>format_response</code> (graph.py:109, registered as a second alias) and ends the run.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Nodes and routing (high-level)</h2>
+      <table>
+        <thead>
+          <tr><th>Node</th><th>Responsibility</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>validate_input</code></td><td>Extracts latest user message; calls Guardrails input rail <code>/v1/rails/check</code> (stage=input); sets <code>blocked</code> + <code>refusal_message</code>.</td></tr>
+          <tr><td><code>classify</code></td><td>LLM 3-way router: <code>greeting</code> / <code>specification</code> / <code>question</code>; sets <code>applied_subspace</code> for specifications; T5 scattered gate pre-sets <code>needs_clarification</code>.</td></tr>
+          <tr><td><code>hybrid_classify</code></td><td>Trained SVM-RBF classifier; escalates to Gemma via Guardrails when confidence below threshold (gated by <code>hybrid_classifier_enabled</code>); sets <code>applied_subspace</code>.</td></tr>
+          <tr><td><code>retrieve</code></td><td>Rewrites query against history; KB <code>/search/api</code> with metadata filtering (<code>filter_path</code>); T1–T7 recall fixes; FAQ verification; EntityList supplement; DLQ.</td></tr>
+          <tr><td><code>generate_clarification</code></td><td>LLM asks a short Persian disambiguating question listing the 4 subspaces; sets <code>finish_reason="clarify"</code>.</td></tr>
+          <tr><td><code>build_context</code></td><td>Numbered sources (<code>[1]..[20]</code>) ≤14000 chars; system prompt (ICS credit scoring) + history + question; entity-list injection.</td></tr>
+          <tr><td><code>guarded_generate</code></td><td>POST Guardrails <code>/v1/chat/completions</code> (model <code>gemma-4-31b-triton-trt</code>); maps <code>content_filter</code> → blocked.</td></tr>
+          <tr><td><code>format_response</code></td><td>Returns <code>{content, finish_reason, citations}</code>; handles blocked, greeting, specification-ack, FAQ, G5 no-evidence refusal, faith/contradiction/subspace-mismatch guards.</td></tr>
+          <tr><td><code>format_refusal</code></td><td>Reuses <code>format_response</code> (<code>graph.py</code> registers it as a second alias under that name).</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>3. Graph wiring (conditional edges)</h2>
+      <pre><code>validate_input --(should_continue_after_validation)--> classify | format_refusal
+classify       --(should_route_after_classify)-------> format_response | hybrid_classify | retrieve
+hybrid_classify --> retrieve
+retrieve       --(should_clarify)--------------------> generate_clarification | build_context
+generate_clarification --> END
+build_context --> guarded_generate --> format_response --> END
+format_refusal --> END
+format_response --> END</code></pre>
+      <ul>
+        <li><code>should_continue_after_validation(state)</code> → <code>"format_refusal"</code> if <code>blocked</code> else <code>"classify"</code></li>
+        <li><code>should_route_after_classify(state)</code> → <code>"format_response"</code> if <code>classify in ("greeting","specification")</code> else <code>"hybrid_classify"</code> (when enabled) else <code>"retrieve"</code></li>
+        <li><code>should_clarify(state)</code> → <code>"clarify"</code> if <code>needs_clarification</code> or the T5 scattered/ambiguity safety net fires; else <code>"continue"</code></li>
+      </ul>
+      <p class="diagram-note">Supplemental entity rows short-circuit clarify: when the entity tool matched a dictionary, the model can answer directly, so clarification is suppressed.</p>
+    </section>
+
+    <section>
+      <h2>4. API contract (high-level)</h2>
+      <table>
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>GET</code></td><td>/health</td><td>Process health <code>{"status":"ok"}</code></td></tr>
+          <tr><td><code>GET</code></td><td>/ready</td><td>Dependency readiness for KB + Guardrails; ready only when both ready</td></tr>
+          <tr><td><code>GET</code></td><td>/v1/models</td><td>Model discovery (<code>ics-helper-agent</code>)</td></tr>
+          <tr><td><code>POST</code></td><td>/v1/chat/completions</td><td>OpenAI-compatible chat entry point (streaming + non-streaming)</td></tr>
+        </tbody>
+      </table>
+      <p class="diagram-note">Non-streaming response includes <code>rag</code> metadata (<code>request_id</code>, <code>citations</code>, <code>applied_subspace</code>, <code>available_subspaces</code>, <code>supplemental</code>, <code>follow_ups</code>) and an optional <code>audit</code> trail. Streaming returns SSE <code>data:</code> chunks ending with <code>data: [DONE]</code>; the final chunk carries <code>rag</code> metadata and <code>finish_reason</code> (<code>stop</code>, <code>content_filter</code>, or <code>clarify</code>).</p>
+    </section>
+
+    <section>
+      <h2>5. Configuration (high-level)</h2>
+      <table>
+        <thead>
+          <tr><th>Variable</th><th>Default</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ORCHESTRATOR_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind host</td></tr>
+          <tr><td><code>ORCHESTRATOR_PORT</code></td><td><code>8100</code></td><td></td></tr>
+          <tr><td><code>KB_BASE_URL</code></td><td><code>http://127.0.0.1:8000</code></td><td>KB Manager</td></tr>
+          <tr><td><code>GUARDRAILS_BASE_URL</code></td><td><code>http://127.0.0.1:8200</code></td><td>Guardrails</td></tr>
+          <tr><td><code>REQUEST_TIMEOUT_SECONDS</code></td><td><code>120</code></td><td>Downstream timeout</td></tr>
+          <tr><td><code>RETRIEVAL_TOP_K</code></td><td><code>20</code></td><td>10 RRF + 10 cross-encoder union</td></tr>
+          <tr><td><code>SUBSPACE_KEYWORD_BOOST</code></td><td><code>{cheque:3.5, facilities_person:3.0, facilities_legal:3.0, general:2.5}</code></td><td>Per-subspace BM25 bias on scoped calls</td></tr>
+          <tr><td><code>STICKY_DECAY_TURNS</code></td><td><code>3</code></td><td>Generic turns before sticky subspace is dropped</td></tr>
+          <tr><td><code>EVIDENCE_MIN_SCORE</code></td><td><code>0.15</code></td><td>Global no-evidence refusal floor</td></tr>
+          <tr><td><code>UPSTREAM_LLM_MODEL</code></td><td><code>gemma-4-31b-triton-trt</code></td><td>Judge/generate model</td></tr>
+          <tr><td><code>HYBRID_CLASSIFIER_ENABLED</code></td><td><code>false</code></td><td>Thresholded SVM→Gemma hybrid</td></tr>
+          <tr><td><code>TRACE_ENABLED</td><td><code>true</code></td><td>Langfuse tracing</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>6. Tracing (Langfuse)</h2>
+      <p>Every request creates a trace keyed by <code>X-Request-ID</code> with spans: <code>validate_input</code>, <code>classify</code>, <code>query-rewrite</code>, <code>retrieve</code> (+ supplement/fallback/DLQ/retry/broadened), <code>build_context</code> (+ <code>compact</code>), <code>guarded_generate</code>, <code>format_response</code> / <code>generate_clarification</code>, and a final <code>trace-create</code> upsert with <code>output</code> and <code>metadata</code> (<code>citations</code>, <code>latency_ms</code>, <code>finish_reason</code>). Falls back to the local JSONL collector at <code>:3000</code> when Langfuse <code>:3001</code> is unavailable.</p>
+    </section>
+
+    <section>
+      <h2>7. Running locally &amp; tests</h2>
+      <pre><code>cd components/orchestrator
+PYTHONPATH=./src \
+  KB_BASE_URL=http://127.0.0.1:8000 \
+  GUARDRAILS_BASE_URL=http://127.0.0.1:8200 \
+  /tmp/orch-venv/bin/python -m uvicorn work_rag_orchestrator.api:create_app --factory --host 0.0.0.0 --port 8100</code></pre>
+      <pre><code>cd components/orchestrator
+PYTHONPATH=./src /tmp/orch-venv/bin/python -m pytest tests/ -v</code></pre>
+    </section>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <a href="index.html" class="footer-brand">
+      <span class="logo">Dana</span>
+      <span>Orchestrator Docs</span>
+    </a>
+    <ul class="footer-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="high-level.html" class="active">High-Level</a></li>
+      <li><a href="technical.html">Technical</a></li>
+    </ul>
+    <p class="footer-note">Dana · Work Credit RAG Platform · GitHub Pages · White / crimson (#DC143C) theme</p>
+  </div>
+</footer>
+
+</body>
+</html>
