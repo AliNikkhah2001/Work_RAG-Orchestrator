@@ -15,23 +15,62 @@ The graph is deterministic and classifies every turn before retrieval so greetin
 <details>
 <summary>Runtime flow diagram (LangGraph)</summary>
 
+### Variant A — Detailed Technical (all 9 nodes)
+
 ```mermaid
 flowchart TD
-    Start((Start)) --> VI[validate_input]
-    VI -->|blocked| Ref[format_refusal]
-    VI -->|allowed| Cl[classify]
-    Cl -->|greeting / specification| Fr[format_response]
-    Cl -->|question (hybrid on)| Hc[hybrid_classify]
-    Cl -->|question (hybrid off)| Ret[retrieve]
-    Hc --> Ret[retrieve]
-    Ref --> End((End))
-    Fr --> End((End))
-    Ret -->|needs clarification| Gc[generate_clarification]
-    Ret -->|continue| Bc[build_context]
-    Gc --> End((End))
-    Bc --> Gg[guarded_generate]
+    Start((Start)) --> VI
+    VI[validate_input • nodes/validate_input.py:13 • Guardrails /v1/rails/check]
+    Cl[classify • nodes/classify.py:67 • Guardrails /v1/chat/completions]
+    Hc[hybrid_classify • nodes/hybrid_classify.py:67 • SVM→Gemma escalation]
+    Ret[retrieve • nodes/retrieve.py:851 • Knowledgebase /search/api]
+    Gc[generate_clarification • nodes/generate_clarification.py:24 • Guardrails /v1/chat/completions]
+    Bc[build_context • nodes/build_context.py:53 • numbered sources + system prompt]
+    Gg[guarded_generate • nodes/guarded_generate.py:16 • Guardrails /v1/chat/completions → Gemma]
+    Fr[format_response • nodes/format_response.py:492 • citations + finish_reason]
+    Rf[format_refusal • graph.py:109 • alias of format_response]
+    End((End))
+
+    Start --> VI
+    VI -->|should_continue_after_validation (graph.py:24): blocked| Rf
+    VI -->|allowed| Cl
+    Cl -->|should_route_after_classify (graph.py:31): greeting/specification| Fr
+    Cl -->|question + hybrid on| Hc
+    Cl -->|question + hybrid off| Ret
+    Hc --> Ret
+    Rf --> End
+    Fr --> End
+    Ret -->|should_clarify (graph.py:45): needs clarification| Gc
+    Ret -->|continue| Bc
+    Gc --> End
+    Bc --> Gg
     Gg --> Fr
 ```
+
+### Caption
+
+Deterministic LangGraph flow. Entry is `validate_input` (`nodes/validate_input.py:13`, calls Guardrails `POST /v1/rails/check` via `clients/guardrails.py:91`). `should_continue_after_validation` (graph.py:24) sends blocked turns to `format_refusal` → End and allowed turns to `classify` (`nodes/classify.py:67`, calls Guardrails `/v1/chat/completions` via `clients/guardrails.py:135`). `should_route_after_classify` (graph.py:31) routes greeting/specification to `format_response` → End, question-with-hybrid to `hybrid_classify` (`nodes/hybrid_classify.py:67`, SVM-RBF with Gemma escalation) → `retrieve`, and question-without-hybrid directly to `retrieve` (`nodes/retrieve.py:851`, calls KB `POST /search/api` via `clients/knowledgebase.py:61`). `should_clarify` (graph.py:45) splits `retrieve` into `generate_clarification` → End (needs clarification, calls Guardrails `/v1/chat/completions`) or `build_context` → `guarded_generate` → `format_response` → End (continue; `guarded_generate` at `nodes/guarded_generate.py:16` calls Guardrails `/v1/chat/completions` → Gemma). `format_refusal` is registered as a second alias of `format_response` (graph.py:109). Compiled with `MemorySaver`; exports `rag_graph` and `graph` (graph.py:166-168).
+
+### Variant B — High-Level Black Box
+
+```mermaid
+flowchart TD
+    Input((Input)) --> Validate[Validate]
+    Validate -->|allowed| Classify[Classify]
+    Validate -->|blocked| Refusal[Refusal]
+    Classify -->|greeting / spec| Format[Format]
+    Classify -->|question| Retrieve[Retrieve]
+    Retrieve -->|needs clarification| Clarify[Clarify]
+    Retrieve -->|continue| Generate[Generate]
+    Generate --> Format
+    Clarify --> Output((Output))
+    Refusal --> Output
+    Format --> Output
+```
+
+### Caption
+
+Black-box view of the orchestrator request path. A chat input is validated; blocked requests produce a refusal and exit. Allowed requests are classified: greetings/subspace specifications go straight to formatting, while real questions proceed to retrieval. Retrieval either emits a clarifying question (ambiguous) or continues to generation. Generation produces the answer, which is formatted with citations and returned as output.
 
 Validated against `src/work_rag_orchestrator/graph.py` exactly:
 `validate_input → (blocked → format_refusal → End | allowed → classify) → (greeting/specification → format_response → End | question → hybrid_classify → retrieve | question → retrieve when hybrid disabled) → retrieve → (needs clarification → generate_clarification → End | continue → build_context → guarded_generate → format_response → End)`.
