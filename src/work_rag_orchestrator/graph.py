@@ -53,6 +53,24 @@ def should_clarify(state: RAGState) -> str:
     tool matched a dictionary (reason code, shareholder, ...) the model can
     answer directly, so "چک vs تسهیلات" clarification is counterproductive.
     """
+    # Fix: if retrieval has any chunks, don't clarify for general queries (broad definition)
+    # The evidence threshold is too strict for general broad queries like "اعتبارسنجی چیه"
+    try:
+        chunks = state.get("retrieved_chunks") or []
+        if chunks and len(chunks) >= 3:
+            # If we have at least 3 chunks, we have enough to answer - don't clarify
+            return "continue"
+        if chunks:
+            from .nodes.retrieve import _compute_top_score, _get_ev_threshold
+            top = _compute_top_score(chunks)
+            thr = _get_ev_threshold(state.get("applied_subspace"))
+            # For general queries, lower threshold significantly
+            if not state.get("applied_subspace") and top >= 0.02:
+                return "continue"
+            if top >= thr:
+                return "continue"
+    except Exception:
+        pass
     if state.get("supplemental") or state.get("injected_entities"):
         return "continue"
     if state.get("needs_clarification"):
