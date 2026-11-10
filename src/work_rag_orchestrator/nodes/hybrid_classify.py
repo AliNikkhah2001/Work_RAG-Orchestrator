@@ -36,14 +36,30 @@ from ..schemas import GuardrailsChatRequest
 from ..config import get_settings
 from ..subspaces import get_scorer, SUBSPACES
 
-# Ensure scripts directory is on path for build_subspace_protos import
-# File is at src/work_rag_orchestrator/nodes/hybrid_classify.py
-# scripts dir is at components/orchestrator/scripts/ (3 levels up from nodes/)
-_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+# Ensure scripts directory is on path for build_subspace_protos import.
+# Repo layout: .../orchestrator/src/work_rag_orchestrator/nodes/ → parents[3]/scripts
+# Docker layout: /app/work_rag_orchestrator/nodes/ → /app/scripts
+_CANDIDATE_SCRIPTS = [
+    Path(__file__).resolve().parents[3] / "scripts",
+    Path(__file__).resolve().parents[2] / "scripts",
+    Path("/app/scripts"),
+]
+_SCRIPTS_DIR = next((p for p in _CANDIDATE_SCRIPTS if (p / "build_subspace_protos.py").exists()), _CANDIDATE_SCRIPTS[0])
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from build_subspace_protos import embed_texts, score_features  # noqa: E402
+try:
+    from build_subspace_protos import embed_texts, score_features  # noqa: E402
+except ImportError:  # pragma: no cover - image without scripts still boots
+    log = logging.getLogger(__name__)
+    log.warning("build_subspace_protos unavailable; hybrid classifier features disabled")
+
+    def embed_texts(texts):  # type: ignore[misc]
+        raise RuntimeError("build_subspace_protos not packaged")
+
+    def score_features(*args, **kwargs):  # type: ignore[misc]
+        raise RuntimeError("build_subspace_protos not packaged")
+
 
 log = logging.getLogger(__name__)
 
