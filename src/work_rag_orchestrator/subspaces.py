@@ -22,7 +22,20 @@ from typing import Any, Callable, Dict, Optional
 log = logging.getLogger(__name__)
 
 # Canonical knowledge subspaces (also the softmax support size S).
-SUBSPACES: tuple[str, ...] = ("cheque", "facilities_person", "facilities_legal", "general")
+# Prefer live taxonomy from KB registry; keep tuple fallback for offline boot.
+def _live_subspaces() -> tuple[str, ...]:
+    try:
+        from .content_registry import subspace_ids
+
+        ids = subspace_ids()
+        if ids:
+            return ids
+    except Exception:
+        pass
+    return ("cheque", "facilities_person", "facilities_legal", "general")
+
+
+SUBSPACES: tuple[str, ...] = _live_subspaces()
 
 # Timeout for the HTTP embedding fallback path (seconds).
 _EMBED_TIMEOUT_S = 10.0

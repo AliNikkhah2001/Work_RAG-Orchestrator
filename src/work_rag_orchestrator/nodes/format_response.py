@@ -168,11 +168,27 @@ MAX_CITATIONS = 5
 GROUND_TRUTH_HEADER = "\n\nمنابع بازیابی‌شده:\n"
 MAX_GROUND_TRUTH_LINES = 20
 
-# G5 hallucination fix: refusal when evidence is too weak
-NO_EVIDENCE_MSG = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
+# G5 hallucination fix: refusal when evidence is too weak.
+# Prefer KB registry canned pack; keep literals as import-time fallbacks.
+def _no_evidence_msg() -> str:
+    try:
+        from ..content_registry import refusal_message
 
-# Abstention marker shared by the G5/faith refusals — used to skip the faith
-# guard when the model already declined to answer.
+        return refusal_message("no_evidence")
+    except Exception:
+        return "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
+
+
+def _abstention_phrase() -> str:
+    try:
+        from ..content_registry import abstention_phrase
+
+        return abstention_phrase()
+    except Exception:
+        return "پاسخی برای این سوال یافت نشد"
+
+
+NO_EVIDENCE_MSG = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
 ABSTENTION_PHRASE = "پاسخی برای این سوال یافت نشد"
 
 # F: faith/hallucination guard thresholds for weak-evidence answers. An
@@ -500,21 +516,40 @@ async def format_response(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     answer_raw = _to_plain_text(_clean_answer(state["answer"]))
     blocked = state.get("blocked", False)
-    refusal_message = state.get("refusal_message")
+    state_refusal = state.get("refusal_message")
     chunks = state["retrieved_chunks"]
     follow_ups: list[str] = []
 
+    try:
+        from ..content_registry import (
+            abstention_phrase as registry_abstention,
+            greeting_message as registry_greeting,
+            refusal_message as registry_refusal,
+            subspace_map as registry_subspace_map,
+        )
+    except Exception:  # pragma: no cover
+        registry_greeting = None  # type: ignore
+        registry_refusal = None  # type: ignore
+        registry_subspace_map = None  # type: ignore
+        registry_abstention = None  # type: ignore
+
+    _abstain = registry_abstention() if registry_abstention else ABSTENTION_PHRASE
+
     if blocked:
-        content = _to_plain_text(_clean_answer(refusal_message)) or "I cannot comply with that request."
+        blocked_default = (
+            registry_refusal("blocked_default") if registry_refusal else "I cannot comply with that request."
+        )
+        content = _to_plain_text(_clean_answer(state_refusal)) or blocked_default
         finish_reason = "content_filter"
         citations = []
     elif state.get("greeting_only"):
         # Smalltalk: brief reply as-is — no sources retrieved, so no truth
         # block and no citations. Citing nothing is correct here.
-        # If answer empty (classify direct -> format_response without LLM), synthesize greeting
-        if not answer_raw or not answer_raw.strip() or "پاسخی برای این سوال یافت نشد" in answer_raw:
-            kind = state.get("greeting_only")
-            if kind == "farewell":
+        if not answer_raw or not answer_raw.strip() or _abstain in answer_raw:
+            kind = state.get("greeting_only") or "greeting"
+            if registry_greeting:
+                answer_raw = registry_greeting(kind if kind in ("farewell", "thanks", "greeting") else "greeting")
+            elif kind == "farewell":
                 answer_raw = "خداحافظ! هر وقت سوالی درباره گزارش یا امتیاز اعتباری داشتید در خدمت هستم."
             elif kind == "thanks":
                 answer_raw = "خواهش می‌کنم! اگر سوال دیگری درباره گزارش یا امتیاز اعتباری داشتید بفرمایید."
@@ -524,25 +559,26 @@ async def format_response(state: RAGState) -> RAGState:
         finish_reason = "stop"
         citations = []
     elif state.get("classify") == "specification":
-        # Specification ack: no retrieval, just confirm sticky subspace
         subspace = state.get("applied_subspace") or ""
-        label_map = {
+        label_map = registry_subspace_map() if registry_subspace_map else {
             "cheque": "گزارش اعتباری چک",
             "facilities_person": "تسهیلات اشخاص حقیقی",
             "facilities_legal": "تسهیلات اشخاص حقوقی",
             "general": "پایگاه دانش عمومی",
         }
         label = label_map.get(subspace, subspace) or "حوزه انتخابی"
-        if not answer_raw or not answer_raw.strip() or "پاسخی برای این سوال یافت نشد" in answer_raw:
+        if not answer_raw or not answer_raw.strip() or _abstain in answer_raw:
             answer_raw = f"حوزه «{label}» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید."
         content = answer_raw
         finish_reason = "stop"
         citations = []
     elif state.get("direct_faq_answer") and state.get("faq_verified"):
-        # FAQ direct-answer: curated content, no KB retrieval happened,
-        # so return answer as-is with no citations and no ground-truth block.
         if not answer_raw or not answer_raw.strip():
-            answer_raw = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+            answer_raw = (
+                registry_refusal("weak_evidence")
+                if registry_refusal
+                else "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+            )
         content = answer_raw
         finish_reason = "stop"
         citations = []
