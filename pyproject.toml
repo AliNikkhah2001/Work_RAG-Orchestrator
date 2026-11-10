@@ -17,6 +17,7 @@ dependencies = [
     "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
     "python-dotenv>=1.0.0",
+    "PyYAML>=6.0.0",
     "langgraph-checkpoint>=2.0.0",
     "langfuse>=2.60.0",
     "opentelemetry-api>=1.24.0",
@@ -38,7 +39,10 @@ dev = [
 orchestrator = "work_rag_orchestrator.api:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["work_rag_orchestrator"]
+packages = ["src/work_rag_orchestrator"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/work_rag_orchestrator/fallback_packs" = "work_rag_orchestrator/fallback_packs"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

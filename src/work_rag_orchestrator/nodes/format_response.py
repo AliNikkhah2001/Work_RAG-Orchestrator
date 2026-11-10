@@ -12,14 +12,6 @@ from ..schemas import Citation
 
 log = logging.getLogger(__name__)
 
-# Grounded follow-ups: only answerable from same retrieved context (same leaf)
-FOLLOWUP_PROMPT = """Given the user's question: {query}
-And the answer we gave: {answer}
-And the retrieved context titles: {titles}
-Suggest 2-3 follow-up questions that ARE answerable from the same context (same leaf), in Persian, short.
-Return ONLY a JSON array of strings, e.g. ["سوال 1؟", "سوال 2؟"]"""
-
-FOLLOWUP_SYSTEM = "You suggest follow-up questions. Reply ONLY with a JSON array of 2-3 short Persian questions. No explanation."
 FOLLOWUP_MAX_TOKENS = 120
 
 
@@ -43,15 +35,21 @@ async def _generate_grounded_followups(state: RAGState, answer: str) -> list[str
         if not titles:
             return []
         titles_str = "\n".join(f"- {x}" for x in titles)
-        prompt = FOLLOWUP_PROMPT.format(query=query[:300], answer=answer[:500], titles=titles_str)
+        from ..content_registry import require_prompt
         from ..clients.guardrails import GuardrailsClient
         from ..schemas import GuardrailsChatRequest
         from ..config import get_settings
         settings = get_settings()
+        prompt = require_prompt(
+            "followup_user",
+            query=query[:300],
+            answer=answer[:500],
+            titles=titles_str,
+        )
         req = GuardrailsChatRequest(
             model=settings.upstream_llm_model,
             messages=[
-                {"role": "system", "content": FOLLOWUP_SYSTEM},
+                {"role": "system", "content": require_prompt("followup_system")},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=FOLLOWUP_MAX_TOKENS,

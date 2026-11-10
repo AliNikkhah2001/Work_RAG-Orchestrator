@@ -27,13 +27,6 @@ REWRITE_MAX_TOKENS = 128
 HISTORY_EXCHANGES = 2
 HISTORY_MAX_CHARS = 1500
 
-REWRITE_SYSTEM_PROMPT = (
-    "تو یک بازنویس پرسش برای جست‌وجو هستی. "
-    "با توجه به تاریخچهٔ گفت‌وگو، آخرین پرسش کاربر را به یک پرسش مستقل و کامل به زبان فارسی بازنویسی کن؛ "
-    "ارجاع‌های ناقص (مانند «او»، «این»، «آنجا»، «کجا بوده») را با نام یا موضوع صریحی که در تاریخچه آمده جایگزین کن. "
-    "فقط و فقط خودِ پرسش بازنویسی‌شده را بنویس: بدون سلام، بدون هیچ توضیحی، بدون علامت نقل‌قول اضافی."
-)
-
 _QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("«", "»"), ("“", "”"), ("‘", "’"))
 
 
@@ -74,19 +67,22 @@ def last_exchanges_text(
 def build_rewrite_prompt(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Build the LLM messages for rewriting the last user turn.
 
-    System instruction (Persian) + the last 2 exchanges as the user content,
-    ending with the current question to rewrite.
+    System + user templates come from the content registry (KB prompts pack).
     """
+    from .content_registry import require_prompt
+
     users = user_messages(messages)
     current = users[-1].get("content", "") if users else ""
     history = last_exchanges_text(messages, include_current=False)
-    user_content = (
-        f"تاریخچهٔ گفت‌وگو:\n{history}\n\nپرسش جاری کاربر: {current}\nبازنویسی مستقل:"
-        if history
-        else f"پرسش جاری کاربر: {current}\nبازنویسی مستقل:"
-    )
+    system = require_prompt("rewrite_system")
+    if history:
+        user_content = require_prompt(
+            "rewrite_user_with_history", history=history, current=current
+        )
+    else:
+        user_content = require_prompt("rewrite_user_no_history", current=current)
     return [
-        {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_content},
     ]
 

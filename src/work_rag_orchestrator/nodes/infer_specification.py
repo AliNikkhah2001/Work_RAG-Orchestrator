@@ -60,17 +60,6 @@ def is_scattered_ambiguous(query: str) -> bool:
             return True
     return False
 
-JUDGE_PROMPT = '''شما یک دسته‌بند پیام کاربر هستید. پیام زیر را بررسی کنید:
-  پیام: "{msg}"
-  گزینه‌های موجود: [تسهیلات افراد, گزارش چک, تسهیلات شرکت‌ها, عمومی (معرفی، هیات مدیره، کاربردها)]
-  آیا این پیام یک "تعیین شاخه" است (کاربر مشخص می‌کند از کدام شاخه می‌خواهد) یا یک "سوال" است؟
-  - تعیین شاخه: ONLY پیام کوتاه حداکثر 6 کلمه که فقط نام/کلیدواژه شاخه را می‌برد بدون کلمه پرسشی و بدون علامت سوال، مثل "چک" (1 کلمه، بدون ؟، فقط کلیدواژه) یا "منظورم چک بود" یا "مدیر شرکته" یا "هیچ کدوم مدیر شرکته" یا "عمومی". اگر پیام بیشتر از 6 کلمه باشد یا پرسشی باشد، specification نیست.
-    استثنا: اگر پیام حاوی عبارت دقیق "اشخاص حقیقی" یا "اشخاص حقوقی" همراه با "تسهیلات" یا "اعتبارسنجی" باشد و پرسشی نباشد (بدون "؟" و بدون کلمات پرسشی "چیست/چطور/چگونه/آیا/چرا/کجاست/چیه")، حتی اگر بیش از 6 کلمه باشد specification است — مثال "اعتبارسنجی تسهیلات برای اشخاص حقیقی" → specification.
-    نکته: "مدیر"، "هیات مدیره"، "هیئت مدیره"، "معرفی شرکت"، "عمومی"، "هیچ کدوم مدیر شرکته" → عمومی specification است. "شرکت" تنها بدون تسهیلات/چک → عمومی؛ "شرکت" + تسهیلات/حقوقی → تسهیلات شرکت‌ها.
-  - سوال: هر پیام پرسشی که جواب می‌خواهد — حتی اگر کلمه "چک" داشته باشد، باز هم سوال است. اگر پیام حاوی هر یک از کلمات پرسشی "چیست"، "چطور"، "چگونه"، "آیا"، "چرا"، "کجاست"، "کیه" یا علامت پایانی "؟" باشد، حتما "question" است، صرف‌نظر از وجود "چک". مثال: "چک" → specification اما "چک برگشتی چیست؟" → question و "چک برگشتی چیست و چگونه رفع اثر می‌شود؟" → question
-  فقط با یک کلمه پاسخ دهید: "specification" یا "question"'''
-
-
 def _is_short_with_keyword(msg: str) -> bool:
     """Heuristic fallback: True if msg is 1-6 words and contains a subspace keyword.
 
@@ -122,8 +111,10 @@ async def is_specification(msg: str, request_id: str) -> bool:
         if w in msg:
             return False
     try:
+        from ..content_registry import require_prompt
+
         settings = get_settings()
-        prompt = JUDGE_PROMPT.format(msg=msg)
+        prompt = require_prompt("specify_judge", msg=msg)
         request = GuardrailsChatRequest(
             model=settings.upstream_llm_model,
             messages=[{"role": "user", "content": prompt}],
@@ -153,24 +144,16 @@ SUBSPACE_LABELS = {
     "general": "پایگاه دانش عمومی (معرفی، هیات مدیره، کاربردها)",
 }
 
-SUGGEST_PROMPT = """شما دسته‌بند سوال کاربر هستید. تاریخچه:
-{history}
-سوال فعلی بدون شاخه مشخص: "{query}"
-گزینه‌ها: [تسهیلات افراد, گزارش چک, تسهیلات شرکت‌ها, عمومی]
-- اگر سوال درباره چک/صیاد/برگشت است → گزارش چک
-- اگر درباره وام/تسهیلات/قسط/بازپرداخت برای افراد است → تسهیلات افراد
-- اگر درباره شرکت/حقوقی/سهامدار است → تسهیلات شرکت‌ها
-- اگر درباره معرفی/هیات مدیره/کاربردها است → عمومی
-- اگر سوال هم‌زمان حاوی «چک» و یکی از «تاثیر/تأثیر/اعتبارسنجی/تسهیلات/امتیاز» است، بین «گزارش چک» (سابقه صرف) و «اعتبارسنجی تسهیلات» مردد است → unclear
-- اگر مبهم و قابل انتساب به چند شاخه است → unclear
-- مثال: «من چکم برگشت خورده چه تاثیری داره» → unclear (چک + تاثیر/اعتبارسنجی/تسهیلات/امتیاز هم‌زمان)
-فقط یک کلمه: cheque / facilities_person / facilities_legal / general / unclear
- """
-
 async def infer_subspace_llm(query: str, history: str, request_id: str) -> str | None:
     try:
+        from ..content_registry import require_prompt
+
         settings = get_settings()
-        prompt = SUGGEST_PROMPT.format(history=history[:1000], query=query[:500])
+        prompt = require_prompt(
+            "suggest_subspace",
+            history=history[:1000],
+            query=query[:500],
+        )
         async with GuardrailsClient() as client:
             req = GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role": "user", "content": prompt}], max_tokens=16, temperature=0.0)
             resp = await client.chat_completion(req, request_id)

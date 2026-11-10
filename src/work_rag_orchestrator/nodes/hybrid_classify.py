@@ -63,36 +63,10 @@ except ImportError:  # pragma: no cover - image without scripts still boots
 
 log = logging.getLogger(__name__)
 
-# Persian subspace classification prompt — prefer KB registry pack.
-_HYBRID_GEMMA_PROMPT_FALLBACK = """شما یک کلاسifikاتور فضاهای دانش برای سامانه اعتبارسنجی ایران هستید.
-سوال کاربر را به یکی از این فضاها طبقه کنید:
-
-- cheque: گزارش اعتباری چک (صیاد، برگشتی، نقدشده)
-- facilities_person: تسهیلات اشخاص حقیقی (افراد، وام، قسط، اعتبارسنجی افراد)
-- facilities_legal: تسهیلات اشخاص حقوقی (شرکت‌ها، سهامداران، اعتبارسنجی شرکت‌ها)
-- general: پایگاه دانش عمومی (معرفی شرکت، هیات مدیره، کاربردها)
-- ambiguous: سوال مبهم که نمی‌توان بدون مشخص کردن فضا تعیین کرد
-
-فقط نام فضا را بنویسید (cheque، facilities_person، facilities_legal، general، ambiguous).
-
-سوال: {text}
-
-فاصله:"""
-
-
 def _hybrid_prompt(text: str) -> str:
-    try:
-        from ..content_registry import prompt
+    from ..content_registry import require_prompt
 
-        packed = prompt("hybrid_classify", text=text[:500])
-        if packed:
-            return packed
-    except Exception:
-        pass
-    return _HYBRID_GEMMA_PROMPT_FALLBACK.format(text=text[:500])
-
-
-HYBRID_GEMMA_PROMPT = _HYBRID_GEMMA_PROMPT_FALLBACK
+    return require_prompt("hybrid_classify", text=text[:500])
 
 
 async def hybrid_classify_node(state: RAGState) -> RAGState:

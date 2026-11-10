@@ -84,22 +84,6 @@ _CACHE_MAX = 128
 # summaries across different sessions.
 _BASE: Dict[str, Any] = {}
 
-_INCREMENTAL_USER_TMPL = (
-    "خلاصهٔ فعلی گفتگو:\n{old_summary}\n\n"
-    "نوبت‌های جدید گفتگو:\n{new_turns}\n\n"
-    "خلاصهٔ به‌روز و فشردهٔ کل گفتگو را در حداکثر ۶ جملهٔ فارسی بنویس "
-    "(نکات مهم خلاصهٔ قبلی + نکات نوبت‌های جدید). فقط متن خلاصه را بنویس."
-)
-
-_SUMMARY_SYSTEM_PROMPT = (
-    "تو خلاصه‌ساز گفتگو هستی. با توجه به تاریخچهٔ زیر، خلاصهٔ فشرده و کاربردی "
-    "گفتگو را در حداکثر ۶ جملهٔ فارسی بنویس. این نکات را حفظ کن: موضوع و نوع "
-    "موجودیت (شخص حقیقی یا شرکت) که کاربر درباره‌اش پرسیده، نام‌ها و کدهای "
-    "ذکرشده، سوالاتی که پاسخ داده شده و جواب کوتاهشان، و هر سوال بی‌پاسخ. "
-    "فقط متن خلاصه را بنویس — بدون مقدمه، بدون عنوان، بدون بولت."
-)
-
-
 def _norm_text(text: str) -> str:
     """Collapse whitespace for transcript/summary hygiene."""
     return " ".join((text or "").split())
@@ -150,12 +134,14 @@ async def _summarize(transcript: str) -> str:
     import asyncio
     import httpx
 
+    from .content_registry import require_prompt
+
     settings = get_settings()
     url = settings.upstream_llm_base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": settings.upstream_llm_model,
         "messages": [
-            {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
+            {"role": "system", "content": require_prompt("compact_summary_system")},
             {"role": "user", "content": transcript},
         ],
         "max_tokens": settings.compact_summary_max_tokens,
@@ -266,9 +252,13 @@ async def compact_history(messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str
         if base:
             remainder = transcript[len(base["transcript"]):]
             if remainder.strip():
+                from .content_registry import require_prompt
+
                 summary = await _summarize(
-                    _INCREMENTAL_USER_TMPL.format(
-                        old_summary=base["summary"], new_turns=remainder
+                    require_prompt(
+                        "compact_incremental_user",
+                        old_summary=base["summary"],
+                        new_turns=remainder,
                     )
                 )
         if not summary:
