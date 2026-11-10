@@ -53,31 +53,10 @@ def _heuristic_classify(text: str) -> str:
         return "specification"
     return "question"
 
-_CLASSIFY_PROMPT_FALLBACK = """دسته‌بندی کن — فقط یک کلمه: greeting / specification / question
-- greeting: سلام، تشکر، خداحافظی، تعارف کوتاه بدون نیاز به پایگاه دانش
-- specification: کاربر فقط شاخه را مشخص می‌کند (1-4 کلمه شامل چک/تسهیلات/شرکت/عمومی)، مثل "چک" یا "تسهیلات اشخاص حقیقی" یا "شرکت" یا "عمومی"
-  شاخه‌ها: 1. تسهیلات افراد 2. گزارش چک 3. تسهیلات شرکت‌ها 4. عمومی (معرفی، هیات مدیره، کاربردها)
-  نکته: "مدیر"، "هیات مدیره"، "هیئت مدیره"، "معرفی شرکت" و سوال درباره اشخاص (مثلا "قاسم بور کیه") → عمومی است نه تسهیلات. "شرکت" تنها بدون تسهیلات/چک → عمومی؛ "شرکت" + تسهیلات/حقوقی → تسهیلات شرکت‌ها
-- question: سوال واقعی که جواب می‌خواهد، حتی اگر کلمه چک داشته باشد: "چک برگشتی چیست؟" → question، "قاسم بور کیه" → question (درباره شخص)
-  مهم: نام‌های اشخاص/شرکت‌های خالی (مثل "قاسم بور"، "رضا احمدی") بدون کلمات سوال هم → question هستند (جستجوی فرد)
-
-متن: "{text}"
-فقط بنویس: greeting یا specification یا question"""
-
-
 def _classify_prompt(text: str) -> str:
-    try:
-        from ..content_registry import prompt
+    from ..content_registry import require_prompt
 
-        packed = prompt("classify", text=text[:500])
-        if packed:
-            return packed
-    except Exception:
-        pass
-    return _CLASSIFY_PROMPT_FALLBACK.format(text=text[:500])
-
-
-CLASSIFY_PROMPT = _CLASSIFY_PROMPT_FALLBACK
+    return require_prompt("classify", text=text[:500])
 
 async def classify(state: RAGState) -> RAGState:
     text = (state.get("query") or state.get("messages",[{}])[-1].get("content","")).strip()
