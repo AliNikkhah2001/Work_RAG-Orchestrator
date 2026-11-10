@@ -135,16 +135,30 @@ class GuardrailsClient:
     async def chat_completion(
         self, request: GuardrailsChatRequest, request_id: str
     ) -> GuardrailsChatResponse:
-        """Call Guardrails /v1/chat/completions endpoint."""
+        """Call Guardrails /v1/chat/completions endpoint (non-streaming JSON).
+
+        Guardrails defaults ``stream=True`` (SSE). This path must force
+        ``stream=False`` or ``response.json()`` fails on an event-stream body.
+        """
         # Add request_id to headers for tracing
         headers = {"X-Request-ID": request_id}
+        payload = {**request.model_dump(exclude_none=True), "stream": False}
 
         try:
             response = await _post_with_reconnect_retry(
                 self.chat_url,
-                request.model_dump(exclude_none=True),
+                payload,
                 headers=headers,
             )
+            content_type = (response.headers.get("content-type") or "").lower()
+            if "text/event-stream" in content_type:
+                preview = response.content[:200].decode("utf-8", errors="replace")
+                raise ValueError(
+                    f"Guardrails returned SSE for non-stream chat completion "
+                    f"(content-type={content_type!r}, body_preview={preview!r})"
+                )
+            if not response.content:
+                raise ValueError("Guardrails returned empty body for non-stream chat completion")
             return GuardrailsChatResponse(**response.json())
         except httpx.HTTPStatusError as e:
             log.error("Guardrails chat completion failed: %s", e)
