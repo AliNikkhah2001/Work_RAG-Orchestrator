@@ -565,19 +565,18 @@ async def _t1_try_whole_kb_fallback(
         async with _KBClient() as fb_client:
             fb_result = await fb_client.retrieve(search_query, top_k, request_id, filter_path=None)
     except Exception as e:
-        # Retry failed — keep original, but record fallback attempt for audit.
         elapsed = round((time.monotonic() - t_retry) * 1000, 1)
         state["fallback_used"] = True
         state["fallback_reason"] = f"{fallback_reason} retry_failed: {e}"
         record_timing(state, "retrieve_retry", elapsed)
-        log.warning("T1 whole-KB retry failed for request %s (keep original): %s", request_id, e)
+        log.exception("T1 whole-KB retry failed for request %s — failing loud", request_id)
         try:
             from ..tracing import trace_span as _tsp
 
             _tsp(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "cur_len": cur_len, "cur_top": cur_top, "threshold": thr, "reason": fallback_reason}, span_output={"error": str(e), "fallback_used": True})
         except Exception:
             pass
-        return True
+        raise RuntimeError(f"T1 whole-KB retrieval retry failed: {e}") from e
 
     # Merge fallback result using same RRF+CE union logic.
     try:
@@ -660,14 +659,14 @@ async def _t1_try_whole_kb_fallback(
         state["fallback_used"] = True
         state["fallback_reason"] = f"{fallback_reason} merge_failed: {e}"
         record_timing(state, "retrieve_retry", elapsed)
-        log.warning("T1 fallback merge failed for request %s (keep original): %s", request_id, e)
+        log.exception("T1 fallback merge failed for request %s — failing loud", request_id)
         try:
             from ..tracing import trace_span as _tsp3
 
             _tsp3(request_id, "retrieve-retry", span_input={"query": search_query, "active_filter": active_filter, "reason": fallback_reason}, span_output={"error": str(e), "fallback_used": True})
         except Exception:
             pass
-        return True
+        raise RuntimeError(f"T1 whole-KB merge failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +740,7 @@ async def _t2_try_broadened_retry(
             # append broaden failure to reason without overwriting T1 reason
             state["fallback_reason"] = f"{state['fallback_reason']} | broaden_failed: {e}"
         record_timing(state, "retrieve_broadened", elapsed)
-        log.warning("T2 broadened retry failed for request %s (keep original): %s", request_id, e)
+        log.exception("T2 broadened retry failed for request %s — failing loud", request_id)
         try:
             from ..tracing import trace_span as _tsp
             _tsp(
@@ -752,7 +751,7 @@ async def _t2_try_broadened_retry(
             )
         except Exception:
             pass
-        return True
+        raise RuntimeError(f"T2 broadened retrieval retry failed: {e}") from e
 
     # Merge broadened result (same RRF+CE union)
     try:
@@ -839,13 +838,13 @@ async def _t2_try_broadened_retry(
         base = state.get("fallback_reason") or ""
         state["fallback_reason"] = f"{base} | broaden_merge_failed: {e}" if base else f"broaden_merge_failed: {e}"
         record_timing(state, "retrieve_broadened", elapsed)
-        log.warning("T2 broadened merge failed for request %s (keep original): %s", request_id, e)
+        log.exception("T2 broadened merge failed for request %s — failing loud", request_id)
         try:
             from ..tracing import trace_span as _tsp3
             _tsp3(request_id, "retrieve-broadened", span_input={"query": search_query, "top_k": top_k, "keyword_boost": keyword_boost}, span_output={"error": str(e), "broaden_used": True})
         except Exception:
             pass
-        return True
+        raise RuntimeError(f"T2 broadened merge failed: {e}") from e
 
 
 async def retrieve(state: RAGState) -> RAGState:
@@ -1053,18 +1052,21 @@ async def retrieve(state: RAGState) -> RAGState:
                     keyword_boost=_subspace_keyword_boost(state.get("applied_subspace") or explicit_filter),
                 )
         except Exception as e:
-            log.error("KB filtered retrieval failed for request %s (filter=%r): %s — continuing empty", request_id, explicit_filter, e)
+            log.exception(
+                "KB filtered retrieval failed for request %s (filter=%r) — failing loud",
+                request_id,
+                explicit_filter,
+            )
             try:
                 from ..tracing import trace_span
-                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": explicit_filter}, span_output={"error": str(e), "fallback": "empty"})
+                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": explicit_filter}, span_output={"error": str(e), "fallback": "raise"})
             except Exception:
                 pass
-            state["retrieved_chunks"] = []
-            state["injected_entities"] = []
-            state["supplemental"] = []
             elapsed = round((time.monotonic() - t0) * 1000, 1)
             record_timing(state, "retrieve", elapsed)
-            return state
+            raise RuntimeError(
+                f"KB filtered retrieval failed (filter={explicit_filter!r}): {e}"
+            ) from e
         # process result same as normal path — jump to shared merge logic below via inline handling
         # We set a flag so later F4/F5 scatter logic is skipped (explicit scope is authoritative)
         _explicit_scope = True
@@ -1074,18 +1076,18 @@ async def retrieve(state: RAGState) -> RAGState:
             async with KnowledgebaseClient() as client:
                 result = await client.retrieve(search_query, primary_top_k, request_id)
         except Exception as e:
-            log.error("KB retrieval failed for request %s: %s — continuing with empty context", request_id, e)
+            log.exception(
+                "KB retrieval failed for request %s — failing loud (no empty bypass)",
+                request_id,
+            )
             try:
                 from ..tracing import trace_span
-                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query}, span_output={"error": str(e), "fallback": "empty"})
+                trace_span(request_id, "retrieve", span_input={"query": query, "search_query": search_query}, span_output={"error": str(e), "fallback": "raise"})
             except Exception:
                 pass
-            state["retrieved_chunks"] = []
-            state["injected_entities"] = []
-            state["supplemental"] = []
             elapsed = round((time.monotonic() - t0) * 1000, 1)
             record_timing(state, "retrieve", elapsed)
-            return state
+            raise RuntimeError(f"KB retrieval failed: {e}") from e
 
     # Client returns {"rrf": [...top10...], "ce": [...top10...], "injected_entities": [...]}; be
     # defensive if an older client shape (plain list) is ever returned.
@@ -1397,7 +1399,10 @@ async def retrieve(state: RAGState) -> RAGState:
                                     keyword_boost=_subspace_keyword_boost(_sticky or _filter_path_sticky),
                                 )
                         except Exception as e:
-                            log.warning("Sticky filtered re-retrieve failed: %s", e)
+                            log.exception("Sticky filtered re-retrieve failed — failing loud")
+                            raise RuntimeError(
+                                f"Sticky filtered re-retrieve failed (filter={_filter_path_sticky!r}): {e}"
+                            ) from e
                         if _fresult_sticky is not None:
                             if isinstance(_fresult_sticky, dict):
                                 _f_rrf = _fresult_sticky.get("rrf", [])
@@ -1555,7 +1560,10 @@ async def retrieve(state: RAGState) -> RAGState:
                                             async with KnowledgebaseClient() as _client2:
                                                 _broad_result = await _client2.retrieve(search_query, top_k, request_id, filter_path=new_filter)
                                         except Exception as _e2:
-                                            log.warning("LLM broadening re-retrieve failed: %s", _e2)
+                                            log.exception("LLM broadening re-retrieve failed — failing loud")
+                                            raise RuntimeError(
+                                                f"LLM broadening re-retrieve failed (filter={new_filter!r}): {_e2}"
+                                            ) from _e2
                                         if _broad_result is not None:
                                             if isinstance(_broad_result, dict):
                                                 _b_rrf = _broad_result.get("rrf", [])
@@ -1726,7 +1734,8 @@ async def retrieve(state: RAGState) -> RAGState:
                                         log.info("Broadened to whole KB: %d chunks", len(whole_retrieved))
                                         return state
                                 except Exception as _e3:
-                                    log.warning("Whole KB fallback failed: %s", _e3)
+                                    log.exception("Whole KB fallback failed — failing loud")
+                                    raise RuntimeError(f"Whole KB fallback retrieval failed: {_e3}") from _e3
                                 # If broadened still empty, fall through to DLQ/clear logic below
                             # --- Dynamic broadening: one re-retrieval then not-enough-context + DLQ ---
                             # Increment attempts (sticky counts as the single allowed re-retrieve)
@@ -1912,7 +1921,10 @@ async def retrieve(state: RAGState) -> RAGState:
                                     keyword_boost=_subspace_keyword_boost(llm_choice or filter_path),
                                 )
                                 except Exception as e:
-                                    log.warning("LLM-judge filtered re-retrieve failed: %s", e)
+                                    log.exception("LLM-judge filtered re-retrieve failed — failing loud")
+                                    raise RuntimeError(
+                                        f"LLM-judge filtered re-retrieve failed (filter={filter_path!r}): {e}"
+                                    ) from e
                                 if _fresult_llm is not None:
                                     if isinstance(_fresult_llm, dict):
                                         _f_rrf = _fresult_llm.get("rrf", [])
@@ -2196,8 +2208,16 @@ async def retrieve(state: RAGState) -> RAGState:
                             log.info("F5 filtered re-retrieve still low (%.4f < %.3f) — cleared for refusal + DLQ", _f_top, _f_thr)
                         log.info("Filtered re-retrieve for subspace %s (%s): %d chunks", inferred, filter_path, len(filtered_retrieved) if not state.get("dlq_saved") else 0)
                     except Exception as e:
-                        log.warning("Filtered re-retrieve failed: %s", e)
+                        log.exception("Filtered re-retrieve failed — failing loud")
+                        raise RuntimeError(
+                            f"Filtered re-retrieve failed (filter={filter_path!r}): {e}"
+                        ) from e
     except Exception as e:
+        # Re-raise retrieval hard failures; only swallow non-retrieval check bugs.
+        if isinstance(e, RuntimeError) and "re-retrieve" in str(e).lower():
+            raise
+        if isinstance(e, RuntimeError) and "retrieval" in str(e).lower():
+            raise
         log.warning("Filtered re-retrieve check failed: %s", e)
 
     # --- T1 central fallback: if current result is still filtered & weak and no fallback yet, retry whole KB ---

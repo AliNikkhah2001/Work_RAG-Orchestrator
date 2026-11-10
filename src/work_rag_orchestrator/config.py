@@ -190,5 +190,20 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance."""
-    return Settings()
+    """Get cached settings instance, overlaying taxonomy from KB registry when up."""
+    settings = Settings()
+    try:
+        from .content_registry import keyword_boost_map, subspace_map
+
+        sm = subspace_map()
+        kb = keyword_boost_map()
+        updates = {}
+        if sm:
+            updates["subspace_map"] = sm
+        if kb:
+            updates["subspace_keyword_boost"] = kb
+        if updates:
+            settings = settings.model_copy(update=updates)
+    except Exception:
+        pass
+    return settings

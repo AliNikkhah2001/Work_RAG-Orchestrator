@@ -53,7 +53,7 @@ def _heuristic_classify(text: str) -> str:
         return "specification"
     return "question"
 
-CLASSIFY_PROMPT = """دسته‌بندی کن — فقط یک کلمه: greeting / specification / question
+_CLASSIFY_PROMPT_FALLBACK = """دسته‌بندی کن — فقط یک کلمه: greeting / specification / question
 - greeting: سلام، تشکر، خداحافظی، تعارف کوتاه بدون نیاز به پایگاه دانش
 - specification: کاربر فقط شاخه را مشخص می‌کند (1-4 کلمه شامل چک/تسهیلات/شرکت/عمومی)، مثل "چک" یا "تسهیلات اشخاص حقیقی" یا "شرکت" یا "عمومی"
   شاخه‌ها: 1. تسهیلات افراد 2. گزارش چک 3. تسهیلات شرکت‌ها 4. عمومی (معرفی، هیات مدیره، کاربردها)
@@ -63,6 +63,21 @@ CLASSIFY_PROMPT = """دسته‌بندی کن — فقط یک کلمه: greeting
 
 متن: "{text}"
 فقط بنویس: greeting یا specification یا question"""
+
+
+def _classify_prompt(text: str) -> str:
+    try:
+        from ..content_registry import prompt
+
+        packed = prompt("classify", text=text[:500])
+        if packed:
+            return packed
+    except Exception:
+        pass
+    return _CLASSIFY_PROMPT_FALLBACK.format(text=text[:500])
+
+
+CLASSIFY_PROMPT = _CLASSIFY_PROMPT_FALLBACK
 
 async def classify(state: RAGState) -> RAGState:
     text = (state.get("query") or state.get("messages",[{}])[-1].get("content","")).strip()
@@ -77,7 +92,7 @@ async def classify(state: RAGState) -> RAGState:
         try:
             settings=get_settings()
             async with GuardrailsClient() as client:
-                req=GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role":"user","content":CLASSIFY_PROMPT.format(text=text[:500])}], max_tokens=16, temperature=0.0)
+                req=GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role":"user","content":_classify_prompt(text)}], max_tokens=16, temperature=0.0)
                 resp=await client.chat_completion(req, state["request_id"])
                 ans=resp.choices[0].message.get("content","").strip().lower() if resp.choices else ""
                 if "greeting" in ans: cat="greeting"
