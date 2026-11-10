@@ -17,7 +17,7 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=None, ge=1, le=8192)
     temperature: Optional[float] = Field(default=0.0, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=0.95, ge=0.0, le=1.0)
-    stream: bool = Field(default=False)
+    stream: bool = Field(default=True, description="SSE token streaming (lower TTFT); clients may opt out")
     session_id: Optional[str] = Field(default=None)
     filter_path: Optional[str] = Field(default=None, description="KB subspace filter path, e.g. 'اشخاص حقوقی' or 'گزارش اعتباری چک'")
 
