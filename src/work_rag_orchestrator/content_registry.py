@@ -27,7 +27,9 @@ _LOCK = threading.RLock()
 _CACHE: dict[str, Any] | None = None
 _CACHE_AT: float = 0.0
 _TTL_S = 60.0
-_FALLBACK_PROMPTS_PATH = Path(__file__).resolve().parent / "fallback_packs" / "prompts_orchestrator.yaml"
+_FALLBACK_DIR = Path(__file__).resolve().parent / "fallback_packs"
+_FALLBACK_PROMPTS_PATH = _FALLBACK_DIR / "prompts_orchestrator.yaml"
+_FALLBACK_CANNED_PATH = _FALLBACK_DIR / "canned.yaml"
 
 _FALLBACK_SUBSPACE_MAP = {
     "cheque": "گزارش اعتبارسنجی چک",
@@ -41,41 +43,40 @@ _FALLBACK_BOOST = {
     "facilities_legal": 3.0,
     "general": 2.5,
 }
-_FALLBACK_CANNED = {
-    "greetings": {
-        "greeting": "سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید.",
-        "farewell": "خداحافظ! اگر سوال دیگری داشتید در خدمتم.",
-        "thanks": "خواهش می‌کنم. اگر سوال دیگری دارید بفرمایید.",
-    },
-    "refusals": {
-        "no_evidence": "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد.",
-        "weak_evidence": "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید.",
-        "abstention_phrase": "پاسخی برای این سوال یافت نشد",
-        "blocked_default": "I cannot comply with that request.",
-    },
-    "greeting_triggers": ["سلام", "درود", "hello", "hi", "hey", "صبح بخیر", "وقت بخیر"],
-}
+
+
+def _load_vendored_yaml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        log.error("Vendored pack missing: %s", path)
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log.exception("Failed to load vendored pack %s: %s", path, exc)
+        return {}
 
 
 def _load_vendored_prompts() -> dict[str, str]:
     """Load prompt templates from the package YAML (offline / KB-down path)."""
-    if not _FALLBACK_PROMPTS_PATH.is_file():
-        log.error("Vendored prompts pack missing: %s", _FALLBACK_PROMPTS_PATH)
+    data = _load_vendored_yaml(_FALLBACK_PROMPTS_PATH)
+    prompts = data.get("prompts") or {}
+    if not isinstance(prompts, dict):
         return {}
-    try:
-        data = yaml.safe_load(_FALLBACK_PROMPTS_PATH.read_text(encoding="utf-8")) or {}
-        prompts = data.get("prompts") or {}
-        if not isinstance(prompts, dict):
-            return {}
-        return {str(k): str(v) for k, v in prompts.items() if v is not None}
-    except Exception as exc:
-        log.exception("Failed to load vendored prompts pack: %s", exc)
-        return {}
+    return {str(k): str(v) for k, v in prompts.items() if v is not None}
+
+
+def _load_vendored_canned() -> dict[str, Any]:
+    return _load_vendored_yaml(_FALLBACK_CANNED_PATH)
 
 
 def _fallback_payload() -> dict[str, Any]:
+    canned = _load_vendored_canned()
     return {
-        "pins": {"prompts_orchestrator": "fallback-yaml"},
+        "pins": {
+            "prompts_orchestrator": "fallback-yaml",
+            "canned": str(canned.get("version") or "fallback-yaml"),
+        },
         "manifest": None,
         "taxonomy": {
             "version": None,
@@ -84,7 +85,7 @@ def _fallback_payload() -> dict[str, Any]:
             "keyword_boost": dict(_FALLBACK_BOOST),
             "ui_filter_groups": [],
         },
-        "canned": dict(_FALLBACK_CANNED),
+        "canned": canned,
         "prompts": {"prompts": _load_vendored_prompts(), "version": "fallback-yaml"},
         "source": "fallback-yaml",
     }
@@ -172,22 +173,68 @@ def keyword_boost_map() -> dict[str, float]:
 
 
 def canned() -> dict[str, Any]:
-    return dict(get_registry_payload().get("canned") or _FALLBACK_CANNED)
+    return dict(get_registry_payload().get("canned") or _load_vendored_canned())
 
 
 def greeting_message(kind: str = "greeting") -> str:
     g = (canned().get("greetings") or {})
-    return str(g.get(kind) or g.get("greeting") or _FALLBACK_CANNED["greetings"]["greeting"])
+    fb = (_load_vendored_canned().get("greetings") or {})
+    return str(g.get(kind) or g.get("greeting") or fb.get("greeting") or "")
 
 
 def refusal_message(kind: str = "no_evidence") -> str:
     r = (canned().get("refusals") or {})
-    return str(r.get(kind) or _FALLBACK_CANNED["refusals"]["no_evidence"])
+    fb = (_load_vendored_canned().get("refusals") or {})
+    return str(r.get(kind) or fb.get(kind) or fb.get("no_evidence") or "")
 
 
 def abstention_phrase() -> str:
     r = (canned().get("refusals") or {})
-    return str(r.get("abstention_phrase") or _FALLBACK_CANNED["refusals"]["abstention_phrase"])
+    fb = (_load_vendored_canned().get("refusals") or {})
+    return str(r.get("abstention_phrase") or fb.get("abstention_phrase") or "")
+
+
+def canned_message(key: str, **fmt: Any) -> str:
+    """User-facing message from canned.messages (or refusals)."""
+    pack = canned()
+    msgs = dict(pack.get("messages") or {})
+    refusals = dict(pack.get("refusals") or {})
+    text = msgs.get(key) or refusals.get(key)
+    if text is None:
+        fb = _load_vendored_canned()
+        text = (fb.get("messages") or {}).get(key) or (fb.get("refusals") or {}).get(key)
+    if text is None:
+        raise RuntimeError(f"Canned message {key!r} missing from registry")
+    if not fmt:
+        return str(text)
+    try:
+        return str(text).format(**fmt)
+    except Exception:
+        return str(text)
+
+
+def clarify_option_labels() -> list[str]:
+    labels = canned().get("clarify_option_labels")
+    if isinstance(labels, list) and labels:
+        return [str(x) for x in labels]
+    fb = _load_vendored_canned().get("clarify_option_labels") or []
+    return [str(x) for x in fb]
+
+
+def faq_shortlist() -> dict[str, str]:
+    """Curated FAQ Q→A map from canned pack."""
+    items = canned().get("faq_shortlist")
+    if not isinstance(items, list):
+        items = (_load_vendored_canned().get("faq_shortlist") or [])
+    out: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        q = str(item.get("q") or "").strip()
+        a = str(item.get("a") or "").strip()
+        if q and a:
+            out[q] = a
+    return out
 
 
 def prompt(name: str, **fmt: Any) -> str | None:
