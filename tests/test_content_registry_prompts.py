@@ -31,6 +31,9 @@ REQUIRED_PROMPT_KEYS = (
     "greeting_system_thanks",
     "clarify_fallback",
     "hybrid_judge_escalation",
+    "faq_verify_system",
+    "faq_verify_user",
+    "specification_ack",
 )
 
 # Modules that must call require_prompt and must not embed long Persian/English LLM prompts.

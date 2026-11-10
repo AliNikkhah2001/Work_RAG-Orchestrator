@@ -12,12 +12,8 @@ log = logging.getLogger(__name__)
 async def generate_clarification(state: RAGState) -> RAGState:
     request_id = state["request_id"]
     query = state.get("query", "")
-    available = state.get("available_subspaces") or [
-        "تسهیلات افراد",
-        "گزارش چک",
-        "تسهیلات شرکت‌ها",
-        "عمومی (معرفی شرکت، هیات مدیره، کاربردها)",
-    ]
+    from ..content_registry import clarify_option_labels
+    available = state.get("available_subspaces") or clarify_option_labels()
     prompt = require_prompt("clarify", query=query)
     try:
         settings = get_settings()

@@ -1,13 +1,6 @@
-version: "1.0.2"
+version: 1.0.3
 kind: prompts
 scope: orchestrator
-# Prompt-engineering notes (v1.0.2):
-# - Structure: Role → Task → Rules → Examples → Output contract (task last for recency).
-# - Size targets (chars, template only): classifiers 350–900; answer_system 1200–2000;
-#   utilities 80–450. Keep answer_system well under ~2.5k so KB context (~14k) fits
-#   Gemma ctx comfortably with history/rewrite.
-# - Prefer positive output contracts; keep hard bans short and grouped.
-# - Resolve prior conflict: "detailed multi-paragraph" vs "do not pad / do not guess".
 prompts:
   classify: |
     نقش: دسته‌بند نیت پیام کاربر برای سامانه اعتبارسنجی ایران.
@@ -193,3 +186,9 @@ prompts:
     VERDICT: allow|block
     CATEGORY: <category_id>
     REASONING: <brief reason>
+  faq_verify_system: آیا پاسخ زیر به سؤال کاربر پاسخ می‌دهد؟ فقط با y یا n جواب بده.
+  faq_verify_user: |-
+    سؤال: {query}
+    پاسخ کاندید: {answer}
+    این پاسخ به سؤال جواب می‌دهد؟ (y/n)
+  specification_ack: حوزه «{label}» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.
