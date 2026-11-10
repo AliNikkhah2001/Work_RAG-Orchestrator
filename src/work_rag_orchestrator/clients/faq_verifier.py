@@ -24,11 +24,20 @@ async def verify_faq_answer(query: str, faq_answer: str) -> bool:
     try:
         from .guardrails import _get_shared_client
         client = _get_shared_client(15.0)
+        from ..content_registry import require_prompt
+
         verify_payload = {
             "model": settings.upstream_llm_model,
             "messages": [
-                {"role": "system", "content": "آیا پاسخ زیر به سؤال کاربر پاسخ می‌دهد؟ فقط با y یا n جواب بده."},
-                {"role": "user", "content": f"سؤال: {query}\nپاسخ کاندید: {faq_answer[:200]}\nاین پاسخ به سؤال جواب می‌دهد؟ (y/n)"},
+                {"role": "system", "content": require_prompt("faq_verify_system")},
+                {
+                    "role": "user",
+                    "content": require_prompt(
+                        "faq_verify_user",
+                        query=query,
+                        answer=faq_answer[:200],
+                    ),
+                },
             ],
             "temperature": 0,
             "max_tokens": 5,

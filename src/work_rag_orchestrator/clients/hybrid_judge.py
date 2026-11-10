@@ -330,26 +330,20 @@ class HybridJudge:
         scope = next((a for a in mizan_response.get("answers", []) if a.get("question_id") == "scope"), {})
         severity = next((a for a in mizan_response.get("answers", []) if a.get("question_id") == "severity"), {})
         
-        prompt = f"""You are a senior safety judge for a Persian financial credit advisory system.
-Mizan (fast Persian decision model) has reviewed this input but has LOW CONFIDENCE.
-Escalation reasons: {', '.join(esc_reasons)}
+        from ..content_registry import require_prompt
 
-INPUT: {text}
-STAGE: {stage}
-
-MIZAN ANALYSIS:
-- Safety: {safety.get('choice', '?')} (probs: {safety.get('probabilities', {})})
-- In-scope: {scope.get('noul', '?')} (probs: {scope.get('probabilities', {})})
-- Severity: {severity.get('score', '?')}/10
-
-DETERMINISTIC SIGNALS: {signals}
-
-Your task: Make the FINAL decision. Consider Mizan's analysis but use your superior reasoning.
-Answer ONLY with:
-VERDICT: allow|block
-CATEGORY: <category_id>
-REASONING: <brief reason>"""
-        return prompt
+        return require_prompt(
+            "hybrid_judge_escalation",
+            esc_reasons=", ".join(esc_reasons),
+            text=text,
+            stage=stage,
+            safety_choice=safety.get("choice", "?"),
+            safety_probs=safety.get("probabilities", {}),
+            scope_choice=scope.get("noul", "?"),
+            scope_probs=scope.get("probabilities", {}),
+            severity_score=severity.get("score", "?"),
+            signals=signals,
+        )
 
 
 # Convenience function for drop-in replacement

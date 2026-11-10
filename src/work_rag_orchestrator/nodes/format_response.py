@@ -12,14 +12,6 @@ from ..schemas import Citation
 
 log = logging.getLogger(__name__)
 
-# Grounded follow-ups: only answerable from same retrieved context (same leaf)
-FOLLOWUP_PROMPT = """Given the user's question: {query}
-And the answer we gave: {answer}
-And the retrieved context titles: {titles}
-Suggest 2-3 follow-up questions that ARE answerable from the same context (same leaf), in Persian, short.
-Return ONLY a JSON array of strings, e.g. ["سوال 1؟", "سوال 2؟"]"""
-
-FOLLOWUP_SYSTEM = "You suggest follow-up questions. Reply ONLY with a JSON array of 2-3 short Persian questions. No explanation."
 FOLLOWUP_MAX_TOKENS = 120
 
 
@@ -43,15 +35,21 @@ async def _generate_grounded_followups(state: RAGState, answer: str) -> list[str
         if not titles:
             return []
         titles_str = "\n".join(f"- {x}" for x in titles)
-        prompt = FOLLOWUP_PROMPT.format(query=query[:300], answer=answer[:500], titles=titles_str)
+        from ..content_registry import require_prompt
         from ..clients.guardrails import GuardrailsClient
         from ..schemas import GuardrailsChatRequest
         from ..config import get_settings
         settings = get_settings()
+        prompt = require_prompt(
+            "followup_user",
+            query=query[:300],
+            answer=answer[:500],
+            titles=titles_str,
+        )
         req = GuardrailsChatRequest(
             model=settings.upstream_llm_model,
             messages=[
-                {"role": "system", "content": FOLLOWUP_SYSTEM},
+                {"role": "system", "content": require_prompt("followup_system")},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=FOLLOWUP_MAX_TOKENS,
@@ -165,35 +163,30 @@ def _to_plain_text(text: str) -> str:
 
 MAX_CITATIONS = 5
 
-GROUND_TRUTH_HEADER = "\n\nمنابع بازیابی‌شده:\n"
 MAX_GROUND_TRUTH_LINES = 20
 
-# G5 hallucination fix: refusal when evidence is too weak.
-# Prefer KB registry canned pack; keep literals as import-time fallbacks.
-def _no_evidence_msg() -> str:
-    try:
-        from ..content_registry import refusal_message
 
-        return refusal_message("no_evidence")
-    except Exception:
-        return "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
+def _ground_truth_header() -> str:
+    from ..content_registry import canned_message
+
+    return canned_message("ground_truth_header")
+
+
+def _no_evidence_msg() -> str:
+    from ..content_registry import refusal_message
+
+    return refusal_message("no_evidence")
 
 
 def _abstention_phrase() -> str:
-    try:
-        from ..content_registry import abstention_phrase
+    from ..content_registry import abstention_phrase
 
-        return abstention_phrase()
-    except Exception:
-        return "پاسخی برای این سوال یافت نشد"
+    return abstention_phrase()
 
-
-NO_EVIDENCE_MSG = "بر اساس اطلاعات موجود در پایگاه دانش، پاسخی برای این سوال یافت نشد."
-ABSTENTION_PHRASE = "پاسخی برای این سوال یافت نشد"
 
 # F: faith/hallucination guard thresholds for weak-evidence answers. An
 # answer produced on a weak-evidence path (T1 whole-KB fallback or T2
-# broadened retry) is replaced with NO_EVIDENCE_MSG when the kept/cited
+# broadened retry) is replaced with NO_EVIDENCE when the kept/cited
 # chunks also score below FAITH_GUARD_MIN_SCORE and the answer's lexical
 # coverage over the kept chunk text is below FAITH_GUARD_MIN_COVERAGE —
 # both low means the generated text is not grounded in the evidence
@@ -242,7 +235,11 @@ def _ground_truth_block(chunks: list) -> str:
             continue
         label = _source_label(c, i)
         score = _chunk_score(c)
-        score_txt = f" — امتیاز {round(score, 3)}" if score is not None else ""
+        if score is not None:
+            from ..content_registry import canned_message
+            score_txt = canned_message("score_suffix", score=round(score, 3))
+        else:
+            score_txt = ""
         if title and heading:
             lines.append(f"{label} {title} — {heading}{score_txt}")
         elif title:
@@ -251,7 +248,7 @@ def _ground_truth_block(chunks: list) -> str:
             lines.append(f"{label} {heading}{score_txt}")
     if not lines:
         return ""
-    return GROUND_TRUTH_HEADER + "\n".join(lines)
+    return _ground_truth_header() + "\n".join(lines)
 
 
 def _citation_priority(chunk: dict) -> int:
@@ -533,12 +530,12 @@ async def format_response(state: RAGState) -> RAGState:
         registry_subspace_map = None  # type: ignore
         registry_abstention = None  # type: ignore
 
-    _abstain = registry_abstention() if registry_abstention else ABSTENTION_PHRASE
+    _abstain = _abstention_phrase()
 
     if blocked:
-        blocked_default = (
-            registry_refusal("blocked_default") if registry_refusal else "I cannot comply with that request."
-        )
+        from ..content_registry import refusal_message as _rm
+        blocked_default = registry_refusal("blocked_default") if registry_refusal else _rm("blocked_default")
+
         content = _to_plain_text(_clean_answer(state_refusal)) or blocked_default
         finish_reason = "content_filter"
         citations = []
@@ -547,38 +544,26 @@ async def format_response(state: RAGState) -> RAGState:
         # block and no citations. Citing nothing is correct here.
         if not answer_raw or not answer_raw.strip() or _abstain in answer_raw:
             kind = state.get("greeting_only") or "greeting"
-            if registry_greeting:
-                answer_raw = registry_greeting(kind if kind in ("farewell", "thanks", "greeting") else "greeting")
-            elif kind == "farewell":
-                answer_raw = "خداحافظ! هر وقت سوالی درباره گزارش یا امتیاز اعتباری داشتید در خدمت هستم."
-            elif kind == "thanks":
-                answer_raw = "خواهش می‌کنم! اگر سوال دیگری درباره گزارش یا امتیاز اعتباری داشتید بفرمایید."
-            else:
-                answer_raw = "سلام! من دستیار هوشمند شرکت اعتبارسنجی ایران هستم. سوالتان را درباره گزارش اعتباری، امتیاز و رتبه، یا سوابق و چک‌ها بفرمایید."
+            from ..content_registry import greeting_message
+            answer_raw = greeting_message(kind if kind in ("farewell", "thanks", "greeting") else "greeting")
         content = answer_raw
         finish_reason = "stop"
         citations = []
     elif state.get("classify") == "specification":
         subspace = state.get("applied_subspace") or ""
-        label_map = registry_subspace_map() if registry_subspace_map else {
-            "cheque": "گزارش اعتباری چک",
-            "facilities_person": "تسهیلات اشخاص حقیقی",
-            "facilities_legal": "تسهیلات اشخاص حقوقی",
-            "general": "پایگاه دانش عمومی",
-        }
-        label = label_map.get(subspace, subspace) or "حوزه انتخابی"
+        from ..content_registry import canned_message, subspace_map as _sub_map
+        label_map = registry_subspace_map() if registry_subspace_map else _sub_map()
+        label = label_map.get(subspace, subspace) or canned_message("domain_label_fallback")
         if not answer_raw or not answer_raw.strip() or _abstain in answer_raw:
-            answer_raw = f"حوزه «{label}» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید."
+            answer_raw = canned_message("specification_ack", label=label)
         content = answer_raw
         finish_reason = "stop"
         citations = []
     elif state.get("direct_faq_answer") and state.get("faq_verified"):
         if not answer_raw or not answer_raw.strip():
-            answer_raw = (
-                registry_refusal("weak_evidence")
-                if registry_refusal
-                else "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
-            )
+            from ..content_registry import refusal_message as _rm
+            answer_raw = registry_refusal("weak_evidence") if registry_refusal else _rm("weak_evidence")
+
         content = answer_raw
         finish_reason = "stop"
         citations = []
@@ -590,7 +575,7 @@ async def format_response(state: RAGState) -> RAGState:
         # against the whole KB (filter_path=None) with the ORIGINAL user query;
         # after one attempt the canonical refusal stands.
         if (
-            ABSTENTION_PHRASE in answer_raw
+            _abstention_phrase() in answer_raw
             and not state.get("broaden_after_abstention")
             and not state.get("broaden_used")
         ):
@@ -624,7 +609,7 @@ async def format_response(state: RAGState) -> RAGState:
                 "No evidence for request %s: top_score=%.4f < threshold=%.3f -> refusing (G5 guard)",
                 request_id, _top, _threshold,
             )
-            content = NO_EVIDENCE_MSG
+            content = _no_evidence_msg()
             finish_reason = "stop"
             citations = []
             follow_ups = []
@@ -652,7 +637,9 @@ async def format_response(state: RAGState) -> RAGState:
             return state
 
         if not answer_raw or not answer_raw.strip():
-            answer_raw = "بر اساس منابع بازیابی‌شده، پاسخ مستقیم در متن موجود نیست؛ لطفاً سوال را دقیق‌تر بپرسید."
+            from ..content_registry import refusal_message as _rm
+
+            answer_raw = _rm("weak_evidence")
         content = answer_raw
         finish_reason = "stop"
         # Plain-text answers carry no [n] markers, so cite the top-ranked
@@ -667,7 +654,7 @@ async def format_response(state: RAGState) -> RAGState:
         chosen = chosen[:MAX_CITATIONS]
         # If the (possibly regenerated) answer still abstains, drop citations:
         # a refusal should not pretend to be grounded in displayed sources.
-        if ABSTENTION_PHRASE in content:
+        if _abstention_phrase() in content:
             citations = []
             chosen = []
         citations = [
@@ -691,7 +678,7 @@ async def format_response(state: RAGState) -> RAGState:
         # answer already abstains. The decision is logged with the
         # coverage value.
         _faith_refused = False
-        if (state.get("fallback_used") or state.get("broaden_used")) and ABSTENTION_PHRASE not in content:
+        if (state.get("fallback_used") or state.get("broaden_used")) and _abstention_phrase() not in content:
             _used_top = _top_evidence_score(chosen)
             _coverage = _token_coverage(content, chosen)
             if _used_top < FAITH_GUARD_MIN_SCORE and _coverage < FAITH_GUARD_MIN_COVERAGE:
@@ -700,7 +687,7 @@ async def format_response(state: RAGState) -> RAGState:
                     request_id, _coverage, FAITH_GUARD_MIN_COVERAGE, _used_top, FAITH_GUARD_MIN_SCORE,
                     bool(state.get("fallback_used")), bool(state.get("broaden_used")),
                 )
-                content = NO_EVIDENCE_MSG
+                content = _no_evidence_msg()
                 citations = []
                 _faith_refused = True
             else:
@@ -716,11 +703,11 @@ async def format_response(state: RAGState) -> RAGState:
         # but the model generates advice as if it DOES exist.
         # This catches hallucinations where model ignores "not available" signals.
         _contradiction_refused = False
-        if not _faith_refused and ABSTENTION_PHRASE not in content and chunks:
+        if not _faith_refused and _abstention_phrase() not in content and chunks:
             try:
                 _contradiction_refused = await _check_contradiction(content, chunks, request_id, state.get("applied_subspace"))
                 if _contradiction_refused:
-                    content = NO_EVIDENCE_MSG
+                    content = _no_evidence_msg()
                     citations = []
             except Exception as _e:
                 log.warning("Contradiction check failed for %s: %s", request_id, _e)
@@ -730,13 +717,13 @@ async def format_response(state: RAGState) -> RAGState:
         # E.g., KB says "cheque index is a factor in facilities rating for companies"
         # but model answers "how to improve your cheque rating for companies".
         _mismatch_refused = False
-        if not _faith_refused and not _contradiction_refused and ABSTENTION_PHRASE not in content and chunks:
+        if not _faith_refused and not _contradiction_refused and _abstention_phrase() not in content and chunks:
             try:
                 _mismatch_refused = await _check_subspace_mismatch(
                     content, chunks, request_id, state.get("applied_subspace")
                 )
                 if _mismatch_refused:
-                    content = NO_EVIDENCE_MSG
+                    content = _no_evidence_msg()
                     citations = []
             except Exception as _e:
                 log.warning("Subspace mismatch check failed for %s: %s", request_id, _e)
@@ -756,7 +743,7 @@ async def format_response(state: RAGState) -> RAGState:
         # --- Grounded follow-ups: only for successful RAG answers with citations ---
         # Skip for blocked/greeting/spec/faq/no_evidence. Generates 2-3 questions
         # that ARE answerable from the same retrieved chunks (same leaf).
-        if finish_reason == "stop" and citations and chunks and content != NO_EVIDENCE_MSG:
+        if finish_reason == "stop" and citations and chunks and content != _no_evidence_msg():
             try:
                 _q = state.get("query") or ""
                 if "### Task" not in _q and "Suggest 3-5" not in _q:

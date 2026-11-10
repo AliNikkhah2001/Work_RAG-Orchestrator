@@ -713,7 +713,7 @@ def create_app() -> FastAPI:
                     state = await v_task
                     await r_task
                     if state.get("blocked"):
-                        content = state.get("refusal_message") or "متأسفم، نمی‌توانم پاسخ دهم."
+                        content = state.get("refusal_message") or __import__("work_rag_orchestrator.content_registry", fromlist=["refusal_message"]).refusal_message("stream_blocked")
                         yield ": agent validate_input done blocked=true\n\n"
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
@@ -738,7 +738,12 @@ def create_app() -> FastAPI:
                     if state.get("needs_clarification"):
                         from .nodes.generate_clarification import generate_clarification as node_clarify
                         state = await node_clarify(state)
-                        content = state.get("clarifying_question") or state.get("formatted_response", {}).get("content", "") or "لطفاً مشخص کنید منظورتان کدام بخش است."
+                        from .content_registry import require_prompt as _rp, canned_message, refusal_message
+                        content = (
+                            state.get("clarifying_question")
+                            or state.get("formatted_response", {}).get("content", "")
+                            or _rp("clarify_fallback", options=canned_message("clarify_options_default"))
+                        )
                         yield ": agent generate_clarification clarify\n\n"
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
