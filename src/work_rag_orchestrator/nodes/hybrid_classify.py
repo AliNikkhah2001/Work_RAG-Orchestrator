@@ -63,21 +63,36 @@ except ImportError:  # pragma: no cover - image without scripts still boots
 
 log = logging.getLogger(__name__)
 
-# Persian subspace classification prompt for Gemma TRT-LLM
-HYBRID_GEMMA_PROMPT = """شما یک klasyfikاتور فضاء‌های دانش برای سامانه اعتبارسنجی ایران هستید.
-سوال کاربر را به یکی از این فضاها वर्ग کنید:
+# Persian subspace classification prompt — prefer KB registry pack.
+_HYBRID_GEMMA_PROMPT_FALLBACK = """شما یک کلاسifikاتور فضاهای دانش برای سامانه اعتبارسنجی ایران هستید.
+سوال کاربر را به یکی از این فضاها طبقه کنید:
 
-- cheque: گزارش اعتباری چک (صیاد، برگشتی، نقدشده، Награده چک)
+- cheque: گزارش اعتباری چک (صیاد، برگشتی، نقدشده)
 - facilities_person: تسهیلات اشخاص حقیقی (افراد، وام، قسط، اعتبارسنجی افراد)
 - facilities_legal: تسهیلات اشخاص حقوقی (شرکت‌ها، سهامداران، اعتبارسنجی شرکت‌ها)
 - general: پایگاه دانش عمومی (معرفی شرکت، هیات مدیره، کاربردها)
-- ambiguous: سوال مبهم که نمی‌توانwithout specifying الفضاء تعیین کرد
+- ambiguous: سوال مبهم که نمی‌توان بدون مشخص کردن فضا تعیین کرد
 
 فقط نام فضا را بنویسید (cheque، facilities_person، facilities_legal، general، ambiguous).
 
 سوال: {text}
 
 فاصله:"""
+
+
+def _hybrid_prompt(text: str) -> str:
+    try:
+        from ..content_registry import prompt
+
+        packed = prompt("hybrid_classify", text=text[:500])
+        if packed:
+            return packed
+    except Exception:
+        pass
+    return _HYBRID_GEMMA_PROMPT_FALLBACK.format(text=text[:500])
+
+
+HYBRID_GEMMA_PROMPT = _HYBRID_GEMMA_PROMPT_FALLBACK
 
 
 async def hybrid_classify_node(state: RAGState) -> RAGState:
@@ -168,7 +183,7 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
                     messages=[
                         {
                             "role": "user",
-                            "content": HYBRID_GEMMA_PROMPT.format(text=text[:500]),
+                            "content": _hybrid_prompt(text),
                         }
                     ],
                     max_tokens=settings.hybrid_classifier_gemma_max_tokens,
