@@ -127,10 +127,29 @@ _ENTITY_TOOL_KEYWORDS: dict[str, list[str]] = {
         "دلیل", "کد دلیل", "دلایل", "کاهش امتیاز", "reason code", "کد خطا",
         "دلیل کاهش", "دلیل رد", "کد پاسخ", "return code", "reason_detail",
     ],
-    "سهامداران": ["سهامدار", "سهام", "مالکیت", "شریک", "سهام‌گذاری"],
-    "لیست و عناوین وام ها": ["وام", "تسهیلات", "سقف وام", "نرخ سود", "قسط", "ضمانت"],
-    "استفاده‌کنندگان گزارش": ["گزارش", "استفاده‌کنندگان", "خریداران گزارش"],
-    "تامین‌کنندگان دیتا": ["تامین‌کننده", "داده", "منبع داده", "دیتا"],
+    "سهامداران": [
+        "سهامدار", "سهام", "مالکیت", "شریک", "سهام‌گذاری", "سهامداران شرکت",
+        "بانک رفاه", "بانک تجارت", "هیئت مدیره سهامدار",
+    ],
+    "لیست و عناوین وام ها": [
+        "وام", "تسهیلات", "سقف وام", "نرخ سود", "قسط", "ضمانت",
+        "وام ازدواج", "خرید اقساطی", "BNPL", "قرض‌الحسنه", "عناوین وام",
+    ],
+    "استفاده‌کنندگان گزارش": [
+        "گزارش", "استفاده‌کنندگان", "خریداران گزارش", "لندتک", "ریسلر",
+        "مشتریان گزارش", "قرارداد عادی",
+    ],
+    "تامین‌کنندگان دیتا": [
+        "تامین‌کننده", "داده", "منبع داده", "دیتا", "نئوبانک", "موبایل بانک",
+        "تامین کنندگان", "صندوق", "لیزینگ",
+    ],
+    "score_tables": [
+        "امتیاز", "رتبه", "گرید", "رنگ", "آبی", "سبز", "زرد", "نارنجی", "قرمز",
+        "نکول", "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3",
+        "D1", "D2", "D3", "E1", "E2", "E3", "grade", "score",
+        "جدول امتیاز", "فهرست رنگ", "لیست رنگ", "لیست رتبه", "بازه امتیاز",
+        "چه رنگ‌هایی", "چه رنگهایی", "تمام رتبه‌ها", "همه رتبه‌ها",
+    ],
 }
 
 
@@ -145,12 +164,16 @@ def _entity_tool_relevant(query: str, state: dict) -> bool:
         return False
     # Scope hint: filter_path / applied_subspace already points at an entity topic
     for scope in (state.get("filter_path"), state.get("applied_subspace")):
-        if scope and any(k in scope for k in ("دلیل", "reason", "سود", "وام", "سهام", "تسهیلات")):
+        if scope and any(k in scope for k in ("دلیل", "reason", "سود", "وام", "سهام", "تسهیلات", "چک")):
             return True
     qlow = q.lower()
     for _kws in _ENTITY_TOOL_KEYWORDS.values():
-        if any(kw in qlow for kw in _kws):
+        if any(kw.lower() in qlow or kw in q for kw in _kws):
             return True
+    # letter grade like A2, and out-of-range probes like F9
+    import re as _re
+    if _re.search(r"\b[A-Za-z]\d{1,2}\b", q):
+        return True
     return False
 
 
@@ -159,8 +182,8 @@ def trim_supplemental(
     query: str,
     *,
     max_lists: int = 3,
-    max_rows_per_sheet: int = 25,
-    max_chars_per_list: int = 4000,
+    max_rows_per_sheet: int = 40,
+    max_chars_per_list: int = 8000,
 ) -> list:
     """Cap entity-list payloads before they reach the LLM.
 
@@ -171,7 +194,8 @@ def trim_supplemental(
       1. keep top-N lists by similarity (callers pass them sorted best-first)
       2. keep only rows matching query tokens (ranked by match count),
          falling back to the first rows when nothing matches
-      3. hard-cap the serialized JSON per list
+      3. drop bulky dump strings (full_list_text / full_table_text) first
+      4. hard-cap the serialized JSON per list without wiping matched rows
     """
     import json as _json
     import re as _re
@@ -184,49 +208,145 @@ def trim_supplemental(
     # weigh double: a row containing the actual code outranks generic rows
     # that merely share the word "کد"/"دلیل".
     weights = [(2.0 if _re.search(r"[a-z0-9]", t) else 1.0, t) for t in tokens]
+    _BULKY_STR_KEYS = ("full_list_text", "full_table_text")
+    _PRIORITY_LIST_KEYS = ("records", "bands", "color_groups", "groups")
+
+    def _list_relevance(ent: dict) -> float:
+        """Prefer query-matched catalogs over force-injected score tables."""
+        if not isinstance(ent, dict):
+            return -1.0
+        name = str(ent.get("list_name") or "")
+        content = ent.get("content") or {}
+        meta = content.get("_meta") if isinstance(content, dict) else {}
+        kind = str((meta or {}).get("kind") or "")
+        s = float(ent.get("similarity") or 0.0)
+        blob = f"{name} {kind}".lower()
+        s += sum(1.5 for t in tokens if t in blob)
+        if kind == "loan_catalog" and any(k in q for k in ("وام", "تسهیلات", "عناوین")):
+            s += 20.0
+        if kind == "shareholders" and "سهامدار" in q:
+            s += 20.0
+        if kind == "data_providers" and any(
+            k in q for k in ("تامین", "دیتا", "داده", "نئو", "موبایل")
+        ):
+            s += 20.0
+        if kind == "report_consumers" and any(
+            k in q for k in ("استفاده", "لندتک", "ریسلر", "گزارش")
+        ):
+            s += 20.0
+        if kind == "score_table":
+            score_q = any(
+                k in q for k in ("امتیاز", "رتبه", "رنگ", "گرید", "جدول امتیاز", "نکول")
+            )
+            catalog_q = any(
+                k in q
+                for k in ("وام", "عناوین", "سهامدار", "تامین", "لندتک", "ریسلر", "استفاده")
+            )
+            if catalog_q and not score_q:
+                s -= 30.0
+            elif score_q:
+                s += 20.0
+        return s
+
+    ranked_ents = sorted(
+        [e for e in entities if isinstance(e, dict)],
+        key=_list_relevance,
+        reverse=True,
+    )
     out: list = []
-    for ent in list(entities)[:max_lists]:
+    for ent in ranked_ents[:max_lists]:
         ent = dict(ent)
         content = ent.get("content") or {}
-        if isinstance(content, dict) and tokens:
-            trimmed: dict = {}
-            for sheet, rows in content.items():
-                if not isinstance(rows, list):
-                    trimmed[sheet] = rows
+        if not isinstance(content, dict):
+            out.append(ent)
+            continue
+        content = dict(content)
+        meta = content.get("_meta") if isinstance(content.get("_meta"), dict) else {}
+        kind = str(meta.get("kind") or "")
+        # Prefer structured fields; drop raw sheet duplicates when records/bands exist
+        if content.get("records") or content.get("bands"):
+            for k in list(content.keys()):
+                if k in ("_meta", "records", "bands", "color_groups", "groups") or k in _BULKY_STR_KEYS:
                     continue
-                scored: list = []
-                for idx, row in enumerate(rows):
-                    if isinstance(row, dict):
-                        blob = " ".join(
-                            str(v) for v in row.values() if v is not None
-                        ).lower()
-                    else:
-                        blob = str(row).lower()
-                    hits = sum(w for w, t in weights if t in blob)
-                    if hits:
-                        scored.append((-hits, idx, row))
-                scored.sort()
-                keep = [r for _, _, r in scored[:max_rows_per_sheet]]
-                if not keep:
-                    keep = rows[:max_rows_per_sheet]
-                trimmed[sheet] = keep
-            content = trimmed
-        elif isinstance(content, dict):
-            content = {
-                s: (rows[:max_rows_per_sheet] if isinstance(rows, list) else rows)
-                for s, rows in content.items()
-            }
-        # shrink until under the per-list char cap
+                if isinstance(content.get(k), list):
+                    content.pop(k, None)
+
+        def _trim_rows(rows: list) -> list:
+            if not isinstance(rows, list):
+                return rows
+            if not tokens:
+                return rows[:max_rows_per_sheet]
+            scored: list = []
+            for idx, row in enumerate(rows):
+                if isinstance(row, dict):
+                    blob = " ".join(str(v) for v in row.values() if v is not None).lower()
+                else:
+                    blob = str(row).lower()
+                hits = sum(w for w, t in weights if t in blob)
+                if hits:
+                    scored.append((-hits, idx, row))
+            scored.sort()
+            keep = [r for _, _, r in scored[:max_rows_per_sheet]]
+            return keep or rows[:max_rows_per_sheet]
+
+        for key in list(content.keys()):
+            if key in _BULKY_STR_KEYS:
+                continue
+            val = content[key]
+            if isinstance(val, list):
+                # Keep group summaries small; trim record/band sheets by query
+                if key == "groups" and len(val) <= 30:
+                    continue
+                content[key] = _trim_rows(val)
+
+        # Listing questions: keep a short dump derived from groups / color_groups
+        if any(k in q for k in ("فهرست", "لیست", "جدول کامل", "همه", "تمام", "چه نوع", "چه رنگ")):
+            if kind == "score_table" and content.get("color_groups"):
+                content.pop("full_table_text", None)
+            elif content.get("groups"):
+                content.pop("full_list_text", None)
+        else:
+            # Lookup: bulky dumps blow the char budget — drop them, keep matched rows
+            for bulky in _BULKY_STR_KEYS:
+                content.pop(bulky, None)
+
         blob = _json.dumps(content, ensure_ascii=False)
-        while len(blob) > max_chars_per_list and isinstance(content, dict):
+        while len(blob) > max_chars_per_list:
             shrunk = False
-            for sheet, rows in list(content.items()):
-                if isinstance(rows, list) and len(rows) > 2:
-                    content[sheet] = rows[: max(2, len(rows) - max(1, len(rows) // 4))]
+            # 1) drop leftover bulky strings
+            for bulky in _BULKY_STR_KEYS:
+                if bulky in content:
+                    content.pop(bulky, None)
                     shrunk = True
                     break
             if not shrunk:
-                content = {"_truncated": True, "preview": blob[:max_chars_per_list]}
+                # 2) shrink non-priority lists first, then priority lists
+                for key in list(content.keys()):
+                    if key in ("_meta",) or key in _PRIORITY_LIST_KEYS:
+                        continue
+                    rows = content.get(key)
+                    if isinstance(rows, list) and len(rows) > 2:
+                        content[key] = rows[: max(2, len(rows) // 2)]
+                        shrunk = True
+                        break
+            if not shrunk:
+                for key in _PRIORITY_LIST_KEYS:
+                    rows = content.get(key)
+                    if isinstance(rows, list) and len(rows) > 3:
+                        content[key] = rows[: max(3, len(rows) // 2)]
+                        shrunk = True
+                        break
+            if not shrunk:
+                # Last resort: keep meta + a short preview of matched records/bands
+                keep_keys = {"_meta"}
+                for key in _PRIORITY_LIST_KEYS:
+                    if key in content:
+                        keep_keys.add(key)
+                        rows = content.get(key)
+                        if isinstance(rows, list):
+                            content[key] = rows[:15]
+                content = {k: content[k] for k in keep_keys if k in content}
+                content["_truncated"] = True
                 break
             blob = _json.dumps(content, ensure_ascii=False)
         ent["content"] = content
@@ -1194,7 +1314,11 @@ async def retrieve(state: RAGState) -> RAGState:
         if _entity_tool_relevant(query, state):
             async with KnowledgebaseClient() as _ent_client:
                 _ents = await _ent_client.supplementary_search(
-                    query, threshold=0.4, request_id=request_id
+                    query,
+                    threshold=0.4,
+                    request_id=request_id,
+                    subspace=state.get("applied_subspace") or state.get("subspace"),
+                    filter_path=state.get("filter_path"),
                 )
             if _ents:
                 existing = state.get("injected_entities") or []
