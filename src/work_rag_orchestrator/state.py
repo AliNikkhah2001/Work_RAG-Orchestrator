@@ -74,6 +74,9 @@ class RAGState(TypedDict):
     # applied_subspace so the subspace can persist for the next turn's
     # scorer-driven decision without scoping retrieval/filter_path this turn.
     sticky_subspace: NotRequired[Optional[str]]
+    # Clarify reply «شخصی»/«حقیقی» (api sets these; retrieve must not re-clarify)
+    declaration_followup: NotRequired[bool]
+    raw_user_utterance: NotRequired[Optional[str]]
     needs_clarification: bool
     clarifying_question: Optional[str]
     available_subspaces: Optional[List[str]]
