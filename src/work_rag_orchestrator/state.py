@@ -95,6 +95,11 @@ class RAGState(TypedDict):
     fallback_used: NotRequired[bool]
     fallback_reason: NotRequired[Optional[str]]
     broaden_used: NotRequired[bool]
+    # Progressive scope broaden (leaf → parent → whole corpus)
+    scope_broadened: NotRequired[bool]
+    scope_broadened_from: NotRequired[Optional[str]]
+    scope_broadened_to: NotRequired[Optional[str]]
+    scope_broadened_filter: NotRequired[Optional[str]]
     # retry_stage_timing is stored in stage_timing_ms (retrieve_retry, retrieve_broadened)
 
     # Embedding subspace ambiguity score (see docs/SUBSPACE_AMBIGUITY.md)

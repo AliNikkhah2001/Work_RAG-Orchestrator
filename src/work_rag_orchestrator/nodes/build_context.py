@@ -232,6 +232,29 @@ async def build_context(state: RAGState) -> RAGState:
         system_message += " " + require_prompt("answer_system_new_chat_suffix").strip()
     else:
         system_message += " " + require_prompt("answer_system_continue_suffix").strip()
+
+    # Progressive broaden disclosure: tell the model which topic/subspace the
+    # evidence actually came from after leaf→parent→corpus expansion.
+    if state.get("scope_broadened"):
+        try:
+            from ..subspace_routing import subspace_topic_label
+
+            _to = state.get("scope_broadened_to")
+            _topic = subspace_topic_label(_to)
+            system_message += (
+                " توجه: پاسخ بر اساس جست‌وجوی گسترده‌تر یافت شده و مربوط به موضوع "
+                f"«{_topic}» است. در ابتدای پاسخ به‌صورت کوتاه و طبیعی ذکر کن که "
+                "پاسخ دربارهٔ این موضوع/گزارش است (نه موضوع قبلی گفتگو)، سپس پاسخ را بده."
+            )
+            log.info(
+                "build_context scope_broadened disclosure from=%s to=%s topic=%s",
+                state.get("scope_broadened_from"),
+                _to,
+                _topic,
+            )
+        except Exception as _sb_err:
+            log.warning("scope_broadened disclosure failed: %s", _sb_err)
+
     log.debug("answer_system loaded from content registry source=%s", registry_source())
     
     # Build prompt messages for generation

@@ -786,6 +786,200 @@ async def _t1_try_whole_kb_fallback(
         raise RuntimeError(f"T1 whole-KB merge failed: {e}") from e
 
 
+async def _progressive_scope_broaden(
+    state: dict,
+    search_query: str,
+    request_id: str,
+    active_filter: str | None,
+    origin_subspace: str | None = None,
+    top_k: int = 20,
+) -> bool:
+    """Progressive leaf → parent → whole-corpus retrieve when filtered evidence is weak.
+
+    On first scope with sufficient evidence:
+      - adopt/fuse chunks
+      - set ``applied_subspace`` / sticky from majority chunk hierarchy
+      - record ``scope_broadened_*`` audit fields for prompt disclosure
+
+    Returns True if any broader retrieve was attempted.
+    """
+    from ..subspace_routing import (
+        filter_path_broaden_ladder,
+        infer_subspace_from_chunks,
+        subspace_topic_label,
+    )
+
+    if not active_filter:
+        return False
+    if state.get("scope_broadened") or state.get("faq_verified"):
+        return False
+    if state.get("injected_entities") or state.get("supplemental"):
+        return False
+
+    cur_chunks = state.get("retrieved_chunks") or []
+    cur_top = _compute_top_score(cur_chunks)
+    thr = _get_ev_threshold(origin_subspace or active_filter)
+    if len(cur_chunks) > 0 and cur_top >= thr:
+        return False
+
+    ladder = filter_path_broaden_ladder(active_filter)
+    if not ladder:
+        return False
+
+    from ..clients.knowledgebase import KnowledgebaseClient as _KBClient
+
+    attempted = False
+    origin = origin_subspace or state.get("applied_subspace")
+    t0 = time.monotonic()
+    log.info(
+        "Progressive broaden: origin_filter=%r origin_sub=%r ladder=%s top=%.4f thr=%.3f",
+        active_filter,
+        origin,
+        ladder,
+        cur_top,
+        thr,
+    )
+
+    async with _KBClient() as kb:
+        for step in ladder:
+            attempted = True
+            try:
+                result = await kb.retrieve(search_query, top_k, request_id, filter_path=step)
+            except Exception as e:
+                log.warning("Progressive broaden step filter=%r failed: %s", step, e)
+                continue
+
+            if isinstance(result, dict):
+                rrf = result.get("rrf", []) or []
+                ce = result.get("ce", []) or []
+                injected = result.get("injected_entities", []) or []
+            else:
+                rrf, ce, injected = [], list(result or []), []
+
+            retrieved = _t1_merge_rrf_ce(rrf, ce)
+            top = _compute_top_score(retrieved)
+            step_thr = _get_ev_threshold(
+                infer_subspace_from_chunks(retrieved) or origin_subspace or active_filter
+            )
+            has_sup = bool(injected)
+            enough = (len(retrieved) > 0 and top >= step_thr) or has_sup
+            if not enough:
+                log.info(
+                    "Progressive broaden miss filter=%r len=%d top=%.4f < %.3f",
+                    step,
+                    len(retrieved),
+                    top,
+                    step_thr,
+                )
+                continue
+
+            # Adopt: empty → replace; weak non-empty → fuse with broader leg
+            if len(cur_chunks) == 0:
+                state["retrieved_chunks"] = retrieved[:top_k]
+            else:
+                state["retrieved_chunks"] = _fuse_subspace_rrf(cur_chunks, retrieved)[:top_k]
+
+            if injected:
+                existing = state.get("injected_entities") or []
+                seen = {e.get("list_name") for e in existing}
+                merged = list(existing)
+                for ent in injected:
+                    if ent.get("list_name") not in seen:
+                        merged.append(ent)
+                        seen.add(ent.get("list_name"))
+                state["injected_entities"] = merged
+                state["supplemental"] = merged
+
+            new_sub = infer_subspace_from_chunks(state.get("retrieved_chunks"))
+            # Colour-rank queries should land on cheque when evidence allows
+            try:
+                from ..subspace_routing import prefer_cheque_for_color_query
+
+                new_sub = prefer_cheque_for_color_query(state.get("query") or search_query, new_sub)
+            except Exception:
+                pass
+
+            state["scope_broadened"] = True
+            state["scope_broadened_from"] = origin
+            state["scope_broadened_to"] = new_sub
+            state["scope_broadened_filter"] = step
+            state["fallback_used"] = True
+            if step is None:
+                state["fallback_reason"] = (
+                    f"progressive_whole_kb from={active_filter} top={top:.4f}"
+                )
+            else:
+                state["fallback_reason"] = (
+                    f"progressive_parent from={active_filter} to={step} top={top:.4f}"
+                )
+
+            if new_sub:
+                state["applied_subspace"] = new_sub
+                state["sticky_subspace"] = new_sub
+                try:
+                    sm = get_settings().subspace_map
+                    state["sticky_filter_path"] = sm.get(new_sub, step)
+                except Exception:
+                    state["sticky_filter_path"] = step
+            elif step is None:
+                # Whole corpus hit without clear L2 — keep sticky cleared of wrong leaf
+                state["applied_subspace"] = state.get("applied_subspace") or origin
+            else:
+                # Parent folder hit: map parent path if possible
+                try:
+                    from ..subspace_routing import extract_subspace_from_hierarchy
+
+                    mapped = extract_subspace_from_hierarchy(step.split("/"))
+                    if mapped:
+                        state["applied_subspace"] = mapped
+                        state["sticky_subspace"] = mapped
+                        state["sticky_filter_path"] = step
+                        state["scope_broadened_to"] = mapped
+                except Exception:
+                    pass
+
+            elapsed = round((time.monotonic() - t0) * 1000, 1)
+            record_timing(state, "retrieve_progressive_broaden", elapsed)
+            log.info(
+                "Progressive broaden HIT filter=%r sub %s→%s topic=%r chunks=%d top=%.4f",
+                step,
+                origin,
+                state.get("scope_broadened_to"),
+                subspace_topic_label(state.get("scope_broadened_to")),
+                len(state.get("retrieved_chunks") or []),
+                _compute_top_score(state.get("retrieved_chunks")),
+            )
+            try:
+                from ..tracing import trace_span as _tsp_pb
+
+                _tsp_pb(
+                    request_id,
+                    "retrieve-progressive-broaden",
+                    span_input={
+                        "query": search_query,
+                        "active_filter": active_filter,
+                        "origin_subspace": origin,
+                        "ladder": ladder,
+                    },
+                    span_output={
+                        "hit_filter": step,
+                        "from": origin,
+                        "to": state.get("scope_broadened_to"),
+                        "chunks": len(state.get("retrieved_chunks") or []),
+                    },
+                )
+            except Exception:
+                pass
+            return True
+
+    if attempted:
+        elapsed = round((time.monotonic() - t0) * 1000, 1)
+        record_timing(state, "retrieve_progressive_broaden", elapsed)
+        log.info("Progressive broaden exhausted ladder with no hit for filter=%r", active_filter)
+        # Allow classic T1/T2 to continue if progressive found nothing
+    return attempted
+
+
 # ---------------------------------------------------------------------------
 # T2: Broadened retry when whole-KB fallback still weak
 # ---------------------------------------------------------------------------
@@ -1695,53 +1889,63 @@ async def retrieve(state: RAGState) -> RAGState:
                                 state["injected_entities"] = merged_injected
                                 state["supplemental"] = merged_injected
                             state["needs_clarification"] = False
-                            # --- T1: filtered → whole-KB fallback (single retry, before LLM judge broadening) ---
-                            # T4: For generic follow-ups that inherit sticky (no explicit re-spec), do NOT fallback to whole KB - keep sticky
-                            # Only fallback when there's explicit hint of different subspace; otherwise generic keeps sticky even if weak
+                            # --- Progressive scope broaden on weak sticky evidence ---
+                            # Leaf → parent folder → whole corpus; on hit update sticky + disclose topic.
                             try:
-                                if not state.get("fallback_used"):
+                                if not state.get("fallback_used") and not state.get("scope_broadened"):
                                     _t1_chk_len = len(state.get("retrieved_chunks") or [])
                                     _t1_chk_top = _compute_top_score(state.get("retrieved_chunks"))
                                     _t1_chk_thr = _get_ev_threshold(_filter_path_sticky or _sticky)
                                     _t1_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
                                     _t1_needs = (_t1_chk_len == 0 or _t1_chk_top < _t1_chk_thr) and not state.get("faq_verified") and not _t1_has_sup
-                                    # T4 gate: check if current query explicitly mentions a different subspace before allowing fallback
-                                    if _t1_needs:
-                                        _cur_q_t1 = state.get("query", "") or ""
-                                        # Generic follow-up has no explicit different subspace keyword -> preserve sticky, skip fallback
-                                        _has_different_kw = False
-                                        if _sticky == "cheque" and ("تسهیلات" in _cur_q_t1 and ("حقیقی" in _cur_q_t1 or "حقوقی" in _cur_q_t1)):
-                                            _has_different_kw = True
-                                        elif _sticky == "facilities_person" and "چک" in _cur_q_t1 and len(_cur_q_t1.split()) <= 6:
-                                            # short "چک" after facilities_person is explicit re-spec via classify spec path, not via sticky weak fallback
-                                            # For longer generic like "تاثیر چک..." keep sticky, so only short counts
-                                            _has_different_kw = True
-                                        elif _sticky == "facilities_legal" and "چک" in _cur_q_t1 and len(_cur_q_t1.split()) <= 6:
-                                            _has_different_kw = True
-                                        # Only fallback if explicit different subspace hint present; otherwise keep sticky
-                                        if _has_different_kw:
-                                            await _t1_try_whole_kb_fallback(state, search_query, request_id, top_k=20, active_filter=_filter_path_sticky)
-                                            # If fallback made evidence sufficient, skip further broadening
-                                            _post_top = _compute_top_score(state.get("retrieved_chunks") or [])
-                                            _post_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
-                                            if _post_top >= _t1_chk_thr or _post_has_sup:
-                                                try:
-                                                    state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
-                                                except Exception:
-                                                    state["retrieve_attempts"] = 1
-                                                _t1_elapsed = round((time.monotonic() - t0) * 1000, 1)
-                                                if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
-                                                    state["stage_timing_ms"] = {}
-                                                state["stage_timing_ms"]["retrieve"] = _t1_elapsed
-                                                try:
-                                                    from ..tracing import trace_span as _tsp_t1
-                                                    _tsp_t1(request_id, "retrieve", span_input={"query": query, "search_query": search_query, "filter_path": _filter_path_sticky, "sticky": _sticky, "t1_fallback": True}, span_output={"total": len(state.get("retrieved_chunks") or []), "sticky_filtered": True, "fallback_used": True})
-                                                except Exception:
-                                                    pass
-                                                log.info("T1 sticky fallback sufficient — skipping LLM broadening, returning %d chunks", len(state.get("retrieved_chunks") or []))
-                                                return state
-                                        else:
-                                            log.info("T4 T1 fallback skipped for generic follow-up %s (weak top=%.4f < %.3f but no explicit different keyword) - keeping sticky", _sticky, _t1_chk_top, _t1_chk_thr)
+                                    if _t1_needs and _filter_path_sticky:
+                                        await _progressive_scope_broaden(
+                                            state,
+                                            search_query,
+                                            request_id,
+                                            active_filter=_filter_path_sticky,
+                                            origin_subspace=_sticky,
+                                            top_k=20,
+                                        )
+                                        _post_top = _compute_top_score(state.get("retrieved_chunks") or [])
+                                        _post_thr = _get_ev_threshold(state.get("applied_subspace") or _sticky)
+                                        _post_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
+                                        if state.get("scope_broadened") and (_post_top >= _post_thr or _post_has_sup):
+                                            try:
+                                                state["retrieve_attempts"] = int(state.get("retrieve_attempts") or 0) + 1
+                                            except Exception:
+                                                state["retrieve_attempts"] = 1
+                                            _t1_elapsed = round((time.monotonic() - t0) * 1000, 1)
+                                            if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
+                                                state["stage_timing_ms"] = {}
+                                            state["stage_timing_ms"]["retrieve"] = _t1_elapsed
+                                            try:
+                                                from ..tracing import trace_span as _tsp_t1
+                                                _tsp_t1(
+                                                    request_id,
+                                                    "retrieve",
+                                                    span_input={
+                                                        "query": query,
+                                                        "search_query": search_query,
+                                                        "filter_path": _filter_path_sticky,
+                                                        "sticky": _sticky,
+                                                        "progressive_broaden": True,
+                                                    },
+                                                    span_output={
+                                                        "total": len(state.get("retrieved_chunks") or []),
+                                                        "sticky_filtered": True,
+                                                        "scope_broadened": True,
+                                                        "applied_subspace": state.get("applied_subspace"),
+                                                    },
+                                                )
+                                            except Exception:
+                                                pass
+                                            log.info(
+                                                "Progressive sticky broaden sufficient — returning %d chunks sub=%s",
+                                                len(state.get("retrieved_chunks") or []),
+                                                state.get("applied_subspace"),
+                                            )
+                                            return state
                             except Exception as _t1e:
                                 log.warning("T1 sticky fallback check failed: %s", _t1e)
                             # --- T4 Dynamic broadening: filtered empty -> LLM judge then preserve sticky for generic (T4) ---
@@ -2460,35 +2664,36 @@ async def retrieve(state: RAGState) -> RAGState:
             raise
         log.warning("Filtered re-retrieve check failed: %s", e)
 
-    # --- T1 central fallback: if current result is still filtered & weak and no fallback yet, retry whole KB ---
+    # --- Progressive / T1 central fallback: filtered & weak → parent → whole KB ---
     # Covers explicit, LLM-judge, F5, and any other filtered probe that left weak evidence before DLQ.
     try:
-        if not state.get("fallback_used") and not state.get("faq_verified"):
+        if not state.get("fallback_used") and not state.get("faq_verified") and not state.get("scope_broadened"):
             _cf_top = _compute_top_score(state.get("retrieved_chunks") or [])
             _cf_len = len(state.get("retrieved_chunks") or [])
-            # T3: pre-compute with applied_subspace, but will recompute per _cf_active below if needed
             _cf_thr = _get_ev_threshold(state.get("applied_subspace"))
             _cf_has_sup = bool(state.get("injected_entities") or state.get("supplemental"))
             _cf_needs = (_cf_len == 0 or _cf_top < _cf_thr) and not _cf_has_sup
             if _cf_needs:
-                # Determine if original probe was filtered (not whole KB)
                 _cf_active = None
                 if _explicit_scope and explicit_filter:
                     _cf_active = explicit_filter
                 elif state.get("applied_subspace"):
-                    # Map label to filter_path for audit
                     try:
                         _cf_active = get_settings().subspace_map.get(state.get("applied_subspace"), state.get("applied_subspace"))
                     except Exception:
                         _cf_active = str(state.get("applied_subspace"))
-                # Also consider the last filtered probe that left weak evidence (F5 inferred)
-                # If no active label but we have a filtered retrieval that was weak, treat as filtered
-                # Heuristic: if applied_subspace is None but we were in filtered path earlier, _explicit_scope would be true.
-                # Only fallback if we can identify a filtered origin; otherwise skip to avoid loop on whole-KB weak.
                 if _cf_active:
-                    await _t1_try_whole_kb_fallback(state, search_query, request_id, top_k=20, active_filter=_cf_active)
+                    # Ladder already ends at whole corpus — no separate T1 hop needed.
+                    await _progressive_scope_broaden(
+                        state,
+                        search_query,
+                        request_id,
+                        active_filter=_cf_active,
+                        origin_subspace=state.get("applied_subspace"),
+                        top_k=20,
+                    )
     except Exception as _cfe:
-        log.warning("T1 central fallback failed: %s", _cfe)
+        log.warning("Progressive/T1 central fallback failed: %s", _cfe)
 
     # --- T2: Broadened retry when whole-KB fallback still weak ---
     # If after T1 (or without T1) the retrieval is still weak (0 chunks or max < threshold),
