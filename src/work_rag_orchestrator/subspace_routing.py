@@ -4,6 +4,8 @@ Canonical ids match KB ``packs/taxonomy`` nodes. Embedding prototypes may still
 be 4-way until rebuilt; routing maps / sticky / clarify use the full L2 set.
 ``subspace_ambiguity_route`` stays off until 9-way protos exist.
 """
+# CI stage apply: L2 sticky subspaces (jenkins rebuild marker)
+
 
 from __future__ import annotations
 
