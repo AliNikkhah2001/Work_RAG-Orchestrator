@@ -53,6 +53,12 @@ def should_clarify(state: RAGState) -> str:
     tool matched a dictionary (reason code, shareholder, ...) the model can
     answer directly, so "چک vs تسهیلات" clarification is counterproductive.
     """
+    # Explicit clarify flags win over "we got some chunks" — otherwise impact /
+    # scattered queries were under-clarified whenever whole-KB returned ≥3 hits.
+    if state.get("needs_clarification"):
+        return "clarify"
+    if state.get("supplemental") or state.get("injected_entities"):
+        return "continue"
     # Fix: if retrieval has any chunks, don't clarify for general queries (broad definition)
     # The evidence threshold is too strict for general broad queries like "اعتبارسنجی چیه"
     try:
@@ -71,10 +77,6 @@ def should_clarify(state: RAGState) -> str:
                 return "continue"
     except Exception:
         pass
-    if state.get("supplemental") or state.get("injected_entities"):
-        return "continue"
-    if state.get("needs_clarification"):
-        return "clarify"
     # Stage 3 (route): the embedding ambiguity score can force clarification
     # even when the keyword safety net below does not fire — only when no
     # explicit/sticky subspace resolved. Gated by subspace_ambiguity_route so

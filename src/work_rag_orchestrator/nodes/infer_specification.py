@@ -17,6 +17,10 @@ SUBSPACE_KEYWORDS = {
     "cheque": ["چک", "صیاد", "پیچک", "برگشت", "نقدشده"],
     "facilities": ["تسهیلات", "وام", "قسط", "بازپرداخت"],
     "enterprise": ["حقوقی", "سهامدار", "شرکتها"],
+    "credit_ladder": ["نردبان", "نردبان اعتباری"],
+    "guarantor": ["کفیل", "کفالت", "وجه‌الکفاله"],
+    "supplier_legal": ["تامین کننده", "تامین‌کننده"],
+    "customers": ["مشتریان من", "پنل کسب"],
     "general": ["عمومی", "عام", "معرفی", "مدیر", "هیات مدیره", "هیئت مدیره", "کاربرد", "کاربردها", "شرکت"],
 }
 
@@ -29,6 +33,7 @@ SCATTERED_SUBSPACE_KWS = [
     "حقوقی", "حقیقی", "سهامدار",
     "شرکت", "معرفی", "مدیر", "هیات مدیره", "هیئت مدیره",
     "عمومی", "عام", "کاربرد",
+    "نردبان", "کفیل", "کفالت", "تامین", "مشتریان من", "پنل",
 ]
 # Generic credit words that together with short length signal scattered even if not exact vague phrase
 SCATTERED_GENERIC_WORDS = ["وضعیت", "اعتبار", "اعتباری", "امتیاز", "بدهکار", "بدهی"]
@@ -141,13 +146,21 @@ SUBSPACE_LABELS = {
     "cheque": "گزارش اعتباری چک",
     "facilities_person": "اعتبارسنجی تسهیلات برای اشخاص حقیقی (افراد)",
     "facilities_legal": "اعتبارسنجی تسهیلات برای اشخاص حقوقی (شرکت‌ها)",
+    "credit_ladder": "نردبان اعتباری",
+    "guarantor": "اعتبارسنجی کفیل",
+    "supplier_legal": "تامین‌کننده اطلاعات",
+    "customers_person": "مشتریان من (حقیقی)",
+    "customers_legal": "مشتریان من (حقوقی)",
     "general": "پایگاه دانش عمومی (معرفی، هیات مدیره، کاربردها)",
 }
 
 async def infer_subspace_llm(query: str, history: str, request_id: str) -> str | None:
     try:
         from ..content_registry import require_prompt
+        from ..subspace_routing import is_cross_product_impact, parse_subspace_label
 
+        if is_cross_product_impact(query):
+            return None
         settings = get_settings()
         prompt = require_prompt(
             "suggest_subspace",
@@ -158,8 +171,5 @@ async def infer_subspace_llm(query: str, history: str, request_id: str) -> str |
             req = GuardrailsChatRequest(model=settings.upstream_llm_model, messages=[{"role": "user", "content": prompt}], max_tokens=16, temperature=0.0)
             resp = await client.chat_completion(req, request_id)
             ans = resp.choices[0].message.get("content","").strip().lower() if resp.choices else ""
-            for k in ["cheque","facilities_person","facilities_legal","general"]:
-                if k in ans: return k
-            if "unclear" in ans: return None
-            return None
+            return parse_subspace_label(ans)
     except Exception: return None

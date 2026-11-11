@@ -367,8 +367,21 @@ def create_app() -> FastAPI:
                     sticky_applied = "facilities_person"; break
                 if _hc_decl in ("شرکتی", "حقوقی"):
                     sticky_applied = "facilities_legal"; break
-                if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general","مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام"):
+                if hc.lower().strip() in (
+                    "چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general",
+                    "مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام",
+                    "نردبان","نردبان اعتباری","کفیل","تامین کننده","تامین‌کننده","مشتریان من","پنل",
+                ):
                     low = hc.lower()
+                    if "نردبان" in hc:
+                        sticky_applied = "credit_ladder"; break
+                    if any(kw in hc for kw in ["کفیل", "کفالت"]):
+                        sticky_applied = "guarantor"; break
+                    if "تامین" in hc:
+                        sticky_applied = "supplier_legal"; break
+                    if "مشتریان من" in hc or hc.strip() == "پنل":
+                        sticky_applied = "customers_legal" if ("حقوقی" in hc or "شرکت" in hc) else "customers_person"
+                        break
                     if "چک" in hc or "cheque" in low:
                         sticky_applied = "cheque"; break
                     elif any(kw in hc for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
@@ -404,16 +417,9 @@ def create_app() -> FastAPI:
         # after a clarify selects the subspace AND carries the prior question forward
         # so the next step retrieves an answer instead of asking the user to re-ask.
         _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", cur_q).replace("ي", "ی").replace("ك", "ک")
-        _declarations = {
-            "شخصی": "facilities_person",
-            "حقیقی": "facilities_person",
-            "شرکتی": "facilities_legal",
-            "حقوقی": "facilities_legal",
-            "چک": "cheque",
-            "cheque": "cheque",
-            "عمومی": "general",
-            "general": "general",
-        }
+        from .subspace_routing import DECLARATION_ALIASES
+
+        _declarations = dict(DECLARATION_ALIASES)
         _decl = _declarations.get(_decl_key)
         _declared_filter = None
         if _decl:
@@ -563,7 +569,11 @@ def create_app() -> FastAPI:
         # clarify or a fresh subspace inference).
         if sticky_applied is not None:
             try:
-                _decay_kws = ["چک", "تسهیلات", "حقیقی", "حقوقی", "شخصی", "شرکتی", "شرکت", "عمومی", "معرفی", "مدیر", "سهامدار"]
+                _decay_kws = [
+                    "چک", "تسهیلات", "حقیقی", "حقوقی", "شخصی", "شرکتی", "شرکت",
+                    "عمومی", "معرفی", "مدیر", "سهامدار",
+                    "نردبان", "کفیل", "کفالت", "تامین", "مشتریان من", "پنل",
+                ]
                 _generic_turns = 0
                 for _dm in reversed(request.messages):
                     if _dm.get("role") != "user":

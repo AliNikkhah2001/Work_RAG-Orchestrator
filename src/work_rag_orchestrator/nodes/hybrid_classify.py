@@ -166,24 +166,9 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
                 resp = await client.chat_completion(req, request_id)
                 ans = resp.choices[0].message.get("content", "").strip().lower() if resp.choices else ""
 
-                # Parse Gemma's subspace label
-                gemma_label = None
-                for label in SUBSPACES:
-                    if label in ans:
-                        gemma_label = label
-                        break
-                # Also check Persian variants
-                if gemma_label is None:
-                    low = ans
-                    if "چک" in low or "صیاد" in low or "برگشتی" in low:
-                        gemma_label = "cheque"
-                    elif "تسهیلات" in low and ("حقوقی" in low or "شرکت" in low or "سهامدار" in low):
-                        gemma_label = "facilities_legal"
-                    elif "تسهیلات" in low and ("حقیقی" in low or "فردی" in low or "افراد" in low):
-                        gemma_label = "facilities_person"
-                    elif "عمومی" in low or "معرفی" in low or "هیات مدیره" in low or "کاربرد" in low:
-                        gemma_label = "general"
+                from ..subspace_routing import parse_subspace_label
 
+                gemma_label = parse_subspace_label(ans)
                 if gemma_label:
                     state["applied_subspace"] = gemma_label
                     state["hybrid_classifier_source"] = "gemma"
@@ -191,6 +176,14 @@ async def hybrid_classify_node(state: RAGState) -> RAGState:
                     log.info(
                         "Hybrid classify [%s]: escalated to Gemma, label=%s raw=%r",
                         request_id, gemma_label, ans[:80],
+                    )
+                elif "unclear" in ans or "ambiguous" in ans:
+                    state["applied_subspace"] = None
+                    state["needs_clarification"] = True
+                    state["hybrid_classifier_source"] = "gemma"
+                    log.info(
+                        "Hybrid classify [%s]: Gemma unclear/ambiguous raw=%r",
+                        request_id, ans[:80],
                     )
                 else:
                     log.warning("Hybrid classify [%s]: Gemma unparseable %r, keeping classifier", request_id, ans[:80])
