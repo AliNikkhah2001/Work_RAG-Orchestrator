@@ -963,10 +963,19 @@ async def retrieve(state: RAGState) -> RAGState:
     # P2.1: bare scattered credit-status (e.g. «وضعیت اعتباری چطور است») must clarify.
     # Even with sticky restored / a false FAQ hit, clear sticky+FAQ and force clarify.
     # Definition چیست/چیه forms are exempted inside is_scattered_ambiguous (P2.2).
+    # CRITICAL: after a clarify, api rewrites query to the *prior* question while
+    # the user only said «شخصی»/«حقیقی». Judge scattered on the RAW utterance,
+    # and never wipe a declaration_followup subspace (else infinite clarify loop).
     try:
         from .infer_specification import is_scattered_ambiguous as _is_scattered_early
 
-        if _is_scattered_early(query) and not state.get("supplemental"):
+        _raw_utt = (state.get("raw_user_utterance") or "").strip() or query
+        _decl_fu = bool(state.get("declaration_followup"))
+        if (
+            not _decl_fu
+            and _is_scattered_early(_raw_utt)
+            and not state.get("supplemental")
+        ):
             state["direct_faq_answer"] = None
             state["faq_matched"] = False
             state["faq_verified"] = False
@@ -979,7 +988,8 @@ async def retrieve(state: RAGState) -> RAGState:
             state["rewritten_query"] = query
             state["retrieved_chunks"] = state.get("retrieved_chunks") or []
             log.info(
-                "P2.1 scattered credit-status -> force clarify (clear sticky/FAQ) q=%r",
+                "P2.1 scattered credit-status -> force clarify (clear sticky/FAQ) raw=%r q=%r",
+                _raw_utt[:80],
                 query[:80],
             )
             elapsed_sc_early = round((time.monotonic() - t0) * 1000, 1)
@@ -1875,12 +1885,18 @@ async def retrieve(state: RAGState) -> RAGState:
             from .infer_specification import is_scattered_ambiguous as _is_scattered_ret
 
             _q_sc = state.get("query", "") or ""
+            _raw_sc = (state.get("raw_user_utterance") or "").strip() or _q_sc
             # P2.1: scattered credit-status clears sticky too (do not answer under
             # a restored facilities/cheque filter with a long FAQ/stop blurb).
             # T5 scattered gate must not force clarify when the entity tool
             # already matched a dictionary (supplemental rows are sufficient
             # evidence to answer, e.g. "دلیل کاهش امتیاز MTX1").
-            if not state.get("supplemental") and _is_scattered_ret(_q_sc):
+            # Skip when this turn resolved a clarify declaration (شخصی/حقیقی/…).
+            if (
+                not state.get("declaration_followup")
+                and not state.get("supplemental")
+                and _is_scattered_ret(_raw_sc)
+            ):
                 state["needs_clarification"] = True
                 state["available_subspaces"] = list(SUBSPACES)
                 state["clarifying_question"] = None
@@ -1890,7 +1906,11 @@ async def retrieve(state: RAGState) -> RAGState:
                 state["direct_faq_answer"] = None
                 state["faq_matched"] = False
                 state["faq_verified"] = False
-                log.info("T5 scattered ambiguous detected in retrieve -> clarify q=%r", _q_sc[:80])
+                log.info(
+                    "T5 scattered ambiguous detected in retrieve -> clarify raw=%r q=%r",
+                    _raw_sc[:80],
+                    _q_sc[:80],
+                )
                 elapsed_sc = round((time.monotonic() - t0) * 1000, 1)
                 record_timing(state, "retrieve", elapsed_sc)
                 try:

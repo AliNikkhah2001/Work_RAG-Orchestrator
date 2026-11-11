@@ -488,11 +488,23 @@ def create_app() -> FastAPI:
         # Declaration follow-up: a short reply like "شخصی"/"شرکتی"/"چک"/"عمومی"
         # after a clarify selects the subspace AND carries the prior question forward
         # so the next step retrieves an answer instead of asking the user to re-ask.
-        _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", cur_q).replace("ي", "ی").replace("ك", "ک")
+        _raw_decl_utterance = cur_q  # keep raw before any rewrite (P2.1 must use this)
+        _decl_norm = cur_q.replace("ي", "ی").replace("ك", "ک").strip()
+        _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", _decl_norm)
         from .subspace_routing import DECLARATION_ALIASES
 
         _declarations = dict(DECLARATION_ALIASES)
         _decl = _declarations.get(_decl_key)
+        # Colloquial confirmations: «حقیقی میگم دیگه», «شخصی دیگه» — short, one alias, no new question
+        if _decl is None and _decl_norm and len(_decl_norm.split()) <= 6:
+            _alias_hits = [a for a in _declarations if a and a in _decl_norm]
+            # Prefer longer aliases (نردبان اعتباری before نردبان)
+            _alias_hits.sort(key=len, reverse=True)
+            if len(_alias_hits) == 1 and not any(
+                w in _decl_norm for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کیه", "؟", "?")
+            ):
+                _decl = _declarations[_alias_hits[0]]
+                _decl_key = _alias_hits[0]
         _declared_filter = None
         if _decl:
             sticky_applied = _decl
@@ -758,6 +770,10 @@ def create_app() -> FastAPI:
             # Cross-turn sticky for the next turn's scorer decision (not used
             # to scope retrieval this turn — see switch-by-scorer note above).
             "sticky_subspace": sticky_applied,
+            # When user answered a clarify with شخصی/حقیقی/…, retrieve must NOT
+            # re-run P2.1 scattered clarify on the *rewritten* prior question.
+            "declaration_followup": bool(_decl),
+            "raw_user_utterance": _raw_decl_utterance,
             "needs_clarification": False,
             "clarifying_question": None,
             "available_subspaces": None,
