@@ -46,6 +46,18 @@ class RAGMetadata(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     supplemental: Optional[List[Dict[str, Any]]] = None
     follow_ups: Optional[List[str]] = Field(default=None, description="Grounded follow-up questions answerable from same retrieved chunks")
+    applied_subspace: Optional[str] = Field(
+        default=None,
+        description="Subspace applied for this turn (cheque/facilities_person/facilities_legal/general/...)",
+    )
+    sticky_subspace: Optional[str] = Field(
+        default=None,
+        description="Cross-turn sticky subspace restored or carried for the next turn",
+    )
+    available_subspaces: Optional[List[str]] = Field(
+        default=None,
+        description="Clarify option labels when finish_reason=clarify",
+    )
 
 
 class AuditTrail(BaseModel):
