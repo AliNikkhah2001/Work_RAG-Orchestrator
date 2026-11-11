@@ -35,8 +35,28 @@ class Settings(BaseSettings):
 
     subspace_threshold: float = 0.8
     subspace_general_exempt: bool = True
-    subspace_keyword_boost: dict = {"cheque": 3.5, "facilities_person": 3.0, "facilities_legal": 3.0, "general": 2.5}
-    subspace_map: dict = {"cheque": "گزارش اعتبارسنجی چک", "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات", "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات", "general": "پایگاه دانش عمومی"}
+    subspace_keyword_boost: dict = {
+        "cheque": 3.5,
+        "facilities_person": 3.0,
+        "facilities_legal": 3.0,
+        "credit_ladder": 3.0,
+        "guarantor": 3.0,
+        "supplier_legal": 3.0,
+        "customers_person": 3.0,
+        "customers_legal": 3.0,
+        "general": 2.5,
+    }
+    subspace_map: dict = {
+        "cheque": "گزارش اعتبارسنجی چک",
+        "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات",
+        "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات",
+        "credit_ladder": "اشخاص حقیقی/نردبان اعتباری",
+        "guarantor": "اشخاص حقیقی/کفیل",
+        "supplier_legal": "اشخاص حقوقی/عضویت در پایگاه داده اعتباری به عنوان تامین کننده اطلاعات",
+        "customers_person": "اشخاص حقیقی/گزارش اعتبارسنجی مشتریان من (مرتبط با کسب‌وکارها)",
+        "customers_legal": "اشخاص حقوقی/گزارش اعتبارسنجی مشتریان من",
+        "general": "پایگاه دانش عمومی",
+    }
 
     # Embedding subspace ambiguity score (see docs/SUBSPACE_AMBIGUITY.md).
     # `enabled` gates compute + audit (stage 1); `route` gates actual
@@ -72,8 +92,6 @@ class Settings(BaseSettings):
     # general subspace is narrative prose and needs less keyword bias (2.5)
     # so the dense/semantic leg contributes more. Whole-KB (unfiltered)
     # calls keep the KB server default by passing keyword_boost=None.
-    subspace_keyword_boost: dict = {"cheque": 3.5, "facilities_person": 3.0, "facilities_legal": 3.0, "general": 2.5}
-
     # B: Sticky decay — max consecutive generic user turns (no subspace
     # keyword, or long) allowed before the sticky subspace is considered
     # stale and dropped (env STICKY_DECAY_TURNS). Above this many generic

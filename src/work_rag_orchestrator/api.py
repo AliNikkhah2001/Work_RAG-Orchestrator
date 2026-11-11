@@ -367,8 +367,21 @@ def create_app() -> FastAPI:
                     sticky_applied = "facilities_person"; break
                 if _hc_decl in ("شرکتی", "حقوقی"):
                     sticky_applied = "facilities_legal"; break
-                if hc.lower().strip() in ("چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general","مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام"):
+                if hc.lower().strip() in (
+                    "چک","cheque","تسهیلات","وام","شرکت","حقوقی","عمومی","general",
+                    "مدیر","هیات مدیره","هیئت مدیره","معرفی","کاربرد","عام",
+                    "نردبان","نردبان اعتباری","کفیل","تامین کننده","تامین‌کننده","مشتریان من","پنل",
+                ):
                     low = hc.lower()
+                    if "نردبان" in hc:
+                        sticky_applied = "credit_ladder"; break
+                    if any(kw in hc for kw in ["کفیل", "کفالت"]):
+                        sticky_applied = "guarantor"; break
+                    if "تامین" in hc:
+                        sticky_applied = "supplier_legal"; break
+                    if "مشتریان من" in hc or hc.strip() == "پنل":
+                        sticky_applied = "customers_legal" if ("حقوقی" in hc or "شرکت" in hc) else "customers_person"
+                        break
                     if "چک" in hc or "cheque" in low:
                         sticky_applied = "cheque"; break
                     elif any(kw in hc for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
@@ -397,24 +410,101 @@ def create_app() -> FastAPI:
         cur_q = str(request.messages[-1].get("content","")) if request.messages else ""
         # If current query explicitly says "سوالات عمومی" or contains board member names, treat as general
         _explicit_general = False
-        if "سوالات عمومی" in cur_q or "سوال عمومی" in cur_q or "قاسم" in cur_q or "بور" in cur_q or "هیات مدیره" in cur_q or "هیئت مدیره" in cur_q or "معرفی شرکت" in cur_q:
+        _explicit_cur_sub = None  # keyword re-spec on THIS turn (authoritative vs scorer)
+        if (
+            "سوالات عمومی" in cur_q
+            or "سوال عمومی" in cur_q
+            or "قاسم" in cur_q
+            or "بور" in cur_q
+            or "هیات مدیره" in cur_q
+            or "هیئت مدیره" in cur_q
+            or "معرفی شرکت" in cur_q
+            or "مدیرعامل" in cur_q
+            or "مدیر عامل" in cur_q
+        ):
             sticky_applied = "general"
             _explicit_general = True
+            _explicit_cur_sub = "general"
+        # Explicit leaf re-spec on the current turn (history mining only sees prior
+        # user turns). «اعتبارسنجی تسهیلات برای اشخاص حقیقی» must set facilities_person
+        # even when prior sticky is None / content_filter left no checkpoint.
+        if _explicit_cur_sub is None:
+            try:
+                from .nodes.infer_specification import label_subspace_from_query as _label_cur
+
+                _explicit_cur_sub = _label_cur(cur_q)
+                # Only promote decisive facilities/cheque/legal/general leaf pins —
+                # skip weak single-keyword guesses that belong to the scorer.
+                if _explicit_cur_sub in (
+                    "facilities_person",
+                    "facilities_legal",
+                    "cheque",
+                    "general",
+                    "credit_ladder",
+                    "guarantor",
+                ):
+                    # Require a strong phrase for facilities/cheque so colloquial
+                    # follow-ups still go through the embedding scorer.
+                    _strong = False
+                    if _explicit_cur_sub == "facilities_person" and (
+                        "اشخاص حقیقی" in cur_q or ("حقیقی" in cur_q and ("تسهیلات" in cur_q or "وام" in cur_q))
+                    ):
+                        _strong = True
+                    elif _explicit_cur_sub == "facilities_legal" and (
+                        "اشخاص حقوقی" in cur_q or ("حقوقی" in cur_q and ("تسهیلات" in cur_q or "وام" in cur_q))
+                    ):
+                        _strong = True
+                    elif _explicit_cur_sub == "cheque" and (
+                        "گزارش اعتبارسنجی چک" in cur_q
+                        or "گزارش اعتباری چک" in cur_q
+                        or (cur_q.strip() in ("چک", "cheque") or (len(cur_q.split()) <= 6 and "چک" in cur_q))
+                    ):
+                        _strong = True
+                    elif _explicit_cur_sub in ("general", "credit_ladder", "guarantor"):
+                        _strong = _explicit_cur_sub == "general" and _explicit_general
+                    if _strong:
+                        sticky_applied = _explicit_cur_sub
+                        log.info(
+                            "Current-query explicit re-spec -> %s for q=%r",
+                            _explicit_cur_sub,
+                            cur_q[:80],
+                        )
+                    else:
+                        _explicit_cur_sub = None
+                else:
+                    _explicit_cur_sub = None
+            except Exception:
+                _explicit_cur_sub = None
+        # P2.2: short چیست/چیه definitions must not inherit facilities/cheque sticky filter
+        try:
+            from .nodes.infer_specification import is_definition_question as _is_def_api
+
+            if _is_def_api(cur_q):
+                sticky_applied = "general"
+                _explicit_general = True
+                _explicit_cur_sub = "general"
+        except Exception:
+            pass
         # Declaration follow-up: a short reply like "شخصی"/"شرکتی"/"چک"/"عمومی"
         # after a clarify selects the subspace AND carries the prior question forward
         # so the next step retrieves an answer instead of asking the user to re-ask.
-        _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", cur_q).replace("ي", "ی").replace("ك", "ک")
-        _declarations = {
-            "شخصی": "facilities_person",
-            "حقیقی": "facilities_person",
-            "شرکتی": "facilities_legal",
-            "حقوقی": "facilities_legal",
-            "چک": "cheque",
-            "cheque": "cheque",
-            "عمومی": "general",
-            "general": "general",
-        }
+        _raw_decl_utterance = cur_q  # keep raw before any rewrite (P2.1 must use this)
+        _decl_norm = cur_q.replace("ي", "ی").replace("ك", "ک").strip()
+        _decl_key = re.sub(r"[\s\.\!\؟\?،,؛;:]+", "", _decl_norm)
+        from .subspace_routing import DECLARATION_ALIASES
+
+        _declarations = dict(DECLARATION_ALIASES)
         _decl = _declarations.get(_decl_key)
+        # Colloquial confirmations: «حقیقی میگم دیگه», «شخصی دیگه» — short, one alias, no new question
+        if _decl is None and _decl_norm and len(_decl_norm.split()) <= 6:
+            _alias_hits = [a for a in _declarations if a and a in _decl_norm]
+            # Prefer longer aliases (نردبان اعتباری before نردبان)
+            _alias_hits.sort(key=len, reverse=True)
+            if len(_alias_hits) == 1 and not any(
+                w in _decl_norm for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کیه", "؟", "?")
+            ):
+                _decl = _declarations[_alias_hits[0]]
+                _decl_key = _alias_hits[0]
         _declared_filter = None
         if _decl:
             sticky_applied = _decl
@@ -438,6 +528,28 @@ def create_app() -> FastAPI:
                         _prev_q = _pvc
             if _prev_q:
                 cur_q = _prev_q
+            # Colour ranks (آبی/سبز/…) live on the cheque report. If the prior
+            # question asked about those colours, do not keep a facilities leaf
+            # from «حقیقی/شخصی» — that filter drops the FAQ and yields یافت نشد.
+            try:
+                from .subspace_routing import (
+                    normalize_cheque_color_typos,
+                    prefer_cheque_for_color_query,
+                )
+
+                cur_q = normalize_cheque_color_typos(cur_q)
+                _color_sub = prefer_cheque_for_color_query(cur_q, sticky_applied)
+                if _color_sub and _color_sub != sticky_applied:
+                    log.info(
+                        "Colour-rank query overrides declaration %s -> %s for q=%r",
+                        sticky_applied,
+                        _color_sub,
+                        cur_q[:80],
+                    )
+                    sticky_applied = _color_sub
+                    _decl = _color_sub
+            except Exception:
+                pass
             try:
                 _declared_filter = get_settings().subspace_map.get(_decl)
             except Exception:
@@ -517,7 +629,13 @@ def create_app() -> FastAPI:
         # chunk lives under اشخاص حقوقی/اعتبارسنجی تسهیلات), so forcing the
         # scope here caused spurious "پاسخی یافت نشد" refusals. Only
         # declaration replies and the keyword fallback may scope retrieval.
-        if _sc_target and sticky_applied != _sc_target:
+        # Explicit current-turn keyword re-spec wins over the embedding scorer
+        # (otherwise «تسهیلات … اشخاص حقیقی» can flip to cheque on weak sims).
+        if _explicit_cur_sub:
+            sticky_applied = _explicit_cur_sub
+            _sc_target = None  # allow T4 sticky filter inject below
+            _sc_keep_sticky = True
+        elif _sc_target and sticky_applied != _sc_target:
             log.info("Subspace switch by scorer: sticky %s -> %s for q=%r", sticky_applied, _sc_target, cur_q[:60])
             sticky_applied = _sc_target
         elif sticky_applied is not None and _sc_keep_sticky is False:
@@ -563,7 +681,11 @@ def create_app() -> FastAPI:
         # clarify or a fresh subspace inference).
         if sticky_applied is not None:
             try:
-                _decay_kws = ["چک", "تسهیلات", "حقیقی", "حقوقی", "شخصی", "شرکتی", "شرکت", "عمومی", "معرفی", "مدیر", "سهامدار"]
+                _decay_kws = [
+                    "چک", "تسهیلات", "حقیقی", "حقوقی", "شخصی", "شرکتی", "شرکت",
+                    "عمومی", "معرفی", "مدیر", "سهامدار",
+                    "نردبان", "کفیل", "کفالت", "تامین", "مشتریان من", "پنل",
+                ]
                 _generic_turns = 0
                 for _dm in reversed(request.messages):
                     if _dm.get("role") != "user":
@@ -670,6 +792,10 @@ def create_app() -> FastAPI:
             # Cross-turn sticky for the next turn's scorer decision (not used
             # to scope retrieval this turn — see switch-by-scorer note above).
             "sticky_subspace": sticky_applied,
+            # When user answered a clarify with شخصی/حقیقی/…, retrieve must NOT
+            # re-run P2.1 scattered clarify on the *rewritten* prior question.
+            "declaration_followup": bool(_decl),
+            "raw_user_utterance": _raw_decl_utterance,
             "needs_clarification": False,
             "clarifying_question": None,
             "available_subspaces": None,
@@ -734,6 +860,30 @@ def create_app() -> FastAPI:
                         yield "data: [DONE]\n\n"
                         return
 
+                    # P2.2: FAQ direct before clarify — verified FAQ must not lose to scattered flag
+                    if state.get("faq_verified") and state.get("direct_faq_answer"):
+                        content = state.get("direct_faq_answer")
+                        yield ": agent guarded_generate faq_direct streaming\n\n"
+                        for tok in re.findall(r"\S+\s*", content):
+                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                        sup_faq = state.get("supplemental") or state.get("injected_entities") or []
+                        _rag_faq = {
+                            "request_id": request_id,
+                            "citations": [],
+                            "supplemental": sup_faq if sup_faq else None,
+                            "applied_subspace": state.get("applied_subspace"),
+                            "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
+                            "available_subspaces": state.get("available_subspaces"),
+                        }
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':_rag_faq}, ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        try:
+                            from .tracing import update_trace
+                            update_trace(request_id, content[:2000], {"finish_reason":"stop","faq":True,"stream":True,"supplemental": len(sup_faq) if sup_faq else 0})
+                        except Exception:
+                            pass
+                        return
+
                     # Clarify branch — scattered but no sticky (F5 conditional edge)
                     if state.get("needs_clarification"):
                         from .nodes.generate_clarification import generate_clarification as node_clarify
@@ -748,7 +898,15 @@ def create_app() -> FastAPI:
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                         sup_clarify = state.get("supplemental") or state.get("injected_entities") or []
-                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'clarify'}],'rag':{'request_id':request_id,'citations':[],'supplemental': sup_clarify if sup_clarify else None}}, ensure_ascii=False)}\n\n"
+                        _rag_clarify = {
+                            "request_id": request_id,
+                            "citations": [],
+                            "supplemental": sup_clarify if sup_clarify else None,
+                            "applied_subspace": state.get("applied_subspace"),
+                            "sticky_subspace": state.get("sticky_subspace"),
+                            "available_subspaces": state.get("available_subspaces"),
+                        }
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'clarify'}],'rag':_rag_clarify}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         try:
                             from .tracing import update_trace
@@ -789,32 +947,18 @@ def create_app() -> FastAPI:
                         yield ": agent guarded_generate no_evidence_guard streaming\n\n"
                         for tok in re.findall(r"\S+\s*", _no_ev):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[],'supplemental': None}}, ensure_ascii=False)}\n\n"
+                        _rag_noev = {
+                            "request_id": request_id,
+                            "citations": [],
+                            "supplemental": None,
+                            "applied_subspace": state.get("applied_subspace"),
+                            "sticky_subspace": state.get("sticky_subspace"),
+                        }
+                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':_rag_noev}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         try:
                             from .tracing import update_trace as _ut2
                             _ut2(request_id, _no_ev[:2000], {"finish_reason":"stop","guard":"no_evidence","top_score":_top_s,"threshold":_ev_t,"stream":True})
-                        except Exception:
-                            pass
-                        return
-
-                    # FAQ direct — stream canned answer directly (no LLM latency) OR via LLM rewrite
-                    # Only use verified FAQ answers; unverified ones fall through to retrieval
-                    if state.get("faq_verified") and state.get("direct_faq_answer"):
-                        # Option A: direct canned (instant) — uncomment to use LLM rewrite instead
-                        content = state.get("direct_faq_answer")
-                        # For LLM rewrite, comment above and use Guardrails streaming below with prompt_messages
-                        yield ": agent guarded_generate faq_direct streaming\n\n"
-                        # Stream without artificial sleep — just chunk by words for UI, no delay
-                        for tok in re.findall(r"\S+\s*", content):
-                            yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
-                            # No sleep — real streaming speed is LLM speed; for canned we can yield immediately
-                        sup_faq = state.get("supplemental") or state.get("injected_entities") or []
-                        yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':{'request_id':request_id,'citations':[],'supplemental': sup_faq if sup_faq else None}}, ensure_ascii=False)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        try:
-                            from .tracing import update_trace
-                            update_trace(request_id, content[:2000], {"finish_reason":"stop","faq":True,"stream":True,"supplemental": len(sup_faq) if sup_faq else 0})
                         except Exception:
                             pass
                         return
@@ -858,7 +1002,15 @@ def create_app() -> FastAPI:
                         "created": int(time.time()),
                         "model": request.model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        "rag": {"request_id": request_id, "citations": citations, "supplemental": supplemental_stream if supplemental_stream else None, "follow_ups": follow_ups_stream if follow_ups_stream else None},
+                        "rag": {
+                            "request_id": request_id,
+                            "citations": citations,
+                            "supplemental": supplemental_stream if supplemental_stream else None,
+                            "follow_ups": follow_ups_stream if follow_ups_stream else None,
+                            "applied_subspace": state.get("applied_subspace"),
+                            "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
+                            "available_subspaces": state.get("available_subspaces"),
+                        },
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -1102,6 +1254,9 @@ def create_app() -> FastAPI:
                 citations=[Citation(**c) for c in citations],
                 supplemental=rag_supplemental if rag_supplemental else None,
                 follow_ups=follow_ups if follow_ups else None,
+                applied_subspace=final_state.get("applied_subspace"),
+                sticky_subspace=final_state.get("sticky_subspace") or final_state.get("applied_subspace"),
+                available_subspaces=final_state.get("available_subspaces"),
             ),
             audit=audit,
         )

@@ -32,7 +32,9 @@ def _live_subspaces() -> tuple[str, ...]:
             return ids
     except Exception:
         pass
-    return ("cheque", "facilities_person", "facilities_legal", "general")
+    from .subspace_routing import L2_SUBSPACES
+
+    return tuple(L2_SUBSPACES)
 
 
 SUBSPACES: tuple[str, ...] = _live_subspaces()
