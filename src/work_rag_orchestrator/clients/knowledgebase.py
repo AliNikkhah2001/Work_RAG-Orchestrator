@@ -152,18 +152,33 @@ class KnowledgebaseClient:
             log.exception("KB retrieval error: %s", e)
             raise
 
-    async def supplementary_search(self, query: str, threshold: float = 0.4, request_id: str = "") -> List[Dict]:
+    async def supplementary_search(
+        self,
+        query: str,
+        threshold: float = 0.4,
+        request_id: str = "",
+        *,
+        subspace: str | None = None,
+        filter_path: str | None = None,
+    ) -> List[Dict]:
         """Direct EntityList search as tool-call (not hidden step-8 inject).
 
-        Supplements (5 EntityLists: سهامداران, لیست و عناوین وام ها, etc.)
-        are normally injected via search.py step 8 with cosine >0.6 on
-        description_embedding. This tool directly queries entity_lists via
-        embedding similarity on list_name + description (threshold 0.4, lower
-        than 0.6) so list content like "سهامداران" matches even when
-        description alone fails. Endpoint: POST /search/supplement (tool).
-        Falls back to empty list if KB endpoint unavailable (graceful, G5→DLQ).
+        Supplements (score tables, سهامداران, وام‌ها, …) are normally injected
+        via search.py step 8. This tool queries entity_lists via embedding on
+        list_name + description (threshold 0.4). Pass subspace/filter_path so
+        score tables stay on the matching model (cheque/person/legal).
         """
         headers = {"X-Request-ID": request_id} if request_id else {}
+        body = {"query": query, "threshold": threshold}
+        if subspace:
+            body["subspace"] = subspace
+        if filter_path:
+            body["filter_path"] = filter_path
+        params = {"query": query, "threshold": threshold}
+        if subspace:
+            params["subspace"] = subspace
+        if filter_path:
+            params["filter_path"] = filter_path
         # Canonical tool endpoint first (POST /search/supplement with list_name+description embedding, thr 0.4)
         for path in ("/search/supplement", "/entity_lists/search", "/supplementary/search", "/supplemental/search"):
             try:
@@ -176,7 +191,7 @@ class KnowledgebaseClient:
                         try:
                             resp = await client.get(
                                 f"{self.base_url}{path}",
-                                params={"query": query, "threshold": threshold},
+                                params=params,
                                 headers=headers,
                                 timeout=5.0,
                             )
@@ -186,7 +201,7 @@ class KnowledgebaseClient:
                         try:
                             resp = await client.post(
                                 f"{self.base_url}{path}",
-                                json={"query": query, "threshold": threshold},
+                                json=body,
                                 headers=headers,
                                 timeout=5.0,
                             )
