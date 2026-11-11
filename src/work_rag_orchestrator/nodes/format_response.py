@@ -448,6 +448,11 @@ def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None
         "cheque": ["چک"],
         "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی"],
         "facilities_legal": ["حقوقی", "شرکت"],
+        "credit_ladder": ["نردبان"],
+        "guarantor": ["کفیل", "کفالت"],
+        "supplier_legal": ["تامین"],
+        "customers_person": ["مشتریان", "پنل"],
+        "customers_legal": ["مشتریان", "پنل"],
         "general": ["معرفی", "مدیر", "شرکت", "عمومی", "عام"],
     }
     # collect keywords to test: subspace-specific + query tokens
@@ -456,6 +461,14 @@ def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None
     # Persian subspace from filter_path also contains "چک" etc.
     if "چک" in (applied_subspace or "") or s == "cheque":
         keywords.update(subspace_kw["cheque"])
+    elif "نردبان" in (applied_subspace or "") or s == "credit_ladder":
+        keywords.update(subspace_kw["credit_ladder"])
+    elif "کفیل" in (applied_subspace or "") or s == "guarantor":
+        keywords.update(subspace_kw["guarantor"])
+    elif "تامین" in (applied_subspace or "") or s == "supplier_legal":
+        keywords.update(subspace_kw["supplier_legal"])
+    elif "مشتریان" in (applied_subspace or "") or s in ("customers_person", "customers_legal"):
+        keywords.update(subspace_kw["customers_person"])
     elif "حقیقی" in (applied_subspace or "") or s == "facilities_person":
         keywords.update(subspace_kw["facilities_person"])
     elif "حقوقی" in (applied_subspace or "") or s == "facilities_legal":

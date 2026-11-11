@@ -18,6 +18,11 @@ _SPEC_KEYWORDS = {
   "cheque": ["چک","صیاد","پیچک","برگشت"],
   "facilities_person": ["تسهیلات","وام","قسط"],
   "facilities_legal": ["حقوقی","سهامدار"],
+  "credit_ladder": ["نردبان"],
+  "guarantor": ["کفیل","کفالت"],
+  "supplier_legal": ["تامین کننده","تامین‌کننده"],
+  "customers_person": ["مشتریان من","پنل کسب"],
+  "customers_legal": ["مشتریان من حقوقی"],
   "general": ["معرفی","کاربرد","عمومی","عام","مدیر","هیات مدیره","هیئت مدیره","کاربردها","شرکت"],
 }
 
@@ -88,7 +93,15 @@ async def classify(state: RAGState) -> RAGState:
         has_facility_kw = "تسهیلات" in text or "وام" in text or "قسط" in text
         has_cheque_kw = "چک" in text
         is_general_kw = any(kw in text for kw in ["عام","عمومی","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد"]) or "general" in low
-        if has_cheque_kw:
+        if "نردبان" in text:
+            state["applied_subspace"]="credit_ladder"
+        elif any(kw in text for kw in ["کفیل","کفالت","وجه‌الکفاله"]):
+            state["applied_subspace"]="guarantor"
+        elif "تامین" in text:
+            state["applied_subspace"]="supplier_legal"
+        elif "مشتریان من" in text or "پنل" in text:
+            state["applied_subspace"]="customers_legal" if ("حقوقی" in text or "شرکت" in text) else "customers_person"
+        elif has_cheque_kw:
             state["applied_subspace"]="cheque"
         elif is_general_kw:
             state["applied_subspace"]="general"
@@ -106,12 +119,20 @@ async def classify(state: RAGState) -> RAGState:
         low2 = text.lower()
         if "قاسم" in text or "بور" in text or "هیات مدیره" in text or "هیئت مدیره" in text:
             state["applied_subspace"] = "general"
-        # T5 scattered gate: vague query without subspace keywords => mark ambiguous for retrieve/graph
-        # Do not override already-set general sticky; only mark when no subspace decided
+        # T5 scattered / cross-product impact → clarify (do not sticky-commit)
         try:
-            if not state.get("applied_subspace") and _is_scattered(text):
+            from ..subspace_routing import L2_SUBSPACES, is_cross_product_impact
+            from ..content_registry import clarify_option_labels
+
+            if is_cross_product_impact(text):
+                state["applied_subspace"] = None
                 state["needs_clarification"] = True
-                state["available_subspaces"] = ["cheque", "facilities_person", "facilities_legal", "general"]
+                state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
+                state["clarifying_question"] = None
+                log.info("classify cross-product impact -> clarify for query=%r", text[:80])
+            elif not state.get("applied_subspace") and _is_scattered(text):
+                state["needs_clarification"] = True
+                state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None
                 log.info("classify scattered ambiguous -> pre-set clarify for query=%r", text[:80])
         except Exception:

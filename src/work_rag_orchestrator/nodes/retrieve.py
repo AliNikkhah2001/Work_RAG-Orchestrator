@@ -51,17 +51,11 @@ def detect_greeting_kind(text: str) -> str | None:
     return None
 
 
-def _extract_subspace(hier: list[str] | str | None) -> str:
-    """Map folder_hierarchy to subspace label (F4)."""
-    s = "/".join(hier) if isinstance(hier, list) else str(hier or "")
-    if "اشخاص حقوقی" in s:
-        return "facilities_legal"
-    elif "گزارش اعتباری چک" in s:
-        return "cheque"
-    elif "پایگاه دانش عمومی" in s:
-        return "general"
-    else:
-        return "facilities_person"
+def _extract_subspace(hier: list[str] | str | None) -> str | None:
+    """Map folder_hierarchy to L2 subspace label (no silent facilities_person default)."""
+    from ..subspace_routing import extract_subspace_from_hierarchy
+
+    return extract_subspace_from_hierarchy(hier)
 
 
 def _detect_subspace_shift(query: str, current_sticky: str) -> str | None:
@@ -74,26 +68,19 @@ def _detect_subspace_shift(query: str, current_sticky: str) -> str | None:
     if not current_sticky or not query:
         return None
 
+    from ..subspace_routing import SUBSPACE_SHIFT_KEYWORDS, is_cross_product_impact
+
     q = query.lower()
+    # Cross-product impact must not flip sticky to cheque or facilities.
+    if is_cross_product_impact(query):
+        return None
 
     # "معرفی" (introduction) strongly signals general subspace regardless of other words
     if "معرفی" in q and current_sticky != "general":
         return "general"
 
-    # Keywords that strongly indicate each subspace
-    shift_keywords = {
-        "cheque": ["چک", "برگشتی", "صك", "صیاد"],
-        "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی", "شخصی"],
-        "facilities_legal": ["حقوقی", "شرکت", "سهامدار", "تسهیلات حقوقی"],
-        "general": [
-            "مدیر", "هیات مدیره", "هیئت مدیره",
-            "قاسم", "بور", "شخصیت", "مشهور", "عمومی", "عام",
-            "سوالات عمومی", "سوال عمومی", "معرفی شرکت"
-        ],
-    }
-
     # Check each subspace (except current) for explicit keywords
-    for subspace, kws in shift_keywords.items():
+    for subspace, kws in SUBSPACE_SHIFT_KEYWORDS.items():
         if subspace == current_sticky:
             continue
         if any(kw in q for kw in kws):
@@ -1835,7 +1822,14 @@ async def retrieve(state: RAGState) -> RAGState:
         try:
             from collections import Counter
 
-            subspaces = [_extract_subspace(c.get("folder_hierarchy", [])) for c in state.get("retrieved_chunks", [])]
+            subspaces = [
+                s
+                for s in (
+                    _extract_subspace(c.get("folder_hierarchy", []))
+                    for c in state.get("retrieved_chunks", [])
+                )
+                if s
+            ]
             cnt = Counter(subspaces)
             if cnt:
                 most, n = cnt.most_common(1)[0]
@@ -1852,7 +1846,11 @@ async def retrieve(state: RAGState) -> RAGState:
                 # General exempt only when query itself looks general (avoid suppressing clarify for generic credit queries like "وضعیت اعتباری چطور است")
                 _is_general_query = any(k in last_q for k in ["عمومی","عام","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد","قاسم","بور","سوالات عمومی","سوال عمومی"])
                 # T8: if query already has explicit subspace keyword, treat as granular even if retrieval distribution is mixed (fixes over-clarify for granular singles like facilities_person with 0.03 scores)
-                _has_explicit = any(kw in last_q for kw in ["چک","تسهیلات","وام","قسط","حقیقی","حقوقی","شرکت","سهامدار","معرفی","مدیر","هیات مدیره","هیئت مدیره","عمومی","عام","درآمد","گردش حساب","گردش"])
+                _has_explicit = any(kw in last_q for kw in [
+                    "چک","تسهیلات","وام","قسط","حقیقی","حقوقی","شرکت","سهامدار",
+                    "معرفی","مدیر","هیات مدیره","هیئت مدیره","عمومی","عام",
+                    "درآمد","گردش حساب","گردش","نردبان","کفیل","تامین","مشتریان من","پنل",
+                ])
                 if _has_explicit and not is_general:
                     granular = True
                 else:
@@ -1860,7 +1858,13 @@ async def retrieve(state: RAGState) -> RAGState:
                 # G5 fake grade must never clarify — force granular to go to guard instead
                 if "G5" in last_q or "G 5" in last_q:
                     granular = True
-                state["needs_clarification"] = False
+                from ..subspace_routing import is_cross_product_impact
+
+                if is_cross_product_impact(last_q):
+                    granular = False
+                    state["needs_clarification"] = True
+                else:
+                    state["needs_clarification"] = False
                 from .infer_specification import is_specification
                 try:
                     is_spec = await is_specification(last_q, state["request_id"])
@@ -1871,6 +1875,16 @@ async def retrieve(state: RAGState) -> RAGState:
                     # "هیچ کدوم" + manager/company → general (user explicitly rejected credit options)
                     if ("هیچ کدوم" in last_q or "هیچکدوم" in last_q) and any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","شرکت","عام"]):
                         state["applied_subspace"] = "general"
+                    elif "نردبان" in last_q:
+                        state["applied_subspace"] = "credit_ladder"
+                    elif any(kw in last_q for kw in ["کفیل", "کفالت"]):
+                        state["applied_subspace"] = "guarantor"
+                    elif "تامین" in last_q:
+                        state["applied_subspace"] = "supplier_legal"
+                    elif "مشتریان من" in last_q or "پنل" in last_q:
+                        state["applied_subspace"] = (
+                            "customers_legal" if ("حقوقی" in last_q or "شرکت" in last_q) else "customers_person"
+                        )
                     elif "چک" in low:
                         state["applied_subspace"] = "cheque"
                     elif any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:

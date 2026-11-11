@@ -21,6 +21,8 @@ from typing import Any
 import httpx
 import yaml
 
+from .subspace_routing import DEFAULT_KEYWORD_BOOST, DEFAULT_SUBSPACE_MAP, L2_SUBSPACES
+
 log = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
@@ -31,18 +33,9 @@ _FALLBACK_DIR = Path(__file__).resolve().parent / "fallback_packs"
 _FALLBACK_PROMPTS_PATH = _FALLBACK_DIR / "prompts_orchestrator.yaml"
 _FALLBACK_CANNED_PATH = _FALLBACK_DIR / "canned.yaml"
 
-_FALLBACK_SUBSPACE_MAP = {
-    "cheque": "گزارش اعتبارسنجی چک",
-    "facilities_person": "اشخاص حقیقی/اعتبارسنجی تسهیلات",
-    "facilities_legal": "اشخاص حقوقی/اعتبارسنجی تسهیلات",
-    "general": "پایگاه دانش عمومی",
-}
-_FALLBACK_BOOST = {
-    "cheque": 3.5,
-    "facilities_person": 3.0,
-    "facilities_legal": 3.0,
-    "general": 2.5,
-}
+_FALLBACK_SUBSPACE_MAP = dict(DEFAULT_SUBSPACE_MAP)
+_FALLBACK_BOOST = dict(DEFAULT_KEYWORD_BOOST)
+_FALLBACK_SUBSPACE_IDS = tuple(L2_SUBSPACES)
 
 
 def _load_vendored_yaml(path: Path) -> dict[str, Any]:
