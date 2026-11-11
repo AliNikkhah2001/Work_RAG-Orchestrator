@@ -79,6 +79,16 @@ def _detect_subspace_shift(query: str, current_sticky: str) -> str | None:
     if "معرفی" in q and current_sticky != "general":
         return "general"
 
+    # P2.3: «هیچکدوم» + board/CEO leaves facilities sticky → general
+    # (is_specification interrogative gate rejects کیه, so shift must be keyword-driven)
+    if current_sticky != "general":
+        if ("هیچ کدوم" in q or "هیچکدوم" in q) and any(
+            kw in q for kw in ("مدیر", "هیات مدیره", "هیئت مدیره", "معرفی", "عمومی", "شرکت", "عام")
+        ):
+            return "general"
+        if any(kw in q for kw in ("هیات مدیره", "هیئت مدیره", "مدیرعامل", "مدیر عامل")):
+            return "general"
+
     # Check each subspace (except current) for explicit keywords
     for subspace, kws in SUBSPACE_SHIFT_KEYWORDS.items():
         if subspace == current_sticky:
@@ -903,12 +913,80 @@ async def retrieve(state: RAGState) -> RAGState:
         state["faq_verified"] = verified
         if verified:
             log.info("FAQ verified for request %s (query=%r)", request_id, query[:120])
+            # P2.2: FAQ/direct wins — do not leave classify scattered clarify flag on
+            state["needs_clarification"] = False
+            if not state.get("applied_subspace"):
+                state["applied_subspace"] = "general"
         else:
             log.info("FAQ rejected by verifier for request %s — falling back to retrieval (query=%r)", request_id, query[:120])
     else:
         state["direct_faq_answer"] = None
         state["faq_matched"] = False
         state["faq_verified"] = False
+
+    # P2.2 short-circuit: verified FAQ answers skip KB retrieve (and sticky/scattered).
+    # Avoids nardban/kafil clarify and survives transient KB failures for definition asks.
+    if state.get("faq_verified") and state.get("direct_faq_answer"):
+        # Re-check scattered AFTER FAQ so credit-status cannot ride a false FAQ hit
+        try:
+            from .infer_specification import is_scattered_ambiguous as _is_sc_faq
+
+            if _is_sc_faq(query) and not state.get("supplemental"):
+                state["direct_faq_answer"] = None
+                state["faq_matched"] = False
+                state["faq_verified"] = False
+            else:
+                state["retrieved_chunks"] = [
+                    {
+                        "chunk_id": "__faq_direct__",
+                        "document_id": "__faq_direct__",
+                        "title": "FAQ Direct Answer",
+                        "heading": "FAQ",
+                        "content": state["direct_faq_answer"],
+                        "score": 1.0,
+                        "source": "faq_direct",
+                        "rank_rrf": 0,
+                        "rank_ce": 0,
+                        "hybrid_score": 1.0,
+                        "rerank_score": None,
+                    }
+                ]
+                state["injected_entities"] = state.get("injected_entities") or []
+                state["supplemental"] = state.get("supplemental") or []
+                elapsed_faq = round((time.monotonic() - t0) * 1000, 1)
+                record_timing(state, "retrieve", elapsed_faq)
+                log.info("FAQ short-circuit retrieve for request %s subspace=%s", request_id, state.get("applied_subspace"))
+                return state
+        except Exception as _faq_sc_e:
+            log.warning("FAQ short-circuit scattered re-check failed: %s", _faq_sc_e)
+
+    # P2.1: bare scattered credit-status (e.g. «وضعیت اعتباری چطور است») must clarify.
+    # Even with sticky restored / a false FAQ hit, clear sticky+FAQ and force clarify.
+    # Definition چیست/چیه forms are exempted inside is_scattered_ambiguous (P2.2).
+    try:
+        from .infer_specification import is_scattered_ambiguous as _is_scattered_early
+
+        if _is_scattered_early(query) and not state.get("supplemental"):
+            state["direct_faq_answer"] = None
+            state["faq_matched"] = False
+            state["faq_verified"] = False
+            state["applied_subspace"] = None
+            state["sticky_subspace"] = None
+            state["needs_clarification"] = True
+            if not state.get("available_subspaces"):
+                state["available_subspaces"] = list(SUBSPACES)
+            state["clarifying_question"] = None
+            state["rewritten_query"] = query
+            state["retrieved_chunks"] = state.get("retrieved_chunks") or []
+            log.info(
+                "P2.1 scattered credit-status -> force clarify (clear sticky/FAQ) q=%r",
+                query[:80],
+            )
+            elapsed_sc_early = round((time.monotonic() - t0) * 1000, 1)
+            record_timing(state, "retrieve", elapsed_sc_early)
+            return state
+    except Exception as _sc_early_e:
+        log.warning("Early scattered check failed: %s", _sc_early_e)
 
     # Smalltalk short-circuit: greetings/farewell/thanks get a brief reply
     # with NO retrieval and NO history rewrite (a bare سلام must never be
@@ -1797,16 +1875,21 @@ async def retrieve(state: RAGState) -> RAGState:
             from .infer_specification import is_scattered_ambiguous as _is_scattered_ret
 
             _q_sc = state.get("query", "") or ""
-            _has_sticky_sc = bool(state.get("applied_subspace"))
+            # P2.1: scattered credit-status clears sticky too (do not answer under
+            # a restored facilities/cheque filter with a long FAQ/stop blurb).
             # T5 scattered gate must not force clarify when the entity tool
             # already matched a dictionary (supplemental rows are sufficient
             # evidence to answer, e.g. "دلیل کاهش امتیاز MTX1").
-            if not _has_sticky_sc and not state.get("supplemental") and _is_scattered_ret(_q_sc):
+            if not state.get("supplemental") and _is_scattered_ret(_q_sc):
                 state["needs_clarification"] = True
                 state["available_subspaces"] = list(SUBSPACES)
                 state["clarifying_question"] = None
-                # keep applied_subspace as None to signal no clear subspace
+                # Clear sticky/applied to signal no clear subspace
                 state["applied_subspace"] = None
+                state["sticky_subspace"] = None
+                state["direct_faq_answer"] = None
+                state["faq_matched"] = False
+                state["faq_verified"] = False
                 log.info("T5 scattered ambiguous detected in retrieve -> clarify q=%r", _q_sc[:80])
                 elapsed_sc = round((time.monotonic() - t0) * 1000, 1)
                 record_timing(state, "retrieve", elapsed_sc)
@@ -1865,38 +1948,31 @@ async def retrieve(state: RAGState) -> RAGState:
                     state["needs_clarification"] = True
                 else:
                     state["needs_clarification"] = False
-                from .infer_specification import is_specification
+                from .infer_specification import is_specification, label_subspace_from_query
                 try:
                     is_spec = await is_specification(last_q, state["request_id"])
                 except Exception:
                     is_spec = False
                 if is_spec:
-                    low = last_q.strip().lower()
-                    # "هیچ کدوم" + manager/company → general (user explicitly rejected credit options)
-                    if ("هیچ کدوم" in last_q or "هیچکدوم" in last_q) and any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","شرکت","عام"]):
-                        state["applied_subspace"] = "general"
-                    elif "نردبان" in last_q:
-                        state["applied_subspace"] = "credit_ladder"
-                    elif any(kw in last_q for kw in ["کفیل", "کفالت"]):
-                        state["applied_subspace"] = "guarantor"
-                    elif "تامین" in last_q:
-                        state["applied_subspace"] = "supplier_legal"
-                    elif "مشتریان من" in last_q or "پنل" in last_q:
-                        state["applied_subspace"] = (
-                            "customers_legal" if ("حقوقی" in last_q or "شرکت" in last_q) else "customers_person"
-                        )
-                    elif "چک" in low:
-                        state["applied_subspace"] = "cheque"
-                    elif any(kw in last_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عمومی","عام","کاربرد"]) or "general" in low:
-                        state["applied_subspace"] = "general"
-                    elif "حقوقی" in low or ("شرکت" in last_q and ("تسهیلات" in last_q or "وام" in last_q)):
-                        state["applied_subspace"] = "facilities_legal"
-                    elif "شرکت" in last_q and "تسهیلات" not in last_q and "چک" not in last_q:
-                        # "شرکت" alone without تسهیلات/چک → عمومی (معرفی شرکت)
-                        state["applied_subspace"] = "general"
+                    _labeled = label_subspace_from_query(last_q)
+                    if _labeled:
+                        state["applied_subspace"] = _labeled
                     else:
                         state["applied_subspace"] = "facilities_person"
                     state["needs_clarification"] = False
+                elif _has_explicit and not state.get("applied_subspace"):
+                    # T8 safety net: explicit leaf keywords (تسهیلات+حقیقی, …) must
+                    # emit applied_subspace even when classify/LLM called it a
+                    # "question" and retrieval stayed granular (no clarify path).
+                    _labeled_ex = label_subspace_from_query(last_q)
+                    if _labeled_ex:
+                        state["applied_subspace"] = _labeled_ex
+                        state["needs_clarification"] = False
+                        log.info(
+                            "explicit-keyword subspace pin %s for q=%r",
+                            _labeled_ex,
+                            last_q[:80],
+                        )
                 elif not granular and not state.get("supplemental"):
                     # (supplemental entity rows count as evidence: skip clarify)
                     sticky = state.get("applied_subspace")

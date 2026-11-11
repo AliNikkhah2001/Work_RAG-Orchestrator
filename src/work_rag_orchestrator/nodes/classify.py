@@ -56,6 +56,24 @@ def _heuristic_classify(text: str) -> str:
     # specification: short (<=4 words) + subspace keyword, no question mark
     if len(t.split()) <=4 and any(kw in t for lst in _SPEC_KEYWORDS.values() for kw in lst) and "؟" not in text and "?" not in text and not any(w in text for w in ["چیست","چطور","چگونه","آیا","چرا"]):
         return "specification"
+    # Long explicit leaf *declaration* (e.g. «اعتبارسنجی تسهیلات برای اشخاص حقیقی»)
+    # is still a specification for sticky/metadata, even at 5+ tokens. Imperative
+    # answer-seeking forms («… بگو», «توضیح بده») stay questions so retrieve runs.
+    try:
+        from .infer_specification import _is_short_with_keyword as _spec_kw
+
+        _answer_seek = any(
+            w in text
+            for w in ("بگو", "بگویید", "توضیح", "شرح بده", "بفرمایید", "بفرما")
+        )
+        if (
+            not _answer_seek
+            and _spec_kw(text)
+            and ("اشخاص حقیقی" in text or "اشخاص حقوقی" in text)
+        ):
+            return "specification"
+    except Exception:
+        pass
     return "question"
 
 def _classify_prompt(text: str) -> str:
@@ -117,8 +135,27 @@ async def classify(state: RAGState) -> RAGState:
     # Also set subspace for question that is clearly general (person name + کیه)
     if cat=="question":
         low2 = text.lower()
-        if "قاسم" in text or "بور" in text or "هیات مدیره" in text or "هیئت مدیره" in text:
+        # P2.3: board/CEO interrogatives leave facilities sticky → general
+        # (is_specification rejects کیه, so classify must pin general here)
+        if (
+            "قاسم" in text
+            or "بور" in text
+            or "هیات مدیره" in text
+            or "هیئت مدیره" in text
+            or "مدیرعامل" in text
+            or "مدیر عامل" in text
+            or (("هیچ کدوم" in text or "هیچکدوم" in text) and any(kw in text for kw in ["مدیر", "هیات", "هیئت", "معرفی", "عمومی", "شرکت"]))
+        ):
             state["applied_subspace"] = "general"
+        # P2.2: short چیست/چیه definitions prefer general (not nardban/kafil clarify)
+        try:
+            from .infer_specification import is_definition_question as _is_def_q
+
+            if _is_def_q(text) and not state.get("applied_subspace"):
+                state["applied_subspace"] = "general"
+                state["needs_clarification"] = False
+        except Exception:
+            pass
         # T5 scattered / cross-product impact → clarify (do not sticky-commit)
         try:
             from ..subspace_routing import L2_SUBSPACES, is_cross_product_impact
