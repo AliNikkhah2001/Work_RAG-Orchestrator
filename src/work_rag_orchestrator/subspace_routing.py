@@ -94,6 +94,43 @@ DECLARATION_ALIASES: dict[str, str] = {
     "پنل": "customers_person",
 }
 
+# Cheque-report UI color ranks (سبز/آبی/…). Colloquial «ابی» without hamza included.
+CHEQUE_COLOR_TOKENS: tuple[str, ...] = (
+    "آبی",
+    "ابی",
+    "سبز",
+    "زرد",
+    "قرمز",
+    "نارنجی",
+    "بنفش",
+    "سفید",
+    "مشکی",
+)
+
+
+def query_has_cheque_color_rank(query: str) -> bool:
+    """True when the user refers to colour bands used on the cheque score report."""
+    q = (query or "").replace("ي", "ی").replace("ك", "ک")
+    return any(tok in q for tok in CHEQUE_COLOR_TOKENS)
+
+
+def normalize_cheque_color_typos(query: str) -> str:
+    """Map common typos so BM25/dense can hit cheque colour FAQs (ابی → آبی)."""
+    q = query or ""
+    # Whole-word-ish: ابی as colour (not substrings inside other tokens)
+    if "آبی" not in q and "ابی" in q:
+        q = q.replace("ابی", "آبی")
+    return q
+
+
+def prefer_cheque_for_color_query(query: str, subspace: str | None) -> str | None:
+    """Colour-rank questions are cheque-report content; override facilities leaf picks."""
+    if not query_has_cheque_color_rank(query):
+        return subspace
+    if subspace in (None, "facilities_person", "facilities_legal", "general"):
+        return "cheque"
+    return subspace
+
 
 def extract_subspace_from_hierarchy(hier: list[str] | str | None) -> str | None:
     """Map folder_hierarchy to an L2 id. Returns None when unknown (no silent person default)."""

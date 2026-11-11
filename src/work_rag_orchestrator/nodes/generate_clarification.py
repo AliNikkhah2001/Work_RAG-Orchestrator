@@ -14,29 +14,42 @@ async def generate_clarification(state: RAGState) -> RAGState:
     query = state.get("query", "")
     from ..content_registry import clarify_option_labels
     available = state.get("available_subspaces") or clarify_option_labels()
-    prompt = require_prompt("clarify", query=query)
+    # Colour bands (آبی/سبز/…) are cheque-report UI — ask چک vs تسهیلات, not حقیقی/حقوقی.
+    text = ""
     try:
-        settings = get_settings()
-        async with GuardrailsClient() as client:
-            req = GuardrailsChatRequest(
-                model=settings.upstream_llm_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=256,
-                temperature=0.2,
+        from ..subspace_routing import query_has_cheque_color_rank
+
+        if query_has_cheque_color_rank(query):
+            text = (
+                "آیا منظورتان رتبه رنگی گزارش اعتبارسنجی چک است "
+                "(مثل سبز/آبی) یا رتبه تسهیلات؟"
             )
-            resp = await client.chat_completion(req, request_id)
-            text = resp.choices[0].message.get("content", "").strip() if resp.choices else ""
-            if not text:
-                text = require_prompt(
-                    "clarify_fallback",
-                    options="، ".join(str(x) for x in available),
+    except Exception:
+        pass
+    if not text:
+        prompt = require_prompt("clarify", query=query)
+        try:
+            settings = get_settings()
+            async with GuardrailsClient() as client:
+                req = GuardrailsChatRequest(
+                    model=settings.upstream_llm_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=256,
+                    temperature=0.2,
                 )
-    except Exception as e:
-        log.warning("Clarification generation failed: %s", e)
-        text = require_prompt(
-            "clarify_fallback",
-            options="، ".join(str(x) for x in available),
-        )
+                resp = await client.chat_completion(req, request_id)
+                text = resp.choices[0].message.get("content", "").strip() if resp.choices else ""
+                if not text:
+                    text = require_prompt(
+                        "clarify_fallback",
+                        options="، ".join(str(x) for x in available),
+                    )
+        except Exception as e:
+            log.warning("Clarification generation failed: %s", e)
+            text = require_prompt(
+                "clarify_fallback",
+                options="، ".join(str(x) for x in available),
+            )
     state["clarifying_question"] = text
     state["needs_clarification"] = True
     try:

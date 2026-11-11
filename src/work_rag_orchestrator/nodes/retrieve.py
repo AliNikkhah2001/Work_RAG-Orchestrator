@@ -1038,6 +1038,12 @@ async def retrieve(state: RAGState) -> RAGState:
     # queries: unify ZWNJ/space and ي/ك variants so BM25 matches KB wording,
     # and drop politeness filler that dilutes lexical scores.
     norm_query = norm_query.replace("‌", " ").replace("ي", "ی").replace("ك", "ک")
+    try:
+        from ..subspace_routing import normalize_cheque_color_typos as _norm_color
+
+        norm_query = _norm_color(norm_query)
+    except Exception:
+        pass
     for filler in (
         "ممکن است توضیح دهید",
         "لطفا دقیق توضیح دهید",

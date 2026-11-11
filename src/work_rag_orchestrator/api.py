@@ -528,6 +528,28 @@ def create_app() -> FastAPI:
                         _prev_q = _pvc
             if _prev_q:
                 cur_q = _prev_q
+            # Colour ranks (آبی/سبز/…) live on the cheque report. If the prior
+            # question asked about those colours, do not keep a facilities leaf
+            # from «حقیقی/شخصی» — that filter drops the FAQ and yields یافت نشد.
+            try:
+                from .subspace_routing import (
+                    normalize_cheque_color_typos,
+                    prefer_cheque_for_color_query,
+                )
+
+                cur_q = normalize_cheque_color_typos(cur_q)
+                _color_sub = prefer_cheque_for_color_query(cur_q, sticky_applied)
+                if _color_sub and _color_sub != sticky_applied:
+                    log.info(
+                        "Colour-rank query overrides declaration %s -> %s for q=%r",
+                        sticky_applied,
+                        _color_sub,
+                        cur_q[:80],
+                    )
+                    sticky_applied = _color_sub
+                    _decl = _color_sub
+            except Exception:
+                pass
             try:
                 _declared_filter = get_settings().subspace_map.get(_decl)
             except Exception:
