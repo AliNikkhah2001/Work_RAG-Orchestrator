@@ -211,7 +211,7 @@ async def build_context(state: RAGState) -> RAGState:
     # never the question. The budget leaves headroom for the system prompt,
     # the (possibly injected) entity-data section and the model's answer.
     settings = get_settings()
-    _entity_reserve = 4200 if state.get("supplemental") else 0
+    _entity_reserve = 9500 if state.get("supplemental") else 0
     _prompt_budget = max(settings.prompt_char_budget - _entity_reserve, 0)
     _ctx_cap = min(MAX_CONTEXT_CHARS, _prompt_budget)
     if history_block:
@@ -248,41 +248,110 @@ async def build_context(state: RAGState) -> RAGState:
     if state.get("supplemental"):
         try:
             import json as _json
+            import re as _re
+
+            def _compact_entity_content(content: dict) -> dict:
+                """Keep structured catalog/score fields; drop bulky dumps."""
+                if not isinstance(content, dict):
+                    return {"value": content}
+                out: dict = {}
+                meta = content.get("_meta")
+                if isinstance(meta, dict):
+                    out["_meta"] = {
+                        k: meta.get(k)
+                        for k in ("kind", "model", "count", "fields", "score_scale", "subspace_ids")
+                        if meta.get(k) is not None
+                    }
+                for key in ("groups", "color_groups", "records", "bands"):
+                    if key in content:
+                        out[key] = content[key]
+                # Fallback for legacy sheet-only payloads
+                if not any(k in out for k in ("records", "bands", "groups", "color_groups")):
+                    for k, v in content.items():
+                        if k.startswith("_"):
+                            continue
+                        out[k] = v
+                return out
+
+            def _entity_relevance(ent: dict, q: str) -> float:
+                name = str(ent.get("list_name") or "")
+                desc = str(ent.get("description") or "")
+                content = ent.get("content") or {}
+                meta = content.get("_meta") if isinstance(content, dict) else {}
+                kind = str((meta or {}).get("kind") or "")
+                blob = f"{name} {desc} {kind}".lower()
+                score = float(ent.get("similarity") or 0.0)
+                tokens = [t for t in _re.split(r"[\s،,.؟?!:/()\-]+", (q or "").lower()) if len(t) >= 2]
+                score += sum(1.5 for t in tokens if t in blob)
+                # Prefer catalogs/scores over incidental lists for list/lookup questions
+                if kind in {
+                    "shareholders",
+                    "loan_catalog",
+                    "data_providers",
+                    "report_consumers",
+                    "score_table",
+                }:
+                    score += 2.0
+                if kind == "loan_catalog" and any(k in (q or "") for k in ("وام", "عناوین", "تسهیلات")):
+                    score += 15.0
+                if kind == "shareholders" and "سهامدار" in (q or ""):
+                    score += 15.0
+                if kind == "data_providers" and any(
+                    k in (q or "") for k in ("تامین", "دیتا", "نئو", "موبایل")
+                ):
+                    score += 15.0
+                if kind == "report_consumers" and any(
+                    k in (q or "") for k in ("استفاده", "لندتک", "ریسلر")
+                ):
+                    score += 15.0
+                if kind == "score_table" and any(
+                    k in (q or "") for k in ("وام", "عناوین", "سهامدار", "تامین", "لندتک", "ریسلر")
+                ) and not any(k in (q or "") for k in ("امتیاز", "رتبه", "رنگ", "گرید")):
+                    score -= 20.0
+                if any(k in (q or "") for k in ("سهامدار", "وام", "تامین", "لندتک", "ریسلر", "امتیاز", "رتبه", "رنگ")):
+                    if any(k in name for k in ("سهامدار", "وام", "تامین", "استفاده", "امتیاز")):
+                        score += 3.0
+                return score
+
+            ranked = sorted(
+                list(state["supplemental"] or []),
+                key=lambda e: _entity_relevance(e if isinstance(e, dict) else {}, query),
+                reverse=True,
+            )
             ent_blocks = []
-            # Hard budget: entity rows share the model context with the RAG
-            # chunks; one reason-code list alone can be ~100KB. The Triton
-            # upstream has an 8192-token window and rejects the request
-            # (HTTP 400 max_seq_len overflow) when the total prompt exceeds
-            # it — keep the entity section small enough that chunk context
-            # + instructions still fit (chars ≈ tokens*3 for Persian).
-            _total_budget = 4000
+            # Hard budget shared across entity lists (Persian chars ≈ tokens*2-3).
+            _total_budget = 9000
             _used = 0
-            for ent in state["supplemental"]:
-                content = ent.get("content")
-                if content is None:
-                    content = {}
+            for ent in ranked:
+                if not isinstance(ent, dict):
+                    continue
+                content = _compact_entity_content(ent.get("content") or {})
                 data_json = _json.dumps(content, ensure_ascii=False)
-                if _used + len(data_json) > _total_budget:
-                    _room = _total_budget - _used
-                    if _room < 200:
-                        break
-                    data_json = data_json[:_room] + "…(truncated)"
-                _used += len(data_json)
-                ent_blocks.append(
-                    f"List: {ent.get('list_name')}\n"
-                    f"Description: {ent.get('description','')}\n"
-                    f"Data: {data_json}"
-                )
+                desc = str(ent.get("description") or "")
+                if len(desc) > 220:
+                    desc = desc[:220] + "…"
+                header = f"List: {ent.get('list_name')}\nDescription: {desc}\nData: "
+                room = _total_budget - _used - len(header)
+                if room < 300:
+                    break
+                if len(data_json) > room:
+                    data_json = data_json[:room] + "…(truncated)"
+                block = header + data_json
+                _used += len(block)
+                ent_blocks.append(block)
             if not ent_blocks:
                 raise RuntimeError("no room for entity data")
             entity_section = (
-                "\n\n[Entity Data from supplement tool]\n\n"
+                "\n\n[Entity Data from supplement tool]\n"
+                "Use this entity data as authoritative for list/lookup answers "
+                "(shareholders, loans, providers, report consumers, score tables). "
+                "Do not say «یافت نشد» when the answer is present in Data.\n\n"
                 + "\n\n---\n\n".join(ent_blocks)
                 + "\n\n"
                 + require_prompt("entity_priority_footer").strip()
             )
             system_message += entity_section
-            
+
             # Also prepend to user content for extra prominence when KB chunks may not be relevant
             if ent_blocks:
                 user_content = entity_section + "\n\n" + user_content

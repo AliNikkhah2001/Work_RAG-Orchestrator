@@ -23,11 +23,11 @@ flowchart TD
     VI[validate_input • nodes/validate_input.py:13 • Guardrails /v1/rails/check]
     Cl[classify • nodes/classify.py:67 • Guardrails /v1/chat/completions]
     Hc[hybrid_classify • nodes/hybrid_classify.py:67 • SVM→Gemma escalation]
-    Ret[retrieve • nodes/retrieve.py:851 • Knowledgebase /search/api]
-    Gc[generate_clarification • nodes/generate_clarification.py:24 • Guardrails /v1/chat/completions]
-    Bc[build_context • nodes/build_context.py:53 • numbered sources + system prompt]
-    Gg[guarded_generate • nodes/guarded_generate.py:16 • Guardrails /v1/chat/completions → Gemma]
-    Fr[format_response • nodes/format_response.py:492 • citations + finish_reason]
+    Ret[retrieve • /search/api + /search/supplement • trim by query relevance]
+    Gc[generate_clarification • Guardrails /v1/chat/completions]
+    Bc[build_context • numbered sources + ranked Entity Data]
+    Gg[guarded_generate • Guardrails /v1/chat/completions → Gemma]
+    Fr[format_response • citations + Entity Data recovery]
     Rf[format_refusal • graph.py:109 • alias of format_response]
     End((End))
 
@@ -83,11 +83,11 @@ Validated against `src/work_rag_orchestrator/graph.py` exactly:
 | `validate_input` | Extracts latest user message; calls Guardrails input rail `/v1/rails/check` (stage=input); sets `blocked` + `refusal_message` |
 | `classify` | LLM 3-way router: `greeting` / `specification` / `question`; sets `applied_subspace` for specifications; T5 scattered gate pre-sets `needs_clarification` |
 | `hybrid_classify` | Trained SVM-RBF classifier; escalates to Gemma via Guardrails when confidence below threshold (gated by `hybrid_classifier_enabled`); sets `applied_subspace` |
-| `retrieve` | Rewrites query against history; KB `/search/api` with metadata filtering (`filter_path`); T1–T7 recall fixes; FAQ verification; EntityList supplement; DLQ |
+| `retrieve` | Rewrites query against history; KB `/search/api` with metadata filtering (`filter_path`); T1–T7 recall fixes; FAQ verification; proactive EntityList `/search/supplement`; `trim_supplemental` (top-3 by **query relevance**, not arrival order; drop bulky dumps; ~8 KB/list); DLQ |
 | `generate_clarification` | LLM asks a short Persian disambiguating question listing the 4 subspaces; sets `finish_reason="clarify"` |
-| `build_context` | Numbered sources (`[1]..[20]`) ≤14000 chars; system prompt (ICS credit scoring) + history + question; entity-list injection |
+| `build_context` | Numbered sources (`[1]..[20]`) ≤14000 chars; system prompt (ICS credit scoring) + history + question; ranks/compacts Entity Data (~9000 char budget; catalog kinds boosted for loan/shareholder/provider/consumer queries) |
 | `guarded_generate` | POST Guardrails `/v1/chat/completions` (model `gemma-4-31b-triton-trt`); maps `content_filter` → blocked |
-| `format_response` | Returns `{content, finish_reason, citations}`; handles blocked, greeting, specification-ack, FAQ, G5 no-evidence refusal, faith/contradiction/subspace-mismatch guards |
+| `format_response` | Returns `{content, finish_reason, citations}`; handles blocked, greeting, specification-ack, FAQ, G5 no-evidence refusal, faith/contradiction/subspace-mismatch guards; **Entity Data recovery** when the LLM abstains/empties/bleeds a score table despite authoritative catalog/score rows |
 | `format_refusal` | Reuses `format_response` (`graph.py` registers it as a second alias under that name) |
 
 ### 2.2 Graph wiring (`graph.py`)
@@ -110,6 +110,8 @@ Conditional edges:
 - `should_clarify(state)` → `"clarify"` if `needs_clarification` or the T5 scattered/ambiguity safety net fires; else `"continue"`
 
 Supplemental entity rows short-circuit clarify: when the entity tool matched a dictionary, the model can answer directly, so clarification is suppressed.
+
+Entity dictionaries covered today: `score_table` (person/legal/cheque, subspace-tagged), `loan_catalog`, `shareholders`, `data_providers`, `report_consumers`. `trim_supplemental` prefers the catalog/score kind that matches the query so force-injected score tables cannot crowd out loan/provider lists. When generation still abstains or answers with the wrong score dump, `format_response._answer_from_supplemental` rebuilds a deterministic answer from `records`/`groups`/`color_groups`.
 
 Compiled with `MemorySaver` (dev checkpointer); exports `rag_graph` and `graph` (Studio entry point in `langgraph.json` → `studio_graph.py:graph`).
 
@@ -233,3 +235,21 @@ PYTHONPATH=./src /tmp/orch-venv/bin/python -m pytest tests/ -v
 - [docs/SUBSPACE_AMBIGUITY.md](docs/SUBSPACE_AMBIGUITY.md) — subspace ambiguity score design spec (frozen interface)
 - [Parent README](../README.md)
 
+<!-- docs-toc:start -->
+## Documentation Index
+
+> Auto-generated from this repository's tracked Markdown notes (**3** files). Refresh with `python scripts/gen_readme_toc.py` — the `docs-toc` workflow does this automatically on push.
+
+### Repository root
+
+- [LangGraph Studio — Orchestrator](STUDIO.md) — LangGraph Studio is the visual debugger for the deterministic RAG graph:
+
+### `docs/`
+
+- [Subspace Ambiguity Score — Design Spec (frozen interface)](docs/SUBSPACE_AMBIGUITY.md) — Goal: replace brittle keyword-only ambiguity detection with a calibrated embedding
+
+### `evaluation/`
+
+- [Work Credit RAG — Benchmark Report](evaluation/artifacts/bench_report_latest.md) — Artifacts: bench_results_latest.json + ragas_results_latest.json → bench_report_latest.html / .md
+
+<!-- docs-toc:end -->
