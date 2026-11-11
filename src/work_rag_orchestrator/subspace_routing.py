@@ -132,6 +132,63 @@ def prefer_cheque_for_color_query(query: str, subspace: str | None) -> str | Non
     return subspace
 
 
+def filter_path_broaden_ladder(filter_path: str | None) -> list[str | None]:
+    """Progressive scopes from leaf → parent folder → whole corpus (None).
+
+    Example: ``اشخاص حقیقی/اعتبارسنجی تسهیلات`` →
+    [``اشخاص حقیقی``, None]
+    """
+    fp = (filter_path or "").strip()
+    if not fp:
+        return [None]
+    parts = [p for p in fp.replace("\\", "/").split("/") if p.strip()]
+    ladder: list[str | None] = []
+    # Parent prefixes (drop leaf first, then higher)
+    for i in range(len(parts) - 1, 0, -1):
+        ladder.append("/".join(parts[:i]))
+    ladder.append(None)  # whole corpus
+    # De-dupe while preserving order
+    out: list[str | None] = []
+    seen: set[str] = set()
+    for step in ladder:
+        key = "" if step is None else step
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(step)
+    return out
+
+
+def infer_subspace_from_chunks(chunks: list | None) -> str | None:
+    """Majority L2 id from chunk folder_hierarchy (None if inconclusive)."""
+    if not chunks:
+        return None
+    from collections import Counter
+
+    votes: list[str] = []
+    for c in chunks[:12]:
+        if not isinstance(c, dict):
+            continue
+        hier = c.get("folder_hierarchy")
+        label = extract_subspace_from_hierarchy(hier)
+        if label:
+            votes.append(label)
+    if not votes:
+        return None
+    most, n = Counter(votes).most_common(1)[0]
+    # Strict majority (ties → inconclusive) so sticky does not flip on a coin toss.
+    if n <= len(votes) // 2:
+        return None
+    return most
+
+
+def subspace_topic_label(subspace: str | None) -> str:
+    """Human-readable Persian topic for prompt disclosure."""
+    if not subspace:
+        return "پایگاه دانش عمومی (کل پیکره)"
+    return DEFAULT_SUBSPACE_MAP.get(subspace, subspace)
+
+
 def extract_subspace_from_hierarchy(hier: list[str] | str | None) -> str | None:
     """Map folder_hierarchy to an L2 id. Returns None when unknown (no silent person default)."""
     s = "/".join(hier) if isinstance(hier, list) else str(hier or "")
