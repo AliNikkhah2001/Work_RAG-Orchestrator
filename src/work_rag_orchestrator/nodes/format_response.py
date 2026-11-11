@@ -15,6 +15,238 @@ log = logging.getLogger(__name__)
 FOLLOWUP_MAX_TOKENS = 120
 
 
+def _answer_from_supplemental(state: RAGState) -> str:
+    """Deterministic fallback when Entity Data is present but the LLM abstained.
+
+    Catalogs (loans, shareholders, providers, consumers) and score tables are
+    authoritative once retrieved; do not surface «یافت نشد» over them.
+    """
+    ents = state.get("supplemental") or state.get("injected_entities") or []
+    if not ents:
+        return ""
+    q = (state.get("query") or state.get("rewritten_query") or "").strip()
+    q_low = q.lower()
+    tokens = [t for t in re.split(r"[\s،,.؟?!:/()\-]+", q_low) if len(t) >= 2]
+
+    def _kind(ent: dict) -> str:
+        content = ent.get("content") or {}
+        meta = content.get("_meta") if isinstance(content, dict) else {}
+        return str((meta or {}).get("kind") or "")
+
+    catalog_q = any(
+        k in q
+        for k in (
+            "وام",
+            "عناوین وام",
+            "سهامدار",
+            "تامین",
+            "لندتک",
+            "ریسلر",
+            "استفاده‌کننده",
+            "استفاده کننده",
+            "نئوبانک",
+            "موبایل‌بانک",
+            "موبایل بانک",
+        )
+    )
+    score_q = any(
+        k in q for k in ("امتیاز", "رتبه", "رنگ", "گرید", "جدول امتیاز", "نکول", "A1", "B1", "C1")
+    ) and not catalog_q
+
+    def _score(ent: dict) -> float:
+        name = str(ent.get("list_name") or "")
+        kind = _kind(ent)
+        s = float(ent.get("similarity") or 0.0)
+        blob = f"{name} {kind}".lower()
+        s += sum(1.5 for t in tokens if t in blob)
+        if kind == "loan_catalog" and any(k in q for k in ("وام", "تسهیلات", "عناوین")):
+            s += 12.0
+        if kind == "shareholders" and "سهامدار" in q:
+            s += 12.0
+        if kind == "data_providers" and any(
+            k in q for k in ("تامین", "دیتا", "داده", "نئو", "موبایل")
+        ):
+            s += 12.0
+        if kind == "report_consumers" and any(
+            k in q for k in ("استفاده", "لندتک", "ریسلر", "گزارش")
+        ):
+            s += 12.0
+        if kind == "score_table":
+            if catalog_q and not score_q:
+                s -= 25.0
+            elif score_q:
+                s += 12.0
+        return s
+
+    ranked = sorted(
+        [e for e in ents if isinstance(e, dict)],
+        key=_score,
+        reverse=True,
+    )
+    if not ranked:
+        return ""
+    # Prefer a catalog entity for catalog questions even if ranked second
+    ent = ranked[0]
+    if catalog_q and _kind(ent) == "score_table":
+        for cand in ranked[1:]:
+            if _kind(cand) in (
+                "loan_catalog",
+                "shareholders",
+                "data_providers",
+                "report_consumers",
+            ):
+                ent = cand
+                break
+    content = ent.get("content") or {}
+    if not isinstance(content, dict):
+        return ""
+    kind = _kind(ent)
+    name = str(ent.get("list_name") or "")
+    groups = content.get("groups") or content.get("color_groups") or []
+    records = content.get("records") or content.get("bands") or []
+
+    # Token-matched rows for lookup questions (rank by distinctive hits)
+    _STOP = {
+        "در", "از", "که", "یا", "نه", "هست", "آیا", "چه", "نوع", "فهرست", "لیست",
+        "وجود", "دارد", "عناوین", "جدول", "کدام", "نام", "ببر", "گزارش", "شرکت",
+        "اعتبارسنجی", "ایران", "های", "هایی", "این", "آن", "با", "برای", "هم",
+    }
+    sig_tokens = [t for t in tokens if t not in _STOP and len(t) >= 3]
+
+    def _row_blob(row) -> str:
+        if isinstance(row, dict):
+            return " ".join(str(v) for v in row.values() if v is not None).lower()
+        return str(row).lower()
+
+    scored_rows: list[tuple[float, object]] = []
+    for row in records:
+        blob = _row_blob(row)
+        if not sig_tokens:
+            continue
+        hits = sum(1 for t in sig_tokens if t in blob)
+        # Strong boost when a proper-name token (e.g. تجارت) hits
+        name_hits = sum(1 for t in sig_tokens if len(t) >= 4 and t in blob)
+        if hits >= 2 or name_hits >= 1:
+            scored_rows.append((hits + 2.0 * name_hits, row))
+    scored_rows.sort(key=lambda x: x[0], reverse=True)
+    matched = [r for _, r in scored_rows]
+
+    listing = any(
+        k in q for k in ("چه نوع", "چه رنگ", "نام ببر", "کدام‌ها", "انواع")
+    ) or (
+        any(k in q for k in ("فهرست", "لیست", "جدول"))
+        and not any(k in q for k in ("آیا", "هست یا نه", "یا نه"))
+    )
+    lookup = any(k in q for k in ("آیا", "هست یا نه", "یا نه", "هست؟", "هست؟")) or (
+        any(k in q for k in ("هست", "وجود دارد")) and not listing
+    )
+    if kind == "loan_catalog":
+        # Type listing always wins over a loose row match
+        if listing and groups and not (lookup and matched and scored_rows and scored_rows[0][0] >= 4):
+            parts = [f"{g.get('گروه')} ({g.get('تعداد')})" for g in groups[:12] if isinstance(g, dict)]
+            return (
+                f"در «{name}» این انواع وام ثبت شده است: "
+                + "، ".join(parts)
+                + f". مجموع عناوین: {(content.get('_meta') or {}).get('count') or len(records)}."
+            )
+        if matched and (lookup or not listing):
+            row = matched[0]
+            return (
+                f"بله، «{row.get('نام وام')}» در فهرست عناوین وام‌ها وجود دارد "
+                f"و نوع آن «{row.get('نوع وام')}» است."
+            )
+        if groups:
+            parts = [f"{g.get('گروه')} ({g.get('تعداد')})" for g in groups[:12] if isinstance(g, dict)]
+            return (
+                f"در «{name}» این انواع وام ثبت شده است: "
+                + "، ".join(parts)
+                + f". مجموع عناوین: {(content.get('_meta') or {}).get('count') or len(records)}."
+            )
+    if kind == "shareholders":
+        if matched and (lookup or not listing):
+            row = matched[0]
+            return (
+                f"بله، «{row.get('نام سهامدار')}» در فهرست سهامداران است "
+                f"(نوع: {row.get('نوع سهامدار')}، حوزه: {row.get('حوزه فعالیت')})."
+            )
+        if groups:
+            parts = [f"{g.get('گروه')} ({g.get('تعداد')})" for g in groups if isinstance(g, dict)]
+            banks = [
+                str(r.get("نام سهامدار"))
+                for r in records
+                if isinstance(r, dict) and "بانک" in str(r.get("نوع سهامدار") or "")
+            ][:12]
+            return (
+                f"سهامداران «{name}» در گروه‌های {('، '.join(parts))} قرار دارند. "
+                + (f"نمونه بانک‌ها: {('، '.join(banks))}." if banks else "")
+            )
+    if kind == "data_providers":
+        neo = [
+            str(r.get("نام تامین کننده"))
+            for r in records
+            if isinstance(r, dict)
+            and (
+                r.get("نئوبانک")
+                or r.get("موبایل بانک")
+                or r.get("نئوبانک ۲")
+                or r.get("موبایل بانک ۲")
+            )
+        ][:12]
+        if neo and any(k in q for k in ("نئو", "موبایل")):
+            return (
+                "در فهرست تامین‌کنندگان دیتا، این موارد نئوبانک یا موبایل‌بانک دارند: "
+                + "، ".join(neo)
+                + "."
+            )
+        if groups:
+            parts = [f"{g.get('گروه')} ({g.get('تعداد')})" for g in groups if isinstance(g, dict)]
+            msg = f"تامین‌کنندگان دیتا شامل {('، '.join(parts))} هستند."
+            if neo:
+                msg += " نمونه‌های دارای نئوبانک/موبایل‌بانک: " + "، ".join(neo[:6]) + "."
+            return msg
+    if kind == "report_consumers":
+        if matched and (lookup or not listing):
+            row = matched[0]
+            return (
+                f"بله، «{row.get('نام شرکت')}» در فهرست استفاده‌کنندگان گزارش است "
+                f"(کانال: {row.get('نوع کانال')}، قرارداد: {row.get('نوع قرارداد')})."
+            )
+        if lookup and not matched:
+            return "در فهرست استفاده‌کنندگان گزارش، شرکتی با این نام ذکر نشده است."
+        if groups:
+            parts = [f"{g.get('گروه')} ({g.get('تعداد')})" for g in groups if isinstance(g, dict)]
+            return f"استفاده‌کنندگان گزارش بر اساس کانال: {('، '.join(parts))}."
+    if kind == "score_table" and not catalog_q:
+        if groups:
+            parts = []
+            for g in groups:
+                if not isinstance(g, dict):
+                    continue
+                color = g.get("رنگ") or g.get("color")
+                grades = g.get("رتبه‌ها") or g.get("grades")
+                lo = g.get("حد پایین امتیاز گروه") or g.get("score_low")
+                hi = g.get("حد بالای امتیاز گروه") or g.get("score_high")
+                parts.append(f"{color}: {grades} ({lo} تا {hi})")
+            if parts:
+                return f"جدول امتیاز «{name}»: " + "؛ ".join(parts)
+        if matched:
+            row = matched[0]
+            if isinstance(row, dict):
+                return (
+                    f"رتبه {row.get('grade') or row.get('رتبه اعتباری')}: "
+                    f"رنگ {row.get('color') or row.get('رنگ')}، "
+                    f"بازه {row.get('score_low') or row.get('حد پایین امتیاز')} تا "
+                    f"{row.get('score_high') or row.get('حد بالای امتیاز')}."
+                )
+    # Negative lookup: entity present but no row matched a specific name probe
+    if matched:
+        row = matched[0]
+        if isinstance(row, dict):
+            vals = " | ".join(str(v) for v in row.values() if v)
+            return f"بر اساس فهرست «{name}»: {vals}."
+    return ""
+
+
 async def _generate_grounded_followups(state: RAGState, answer: str) -> list[str]:
     """Generate 2-3 grounded follow-up questions from retrieved_chunks titles."""
     try:
@@ -601,6 +833,72 @@ async def format_response(state: RAGState) -> RAGState:
                     "H1 post-abstention broaden regen failed for %s: %s", request_id, e
                 )
 
+        # Prefer Entity Data over abstention / empty / score-table bleed.
+        _entity_recovery = ""
+        try:
+            from ..content_registry import refusal_message as _rm_chk
+
+            _weak_msg = _rm_chk("weak_evidence")
+        except Exception:
+            _weak_msg = ""
+        _q_now = state.get("query") or state.get("rewritten_query") or ""
+        _catalog_intent = any(
+            k in _q_now
+            for k in (
+                "وام",
+                "عناوین وام",
+                "سهامدار",
+                "تامین",
+                "لندتک",
+                "ریسلر",
+                "استفاده‌کننده",
+                "نئوبانک",
+                "موبایل‌بانک",
+                "موبایل بانک",
+            )
+        )
+        _score_bleed = any(
+            k in (answer_raw or "")
+            for k in ("جدول امتیاز", "آبی:", "سبز:", "نارنجی:", "قرمز:")
+        ) and _catalog_intent
+        # Authoritative dictionary lookups: prefer Entity Data over free-form LLM
+        _dict_intent = any(
+            k in _q_now
+            for k in (
+                "عناوین وام",
+                "فهرست عناوین",
+                "لیست و عناوین",
+                "تامین‌کنندگان دیتا",
+                "تامین کنندگان دیتا",
+                "نئوبانک",
+                "موبایل‌بانک",
+                "موبایل بانک",
+            )
+        )
+        # Quoted proper-name probe against a catalog (e.g. «آژانس فضایی مریخ»)
+        _named_probe = bool(re.search(r"[«\"].+[»\"]", _q_now)) and any(
+            k in _q_now for k in ("استفاده‌کننده", "سهامدار", "تامین", "وام")
+        )
+        if (
+            (not answer_raw or not answer_raw.strip())
+            or (_abstention_phrase() in (answer_raw or ""))
+            or (_weak_msg and _weak_msg in (answer_raw or ""))
+            or _score_bleed
+            or _dict_intent
+            or _named_probe
+        ):
+            _entity_recovery = _answer_from_supplemental(state)
+            if _entity_recovery:
+                log.info(
+                    "Entity-data recovery for request %s (%d chars; bleed=%s dict=%s)",
+                    request_id,
+                    len(_entity_recovery),
+                    _score_bleed,
+                    _dict_intent,
+                )
+                answer_raw = _entity_recovery
+                state["entity_data_recovery"] = True
+
         # --- G5 hallucination guard: refuse when evidence is too weak ---
         # "رتبه اعتباری G5 چیه" returns 1 noise chunk with rerank 0.008;
         # without this guard the LLM synthesizes "یکی از سطوح...".
@@ -691,18 +989,32 @@ async def format_response(state: RAGState) -> RAGState:
         # answer already abstains. The decision is logged with the
         # coverage value.
         _faith_refused = False
-        if (state.get("fallback_used") or state.get("broaden_used")) and _abstention_phrase() not in content:
+        if (
+            (state.get("fallback_used") or state.get("broaden_used"))
+            and _abstention_phrase() not in content
+            and not state.get("entity_data_recovery")
+        ):
             _used_top = _top_evidence_score(chosen)
             _coverage = _token_coverage(content, chosen)
             if _used_top < FAITH_GUARD_MIN_SCORE and _coverage < FAITH_GUARD_MIN_COVERAGE:
-                log.info(
-                    "Faith guard fired for request %s: coverage=%.3f < %.2f and top_used_score=%.3f < %.2f (fallback_used=%s, broaden_used=%s) -> replacing answer with refusal",
-                    request_id, _coverage, FAITH_GUARD_MIN_COVERAGE, _used_top, FAITH_GUARD_MIN_SCORE,
-                    bool(state.get("fallback_used")), bool(state.get("broaden_used")),
-                )
-                content = _no_evidence_msg()
-                citations = []
-                _faith_refused = True
+                # If Entity Data can answer, prefer recovery over faith refusal
+                _rec = _answer_from_supplemental(state)
+                if _rec:
+                    log.info(
+                        "Faith guard deferred for request %s: using entity-data recovery",
+                        request_id,
+                    )
+                    content = _rec
+                    state["entity_data_recovery"] = True
+                else:
+                    log.info(
+                        "Faith guard fired for request %s: coverage=%.3f < %.2f and top_used_score=%.3f < %.2f (fallback_used=%s, broaden_used=%s) -> replacing answer with refusal",
+                        request_id, _coverage, FAITH_GUARD_MIN_COVERAGE, _used_top, FAITH_GUARD_MIN_SCORE,
+                        bool(state.get("fallback_used")), bool(state.get("broaden_used")),
+                    )
+                    content = _no_evidence_msg()
+                    citations = []
+                    _faith_refused = True
             else:
                 log.info(
                     "Faith guard passed for request %s: coverage=%.3f, top_used_score=%.3f (fallback_used=%s, broaden_used=%s)",
