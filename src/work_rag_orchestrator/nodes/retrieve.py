@@ -162,6 +162,28 @@ def _entity_tool_relevant(query: str, state: dict) -> bool:
     q = (query or "").strip()
     if not q:
         return False
+    # Product leaves without entity catalogs: do not fire loan/provider
+    # supplements on «نردبان اعتباری چیه» / «طرح کفیل» or the model answers
+    # from the wrong dictionary (وام ازدواج) while corpus is empty.
+    _sub = str(state.get("applied_subspace") or "")
+    if _sub in ("credit_ladder", "guarantor") or any(k in q for k in ("نردبان", "کفیل", "کفالت", "وجه‌الکفاله")):
+        # Still allow score-table / reason-code style asks inside those leaves
+        _ok = any(
+            kw in q
+            for kw in (
+                "دلیل",
+                "کد",
+                "امتیاز",
+                "رتبه",
+                "رنگ",
+                "گرید",
+                "وام",
+                "تسهیلات",
+                "عناوین",
+            )
+        )
+        if not _ok:
+            return False
     # Scope hint: filter_path / applied_subspace already points at an entity topic
     for scope in (state.get("filter_path"), state.get("applied_subspace")):
         if scope and any(k in scope for k in ("دلیل", "reason", "سود", "وام", "سهام", "تسهیلات", "چک")):
@@ -224,6 +246,10 @@ def trim_supplemental(
         s += sum(1.5 for t in tokens if t in blob)
         if kind == "loan_catalog" and any(k in q for k in ("وام", "تسهیلات", "عناوین")):
             s += 20.0
+        # نردبان/کفیل questions must not surface loan/provider catalogs
+        if any(k in q for k in ("نردبان", "کفیل", "کفالت", "وجه‌الکفاله")):
+            if kind in ("loan_catalog", "data_providers", "report_consumers", "shareholders"):
+                s -= 50.0
         if kind == "shareholders" and "سهامدار" in q:
             s += 20.0
         if kind == "data_providers" and any(
@@ -1673,7 +1699,14 @@ async def retrieve(state: RAGState) -> RAGState:
                     _top_score = max(_top_score, float(_v))
         # skip FAQ-verified (already evidence)
         _has_supplement = bool(injected)
-        if not state.get("faq_verified") and _top_score < _ev_threshold and not _has_supplement:
+        if (
+            not state.get("faq_verified")
+            and _top_score < _ev_threshold
+            and not _has_supplement
+            # G5 must not invent loan/provider catalogs for product leaves
+            # (نردبان/کفیل) that have no EntityList — prefer empty → یافت نشد.
+            and _entity_tool_relevant(search_query or query, state)
+        ):
             log.info(
                 "Low evidence for request %s: top_score=%.4f < %.3f (query=%r) — trying supplementary_search",
                 request_id, _top_score, _ev_threshold, search_query[:80],

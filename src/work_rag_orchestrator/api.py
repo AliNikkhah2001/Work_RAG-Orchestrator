@@ -476,6 +476,7 @@ def create_app() -> FastAPI:
             except Exception:
                 _explicit_cur_sub = None
         # P2.2: short چیست/چیه definitions must not inherit facilities/cheque sticky filter
+        # (product leaves like نردبان/کفیل are excluded inside is_definition_question).
         try:
             from .nodes.infer_specification import is_definition_question as _is_def_api
 
@@ -501,7 +502,21 @@ def create_app() -> FastAPI:
             # Prefer longer aliases (نردبان اعتباری before نردبان)
             _alias_hits.sort(key=len, reverse=True)
             if len(_alias_hits) == 1 and not any(
-                w in _decl_norm for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کیه", "؟", "?")
+                w in _decl_norm
+                for w in (
+                    "چیست",
+                    "چيه",
+                    "چیه",
+                    "چيست",
+                    "چی",
+                    "چطور",
+                    "چگونه",
+                    "آیا",
+                    "چرا",
+                    "کیه",
+                    "؟",
+                    "?",
+                )
             ):
                 _decl = _declarations[_alias_hits[0]]
                 _decl_key = _alias_hits[0]

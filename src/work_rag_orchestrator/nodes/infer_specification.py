@@ -44,12 +44,32 @@ def is_definition_question(query: str) -> bool:
 
     «اعتبارسنجی چیست» should take the FAQ/general path; «وضعیت اعتباری چطور است»
     uses چطور and remains scattered.
+
+    Explicit product leaves (نردبان / کفیل / چک / …) are NOT generic definitions —
+    they must keep their L2 subspace instead of being forced to ``general``.
     """
     q = (query or "").replace("‌", " ").strip()
     if not q:
         return False
     # Only definition particles — not چطور/چگونه (those stay scattered for credit-status).
     if not any(w in q for w in ("چیست", "چيه", "چیه", "چيست")):
+        return False
+    # Product-scoped definitions stay on their leaf (avoid general + EntityList bleed).
+    if any(
+        kw in q
+        for kw in (
+            "نردبان",
+            "کفیل",
+            "کفالت",
+            "وجه‌الکفاله",
+            "وجه الکفاله",
+            "چک",
+            "صیاد",
+            "تسهیلات",
+            "مشتریان من",
+            "تامین",
+        )
+    ):
         return False
     tokens = q.replace("؟", " ").replace("?", " ").split()
     return len(tokens) <= 6
