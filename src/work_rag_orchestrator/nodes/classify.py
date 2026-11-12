@@ -54,7 +54,13 @@ def _heuristic_classify(text: str) -> str:
     t = " ".join(t.replace("‌"," ").split())
     if t in _GREETING: return "greeting"
     # specification: short (<=4 words) + subspace keyword, no question mark
-    if len(t.split()) <=4 and any(kw in t for lst in _SPEC_KEYWORDS.values() for kw in lst) and "؟" not in text and "?" not in text and not any(w in text for w in ["چیست","چطور","چگونه","آیا","چرا"]):
+    if (
+        len(t.split()) <= 4
+        and any(kw in t for lst in _SPEC_KEYWORDS.values() for kw in lst)
+        and "؟" not in text
+        and "?" not in text
+        and not any(w in text for w in ["چیست", "چيه", "چیه", "چيست", "چی", "چطور", "چگونه", "آیا", "چرا"])
+    ):
         return "specification"
     # Long explicit leaf *declaration* (e.g. «اعتبارسنجی تسهیلات برای اشخاص حقیقی»)
     # is still a specification for sticky/metadata, even at 5+ tokens. Imperative
@@ -135,6 +141,15 @@ async def classify(state: RAGState) -> RAGState:
     # Also set subspace for question that is clearly general (person name + کیه)
     if cat=="question":
         low2 = text.lower()
+        # Explicit ICS product leaves — pin subspace so retrieve filters correctly
+        # and we never ack with «حوزه انتخاب شد» for «نردبان اعتباری چیه».
+        if not state.get("applied_subspace"):
+            if "نردبان" in text:
+                state["applied_subspace"] = "credit_ladder"
+                state["needs_clarification"] = False
+            elif any(kw in text for kw in ["کفیل", "کفالت", "وجه‌الکفاله", "وجه الکفاله"]):
+                state["applied_subspace"] = "guarantor"
+                state["needs_clarification"] = False
         # P2.3: board/CEO interrogatives leave facilities sticky → general
         # (is_specification rejects کیه, so classify must pin general here)
         if (
