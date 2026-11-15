@@ -978,8 +978,10 @@ def create_app() -> FastAPI:
                             pass
                         return
 
-                    # Normal RAG — REAL streaming from Guardrails->Gemma (no sleep, tokens arrive as LLM generates)
-                    yield ": agent guarded_generate streaming\n\n"
+                    # Normal RAG with evidence: buffer generation, run format/H1b, THEN
+                    # stream the final answer. Live-yielding tokens first let Gemma's
+                    # spurious «یافت نشد» reach the client before recovery could run.
+                    yield ": agent guarded_generate buffering\n\n"
                     settings = get_settings()
                     req = GuardrailsChatRequest(
                         model=settings.upstream_llm_model,
@@ -991,43 +993,23 @@ def create_app() -> FastAPI:
                     async with GuardrailsClient() as gclient:
                         async for token in gclient.chat_completion_stream(req, request_id):
                             full_answer.append(token)
-                            chunk = {
-                                "id": f"chatcmpl-{request_id}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": request.model,
-                                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
-                            }
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                            # No sleep — real LLM pacing (~30ms/token) is the animation
 
-                    # Finalize state for citations/audit + grounded follow-ups
                     answer_text = "".join(full_answer)
                     state["answer"] = answer_text
-                    # Format citations (same as format_response) — includes grounded follow_ups
                     state = await node_format(state)
                     formatted = state.get("formatted_response", {}) or {}
-                    recovered_content = (formatted.get("content") or "").strip()
-                    try:
-                        from .nodes.format_response import (
-                            _abstention_phrase as _stream_abst_phrase,
-                            _has_retrieval_evidence as _stream_has_evidence,
-                        )
-                        _abst_mark = _stream_abst_phrase()
-                        if (
-                            _abst_mark in answer_text
-                            and _stream_has_evidence(state)
-                            and recovered_content
-                            and _abst_mark not in recovered_content
-                            and recovered_content != answer_text.strip()
-                        ):
-                            yield ": agent format_response abstention_recovery correction\n\n"
-                            for tok in re.findall(r"\S+\s*", recovered_content):
-                                yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
-                            answer_text = recovered_content
-                            state["answer"] = recovered_content
-                    except Exception:
-                        pass
+                    answer_text = (formatted.get("content") or answer_text or "").strip()
+                    state["answer"] = answer_text
+                    yield ": agent format_response done streaming_answer\n\n"
+                    for tok in re.findall(r"\S+\s*", answer_text):
+                        chunk = {
+                            "id": f"chatcmpl-{request_id}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": request.model,
+                            "choices": [{"index": 0, "delta": {"content": tok}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                     citations = formatted.get("citations", [])
                     finish_reason = formatted.get("finish_reason", "stop")
                     follow_ups_stream = formatted.get("follow_ups") or state.get("follow_ups") or []
@@ -1046,13 +1028,15 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "scope_broadened": bool(state.get("scope_broadened")),
+                            "scope_broadened_to": state.get("scope_broadened_to"),
                         },
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     try:
                         from .tracing import update_trace
-                        update_trace(request_id, answer_text[:2000], {"finish_reason":finish_reason,"citations":len(citations),"retrieved":len(retrieved),"stream":True,"real_stream":True})
+                        update_trace(request_id, answer_text[:2000], {"finish_reason":finish_reason,"citations":len(citations),"retrieved":len(retrieved),"stream":True,"buffered_then_stream":True})
                     except Exception:
                         pass
                 except Exception as e:
