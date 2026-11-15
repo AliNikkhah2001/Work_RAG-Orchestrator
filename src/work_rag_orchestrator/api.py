@@ -1007,6 +1007,27 @@ def create_app() -> FastAPI:
                     # Format citations (same as format_response) — includes grounded follow_ups
                     state = await node_format(state)
                     formatted = state.get("formatted_response", {}) or {}
+                    recovered_content = (formatted.get("content") or "").strip()
+                    try:
+                        from .nodes.format_response import (
+                            _abstention_phrase as _stream_abst_phrase,
+                            _has_retrieval_evidence as _stream_has_evidence,
+                        )
+                        _abst_mark = _stream_abst_phrase()
+                        if (
+                            _abst_mark in answer_text
+                            and _stream_has_evidence(state)
+                            and recovered_content
+                            and _abst_mark not in recovered_content
+                            and recovered_content != answer_text.strip()
+                        ):
+                            yield ": agent format_response abstention_recovery correction\n\n"
+                            for tok in re.findall(r"\S+\s*", recovered_content):
+                                yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
+                            answer_text = recovered_content
+                            state["answer"] = recovered_content
+                    except Exception:
+                        pass
                     citations = formatted.get("citations", [])
                     finish_reason = formatted.get("finish_reason", "stop")
                     follow_ups_stream = formatted.get("follow_ups") or state.get("follow_ups") or []

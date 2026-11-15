@@ -416,6 +416,12 @@ def _abstention_phrase() -> str:
     return abstention_phrase()
 
 
+def _has_retrieval_evidence(state: RAGState, chunks: list | None = None) -> bool:
+    """True when KB chunks and/or supplemental entity rows are present."""
+    ch = chunks if chunks is not None else (state.get("retrieved_chunks") or [])
+    return bool(ch) or bool(state.get("supplemental") or state.get("injected_entities"))
+
+
 # F: faith/hallucination guard thresholds for weak-evidence answers. An
 # answer produced on a weak-evidence path (T1 whole-KB fallback or T2
 # broadened retry) is replaced with NO_EVIDENCE when the kept/cited
@@ -819,18 +825,24 @@ async def format_response(state: RAGState) -> RAGState:
         # war-period/date phrasing ranked below the cut). Retry exactly once
         # against the whole KB (filter_path=None) with the ORIGINAL user query;
         # after one attempt the canonical refusal stands.
-        if (
-            _abstention_phrase() in answer_raw
-            and not state.get("broaden_after_abstention")
-            and not state.get("broaden_used")
+        if _abstention_phrase() in answer_raw and not state.get(
+            "broaden_after_abstention"
         ):
+            _has_evidence = _has_retrieval_evidence(state, chunks)
             try:
-                state = await _broaden_retrieve_and_regenerate(state)
-                answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
-                chunks = state["retrieved_chunks"]
+                if _has_evidence:
+                    state = await _regenerate_with_existing_chunks(state)
+                    answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
+                    chunks = state.get("retrieved_chunks") or chunks
+                if _abstention_phrase() in answer_raw and not state.get("broaden_used"):
+                    state = await _broaden_retrieve_and_regenerate(state)
+                    answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
+                    chunks = state["retrieved_chunks"]
+                if not state.get("broaden_after_abstention"):
+                    state["broaden_after_abstention"] = True
             except Exception as e:
                 log.warning(
-                    "H1 post-abstention broaden regen failed for %s: %s", request_id, e
+                    "H1 post-abstention recovery failed for %s: %s", request_id, e
                 )
 
         # Prefer Entity Data over abstention / empty / score-table bleed.
@@ -1110,13 +1122,25 @@ async def format_response(state: RAGState) -> RAGState:
     return state
 
 
+async def _regenerate_with_existing_chunks(state: RAGState) -> RAGState:
+    """H1b: one guarded_generate pass over current chunks (no KB re-retrieve)."""
+    request_id = state["request_id"]
+    log.info("H1b regen-with-existing-chunks for request %s", request_id)
+    from .build_context import build_context as _bc
+    from .guarded_generate import guarded_generate as _gg
+
+    state = await _bc(state)
+    state = await _gg(state)
+    return state
+
+
 async def _broaden_retrieve_and_regenerate(state: RAGState) -> RAGState:
     """
     H1: after a generation-time "یافت نشد", retry retrieval once against the
     whole KB (filter_path=None) using the ORIGINAL user query, then regenerate.
     Used when the history-rewritten query drifted away from matching phrasing
     (e.g. dates/war terms) so on-topic chunks ranked below the cut. Single
-    attempt only — guarded by broaden_after_abstention / broaden_used flags.
+    attempt only — guarded by broaden_after_abstention (H1b may run first).
     """
     request_id = state["request_id"]
     query = (state.get("query") or state.get("rewritten_query") or "").strip()
