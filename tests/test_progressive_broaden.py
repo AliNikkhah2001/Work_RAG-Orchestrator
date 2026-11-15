@@ -123,3 +123,103 @@ def test_progressive_broaden_adopts_parent_then_updates_sticky():
         assert len(state.get("retrieved_chunks") or []) >= 1
 
     asyncio.run(_run())
+
+
+def test_maybe_record_scope_broadened_on_subspace_shift():
+    from work_rag_orchestrator.nodes.retrieve import (
+        _maybe_record_scope_broadened_from_adopted_chunks,
+    )
+
+    state = {
+        "applied_subspace": "facilities_person",
+        "sticky_subspace": "facilities_person",
+        "retrieved_chunks": [
+            {"folder_hierarchy": ["اعتبارسنجی چک", "رتبه"]},
+            {"folder_hierarchy": ["اعتبارسنجی چک"]},
+        ],
+    }
+    _maybe_record_scope_broadened_from_adopted_chunks(state, scope_filter=None)
+    assert state.get("scope_broadened") is True
+    assert state.get("scope_broadened_from") == "facilities_person"
+    assert state.get("scope_broadened_to") == "cheque"
+    assert state.get("scope_broadened_filter") is None
+
+    same_topic = {
+        "applied_subspace": "cheque",
+        "retrieved_chunks": [{"folder_hierarchy": ["اعتبارسنجی چک"]}],
+    }
+    _maybe_record_scope_broadened_from_adopted_chunks(same_topic, scope_filter=None)
+    assert same_topic.get("scope_broadened") is not True
+
+
+def test_t1_whole_kb_fallback_sets_scope_broadened_when_topic_shifts():
+    """T1 fallback_used path must set scope_broadened for build_context disclosure."""
+
+    async def _run():
+        cheque_chunks = [
+            {
+                "chunk_id": "c1",
+                "content": "رتبه چک",
+                "score": 0.92,
+                "folder_hierarchy": ["اعتبارسنجی چک", "رتبه"],
+                "hybrid_score": 0.92,
+                "rerank_score": 0.92,
+            },
+            {
+                "chunk_id": "c2",
+                "content": "گروه چک",
+                "score": 0.88,
+                "folder_hierarchy": ["اعتبارسنجی چک"],
+                "hybrid_score": 0.88,
+                "rerank_score": 0.88,
+            },
+        ]
+        state = {
+            "retrieved_chunks": [
+                {
+                    "chunk_id": "w1",
+                    "content": "weak",
+                    "score": 0.05,
+                    "folder_hierarchy": ["اشخاص حقیقی", "اعتبارسنجی تسهیلات"],
+                    "hybrid_score": 0.05,
+                }
+            ],
+            "applied_subspace": "facilities_person",
+            "sticky_subspace": "facilities_person",
+            "query": "رتبه آبی چک",
+        }
+
+        class _FakeKB:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def retrieve(self, q, top_k, request_id, filter_path=None, **kw):
+                if filter_path is None:
+                    return {"rrf": cheque_chunks, "ce": cheque_chunks, "injected_entities": []}
+                return {"rrf": [], "ce": [], "injected_entities": []}
+
+        with patch(
+            "work_rag_orchestrator.clients.knowledgebase.KnowledgebaseClient",
+            _FakeKB,
+        ), patch(
+            "work_rag_orchestrator.nodes.retrieve._get_ev_threshold",
+            return_value=0.3,
+        ):
+            from work_rag_orchestrator.nodes.retrieve import _t1_try_whole_kb_fallback
+
+            ok = await _t1_try_whole_kb_fallback(
+                state,
+                "رتبه آبی چک",
+                "req-t1",
+                active_filter="اشخاص حقیقی/اعتبارسنجی تسهیلات",
+            )
+        assert ok is True
+        assert state.get("fallback_used") is True
+        assert state.get("scope_broadened") is True
+        assert state.get("scope_broadened_from") == "facilities_person"
+        assert state.get("scope_broadened_to") == "cheque"
+
+    asyncio.run(_run())
