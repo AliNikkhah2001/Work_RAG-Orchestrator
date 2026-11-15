@@ -650,6 +650,54 @@ def _fuse_subspace_rrf(filtered: list, whole: list, filtered_weight: float = 1.3
     return out
 
 
+def _maybe_record_scope_broadened_from_adopted_chunks(
+    state: dict,
+    *,
+    origin_subspace: str | None = None,
+    scope_filter: str | None = None,
+    search_query: str | None = None,
+    adopted: bool = True,
+) -> None:
+    """When fallback/broaden adopts chunks, set disclosure flags if subspace shifted."""
+    if not adopted:
+        return
+    if state.get("scope_broadened"):
+        return
+    from ..subspace_routing import (
+        infer_subspace_from_chunks,
+        prefer_cheque_for_color_query,
+        subspace_topic_label,
+    )
+
+    origin = origin_subspace or state.get("sticky_subspace") or state.get("applied_subspace")
+    if not origin:
+        return
+    chunks = state.get("retrieved_chunks") or []
+    if not chunks:
+        return
+
+    new_sub = infer_subspace_from_chunks(chunks)
+    try:
+        q = search_query or state.get("query") or ""
+        new_sub = prefer_cheque_for_color_query(q, new_sub)
+    except Exception:
+        pass
+    if not new_sub or new_sub == origin:
+        return
+
+    state["scope_broadened"] = True
+    state["scope_broadened_from"] = origin
+    state["scope_broadened_to"] = new_sub
+    state["scope_broadened_filter"] = scope_filter
+    log.info(
+        "Adopted chunks subspace shift %s→%s topic=%r filter=%r",
+        origin,
+        new_sub,
+        subspace_topic_label(new_sub),
+        scope_filter,
+    )
+
+
 async def _t1_try_whole_kb_fallback(
     state: dict,
     search_query: str,
@@ -790,6 +838,12 @@ async def _t1_try_whole_kb_fallback(
             # Keep merged for audit even if chunks not adopted.
             state["injected_entities"] = merged_inj
             state["supplemental"] = merged_inj
+        if fb_len > 0:
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=search_query,
+            )
         try:
             from ..tracing import trace_span as _tsp2
 
@@ -1157,6 +1211,12 @@ async def _t2_try_broadened_retry(
                     seen.add(ent.get("list_name"))
             state["injected_entities"] = merged_inj
             state["supplemental"] = merged_inj
+        if fb_len > 0:
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=search_query,
+            )
         try:
             from ..tracing import trace_span as _tsp2
             _tsp2(

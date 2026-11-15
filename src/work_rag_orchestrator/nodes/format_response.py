@@ -1195,6 +1195,16 @@ async def _broaden_retrieve_and_regenerate(state: RAGState) -> RAGState:
         state["fallback_reason"] = (
             f"{base_reason} | H1 broaden regen: len={len(fb_chunks)}"
         )
+        try:
+            from .retrieve import _maybe_record_scope_broadened_from_adopted_chunks
+
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=state.get("rewritten_query") or state.get("query"),
+            )
+        except Exception:
+            pass
         log.info(
             "H1 broaden-regenerate adopted %d chunks for request %s",
             len(fb_chunks),
