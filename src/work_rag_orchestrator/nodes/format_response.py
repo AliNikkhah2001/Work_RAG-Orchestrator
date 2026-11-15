@@ -681,6 +681,16 @@ def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None
     q = (query or "").strip()
     if not q:
         return False
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            lexical_evidence_requires_guarantee_letter,
+        )
+
+        if lexical_evidence_requires_guarantee_letter(q):
+            return has_guarantee_letter_lexical_evidence(q, chunks)
+    except Exception:
+        pass
     # subspace keyword map (same as infer_specification)
     subspace_kw = {
         "cheque": ["چک"],

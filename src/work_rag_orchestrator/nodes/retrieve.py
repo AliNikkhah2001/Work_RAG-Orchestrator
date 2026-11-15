@@ -387,6 +387,16 @@ def _has_lexical_evidence_retrieve(query: str, chunks: list | None, applied_subs
     q = (query or "").strip()
     if not q:
         return False
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            lexical_evidence_requires_guarantee_letter,
+        )
+
+        if lexical_evidence_requires_guarantee_letter(q):
+            return has_guarantee_letter_lexical_evidence(q, chunks)
+    except Exception:
+        pass
     subspace_kw = {
         "cheque": ["چک"],
         "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی"],
@@ -1460,6 +1470,24 @@ async def retrieve(state: RAGState) -> RAGState:
         norm_query = query
     # Keep original query in state for audit, but search with normalized
     search_query = norm_query
+    try:
+        from ..lexical_phrase_ranking import anchor_guarantee_letter_in_search_query
+
+        _user_thread = " ".join(
+            (m.get("content") or "")
+            for m in (messages or [])
+            if m.get("role") == "user"
+        )
+        _anchored = anchor_guarantee_letter_in_search_query(_user_thread, search_query)
+        if _anchored != search_query:
+            log.info(
+                "Guarantee-letter search anchor: %r -> %r",
+                search_query[:80],
+                _anchored[:80],
+            )
+            search_query = _anchored
+    except Exception as _gl_anchor_e:
+        log.warning("Guarantee-letter search anchor skipped: %s", _gl_anchor_e)
     # Stage 1 (instrument): embedding subspace ambiguity, computed ONCE here so
     # every downstream path (sticky, scattered, F5) shares one signal. A scorer
     # failure — missing artifacts, embed service down — must never break
@@ -2839,6 +2867,47 @@ async def retrieve(state: RAGState) -> RAGState:
                 log.info("Final DLQ fallback for request %s top=%.4f < %.3f", request_id, _final_top, _final_thr)
     except Exception:
         pass
+
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            query_wants_bank_guarantee_letter,
+            rerank_chunks_by_compound_phrases,
+        )
+
+        _gl_q = search_query or query
+        if state.get("retrieved_chunks") and query_wants_bank_guarantee_letter(_gl_q):
+            state["retrieved_chunks"] = rerank_chunks_by_compound_phrases(
+                state["retrieved_chunks"], _gl_q
+            )
+            if not has_guarantee_letter_lexical_evidence(_gl_q, state["retrieved_chunks"][:8]):
+                _gl_filter = state.get("sticky_filter_path")
+                if not _gl_filter:
+                    _gl_sub = state.get("sticky_subspace") or state.get("applied_subspace")
+                    try:
+                        from ..config import get_settings as _gs_gl
+
+                        if _gl_sub:
+                            _gl_filter = (_gs_gl().subspace_map or {}).get(_gl_sub)
+                    except Exception:
+                        _gl_filter = None
+                if _gl_filter and not state.get("scope_broadened"):
+                    try:
+                        await _t1_try_whole_kb_fallback(
+                            state,
+                            search_query,
+                            request_id,
+                            top_k=20,
+                            active_filter=_gl_filter,
+                            fallback_reason="guarantee_letter_weak_wrong_topic",
+                        )
+                        state["retrieved_chunks"] = rerank_chunks_by_compound_phrases(
+                            state.get("retrieved_chunks") or [], _gl_q
+                        )
+                    except Exception as _gl_b_e:
+                        log.warning("Guarantee-letter T1 broaden failed: %s", _gl_b_e)
+    except Exception as _gl_rank_e:
+        log.warning("Compound phrase rerank failed: %s", _gl_rank_e)
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:
