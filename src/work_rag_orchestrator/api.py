@@ -89,7 +89,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     
     app = FastAPI(
-        title="دانا",
+        title="دستیار اعتباری نوین ایران",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -110,11 +110,17 @@ def create_app() -> FastAPI:
     @app.get("/v1/models")
     async def list_models():
         # Open WebUI discovery — single Dana agent (ICS product)
-        # id stays ics-helper-agent for API compat; display name is دانا
+        # id stays ics-helper-agent for API compat; display name is the product caption
         return {
             "object": "list",
             "data": [
-                {"id": "ics-helper-agent", "object": "model", "created": 0, "owned_by": "ics", "name": "دانا"},
+                {
+                    "id": "ics-helper-agent",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "ics",
+                    "name": "دستیار اعتباری نوین ایران",
+                },
             ],
         }
 
