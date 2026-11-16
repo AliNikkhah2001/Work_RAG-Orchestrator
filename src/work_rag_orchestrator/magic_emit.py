@@ -285,35 +285,71 @@ def _score_tokens(ent: dict, query: str) -> list[str]:
 
 
 def _clarify_items(state: dict) -> list[dict[str, str]]:
+    """ICS clarify cards must mirror the clarifying question — not dump every report type.
+
+    Dumping cheque+person+legal into every clarify polluted downstream routers
+    (stress harness / sticky pickers) because the MAGIC JSON always contained «چک».
+    """
     query = state.get("query") or ""
+    # Prefer the clean clarifying question (set before magic append).
+    clarify_q = state.get("clarifying_question") or ""
+    if "<<<MAGIC:" in clarify_q:
+        clarify_q = _MAGIC_RE.sub("", clarify_q)
     available = state.get("available_subspaces") or []
 
-    # Colour-rank clarify → چک vs تسهیلات (حقیقی card covers facilities path)
+    # Colour-rank clarify → چک vs تسهیلات (not all three report products)
     try:
         from .subspace_routing import query_has_cheque_color_rank
 
-        if query_has_cheque_color_rank(query):
-            return [_CLARIFY_CARDS["cheque"], _CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
+        if query_has_cheque_color_rank(query) or (
+            "چک" in clarify_q and "تسهیلات" in clarify_q
+        ):
+            return [_CLARIFY_CARDS["cheque"], _CLARIFY_CARDS["person"]]
     except Exception:
-        pass
+        if "چک" in clarify_q and "تسهیلات" in clarify_q:
+            return [_CLARIFY_CARDS["cheque"], _CLARIFY_CARDS["person"]]
+
+    # حقیقی vs حقوقی fork — do NOT include cheque card
+    if "حقیقی" in clarify_q and "حقوقی" in clarify_q:
+        return [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
+
+    # شخصی / شرکتی wording
+    if "شخصی" in clarify_q and ("شرکتی" in clarify_q or "حقوقی" in clarify_q):
+        return [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
 
     keys: list[str] = []
-    blob = " ".join(str(x) for x in available) + " " + query
-    if any(k in blob for k in ("چک", "cheque", "گزارش چک")):
+    # Use query + clarify text only (NOT the full available_subspaces dump —
+    # that list often contains every product label and forced all three cards).
+    blob = f"{query} {clarify_q}"
+    if any(k in blob for k in ("چک", "cheque", "صیاد")):
         keys.append("cheque")
-    if any(k in blob for k in ("حقیقی", "افراد", "facilities_person", "تسهیلات افراد")):
+    if any(k in blob for k in ("حقیقی", "افراد", "شخصی", "facilities_person")):
         keys.append("person")
-    if any(k in blob for k in ("حقوقی", "شرکت", "facilities_legal", "تسهیلات شرکت")):
+    if any(k in blob for k in ("حقوقی", "شرکت", "شرکتی", "facilities_legal")):
         keys.append("legal")
 
-    # Default three report types when clarify is generic
+    # Generic report-type clarify with no fork signal → all three
+    if not keys and any(
+        k in (clarify_q + query) for k in ("گزارش", "نوع", "کدام", "مایلید", "بفرمایید")
+    ):
+        keys = ["person", "legal", "cheque"]
+
+    # Fall back to available labels only when still empty
+    if not keys:
+        avail_blob = " ".join(str(x) for x in available)
+        if any(k in avail_blob for k in ("چک", "cheque")):
+            keys.append("cheque")
+        if any(k in avail_blob for k in ("حقیقی", "افراد", "facilities_person")):
+            keys.append("person")
+        if any(k in avail_blob for k in ("حقوقی", "شرکت", "facilities_legal")):
+            keys.append("legal")
+
     if not keys:
         keys = ["person", "legal", "cheque"]
 
-    # Preserve order person → legal → cheque
     order = ["person", "legal", "cheque"]
     out = [_CLARIFY_CARDS[k] for k in order if k in keys]
-    return out or list(_CLARIFY_CARDS.values())
+    return out or [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
 
 
 def _history_query(query: str) -> bool:

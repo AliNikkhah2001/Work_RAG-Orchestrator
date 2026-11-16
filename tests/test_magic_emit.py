@@ -201,6 +201,7 @@ def test_clarify_emits_cards():
         {
             "query": "وضعیت اعتباری چطور است",
             "needs_clarification": True,
+            "clarifying_question": "آیا منظور شما اشخاص حقیقی است یا اشخاص حقوقی؟",
             "available_subspaces": ["گزارش چک", "تسهیلات افراد", "تسهیلات شرکت‌ها"],
         },
         finish_reason="clarify",
@@ -209,7 +210,21 @@ def test_clarify_emits_cards():
     assert toks[0].startswith("<<<MAGIC:CLARIFY_OPTIONS")
     p = _parse_params(toks[0])
     ids = [i["id"] for i in p["items"]]
-    assert ids == ["person", "legal", "cheque"]
+    # Cards mirror the clarifying fork — not the full available_subspaces dump.
+    assert ids == ["person", "legal"]
+
+
+def test_clarify_cards_match_cheque_facilities_fork():
+    toks = build_magic_tokens(
+        {
+            "query": "رتبه سبز یعنی چه؟",
+            "needs_clarification": True,
+            "clarifying_question": "آیا منظورتان رتبه رنگی گزارش اعتبارسنجی چک است یا رتبه تسهیلات؟",
+        },
+        finish_reason="clarify",
+    )
+    ids = [i["id"] for i in _parse_params(toks[0])["items"]]
+    assert ids == ["person", "cheque"] or ids == ["cheque", "person"]
 
 
 def test_append_idempotent():
