@@ -13,6 +13,7 @@ from work_rag_orchestrator.magic_emit import (
     _extract_score,
     _color_groups_to_bands,
 )
+from work_rag_orchestrator.magic_judge import magic_precheck
 
 
 def _score_ent(model: str, groups: list[dict], sim: float = 0.9) -> dict:
@@ -288,8 +289,17 @@ def test_precheck_skips_generic_and_provider_counts():
     assert "timeline" in magic_precheck("تاریخ شرکت اعتبارسنجی ایران چیه", "stop")
     assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران با بقیه چه فرقی داره", "stop")
     assert "timeline" in magic_precheck("چه تفاوت شرکت اعتبارسنجی ایران با بانک‌ها دارد", "stop")
+    # «که بود و چه کرد» / «چه کرد» / «چیکار می‌کنه» — ICS history+intro
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران که بود و چه کرد", "stop")
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران چه کرده است", "stop")
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران چه اقداماتی انجام داده است", "stop")
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران چیکار می‌کنه", "stop")
+    assert "timeline" in magic_precheck("درباره شرکت اعتبارسنجی ایران شرح بده", "stop")
     # Generic comparison without an ICS anchor must NOT gate (judge can't know the subject)
     assert magic_precheck("چه تفاوتی با سایر شرکت‌ها دارد", "stop") == frozenset()
+    # Product/report asks must not become score candidates on the bare report name
+    assert magic_precheck("گزارش تسهیلات چیست؟", "stop") == frozenset()
+    assert magic_precheck("گزارش چک", "stop") == frozenset()
 
 
 def test_magic_judge_prompt_from_registry_not_hardcoded():
@@ -308,6 +318,57 @@ def test_ambiguous_colour_no_gauge_on_stop():
         finish_reason="stop",
     )
     assert payload == []
+
+
+def test_declaration_followup_after_colour_clarify_fires_gauge():
+    """«رتبه سبز یعنی چه؟» → clarify → «گزارش چک» must answer with a gauge.
+
+    api rewrites the query back to the prior colour question while the user only
+    declared the report type; the resolved product must stop the clarify loop
+    and let the score family fire again.
+    """
+    from work_rag_orchestrator.magic_judge import product_resolved
+
+    state = {
+        "query": "رتبه سبز یعنی چه؟",
+        "rewritten_query": "گزارش چک",
+        "declaration_followup": True,
+        "applied_subspace": "cheque",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+    }
+    assert product_resolved(state) is True
+    assert "score" in magic_precheck("رتبه سبز یعنی چه؟", "stop", product_known=True)
+    assert magic_precheck("رتبه سبز یعنی چه؟", "stop") == frozenset()
+    payload = collect_magic_payload(
+        state, "رتبه سبز در چک بازه ۷۰ تا ۸۵ است.", finish_reason="stop"
+    )
+    assert [p["name"] for p in payload] == ["CREDIT_SCORE_GAUGE"]
+    assert payload[0]["params"]["band"] == "سبز"
+    assert payload[0]["params"]["model"] == "cheque"
+
+
+def test_declaration_followup_without_cheque_leaf_does_not_fire_gauge():
+    """A declaration that resolves to a non-product leaf stays un-gated."""
+    from work_rag_orchestrator.magic_judge import product_resolved
+
+    assert (
+        product_resolved(
+            {
+                "declaration_followup": True,
+                "applied_subspace": "credit_ladder",
+            }
+        )
+        is False
+    )
+    assert (
+        product_resolved(
+            {
+                "declaration_followup": False,
+                "applied_subspace": "cheque",
+            }
+        )
+        is False
+    )
 
 
 def test_provider_answer_digits_no_gauge():

@@ -58,11 +58,14 @@ def should_clarify(state: RAGState) -> str:
     """
     # Ambiguous colour-rank («رتبه سبز یعنی چه؟») must clarify چک vs تسهیلات
     # even when an FAQ/colour glossary hit would otherwise short-circuit.
+    # Not when this turn already resolved the product (post-clarify «گزارش چک»):
+    # api rewrites the query to the prior question, so judging the rewritten
+    # colour question again would loop the same clarify forever.
     try:
-        from .magic_judge import _ambiguous_colour_rank
+        from .magic_judge import _ambiguous_colour_rank, product_resolved
 
         _q = state.get("query") or ""
-        if _ambiguous_colour_rank(_q):
+        if _ambiguous_colour_rank(_q, product_known=product_resolved(state)):
             state["needs_clarification"] = True
             if not state.get("available_subspaces"):
                 state["available_subspaces"] = list(SUBSPACES)
