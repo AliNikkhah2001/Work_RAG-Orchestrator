@@ -214,6 +214,42 @@ def test_timeline_on_history_query():
     assert any(t.startswith("<<<MAGIC:COMPANY_TIMELINE") for t in toks)
 
 
+def test_ics_intro_emits_timeline_not_gauge():
+    """Regression: ماده (۵) / امتیاز چک in prose must not invent a cheque gauge."""
+    answer = (
+        "شرکت اعتبارسنجی ایران (ICS) یک شرکت سهامی خاص است که در آبان‌ماه سال ۱۳۸۵ "
+        "بر اساس ماده (۵) قانون تسهیل اعطای تسهیلات بانکی تأسیس شد. "
+        "محصولات شامل گزارش و امتیاز اعتباری تسهیلات و همچنین گزارش و امتیاز چک است."
+    )
+    state = {
+        "query": "شرکت اعتبارسنجی ایران چیست؟",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        "_magic_answer_blob": f"شرکت اعتبارسنجی ایران چیست؟\n{answer}",
+        "_magic_specific_score": False,
+    }
+    toks = build_magic_tokens(state, finish_reason="stop")
+    names = [re.match(r"<<<MAGIC:([A-Z_]+)", t).group(1) for t in toks]
+    assert names == ["COMPANY_TIMELINE"]
+
+    payload = collect_magic_payload(
+        {
+            "query": "شرکت اعتبارسنجی ایران چیست؟",
+            "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        },
+        answer,
+        finish_reason="stop",
+    )
+    assert [p["name"] for p in payload] == ["COMPANY_TIMELINE"]
+
+
+def test_law_article_digit_is_not_cheque_score():
+    from work_rag_orchestrator.magic_emit import _blob_has_cheque_numeric, _extract_score
+
+    blob = "بر اساس ماده (۵) قانون تسهیل اعطای تسهیلات بانکی تأسیس شد."
+    assert _blob_has_cheque_numeric(blob) is False
+    assert _extract_score(blob, _color_groups_to_bands(CHEQUE_GROUPS), 1, 100) is None
+
+
 def test_clarify_emits_cards():
     toks = build_magic_tokens(
         {
