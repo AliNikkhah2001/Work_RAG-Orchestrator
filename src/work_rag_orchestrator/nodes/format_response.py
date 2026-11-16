@@ -416,6 +416,12 @@ def _abstention_phrase() -> str:
     return abstention_phrase()
 
 
+def _has_retrieval_evidence(state: RAGState, chunks: list | None = None) -> bool:
+    """True when KB chunks and/or supplemental entity rows are present."""
+    ch = chunks if chunks is not None else (state.get("retrieved_chunks") or [])
+    return bool(ch) or bool(state.get("supplemental") or state.get("injected_entities"))
+
+
 # F: faith/hallucination guard thresholds for weak-evidence answers. An
 # answer produced on a weak-evidence path (T1 whole-KB fallback or T2
 # broadened retry) is replaced with NO_EVIDENCE when the kept/cited
@@ -545,7 +551,7 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "حقوقی" in pat or "شرکت" in pat or "قانونی" in pat)
     else:
-        # For other subspaces, use general patterns but be conservative
+        # For other subspaces (incl. general), use general patterns but be conservative
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "تعریف نشده" in pat or "ارائه نمی‌شود" in pat or "پشتیبانی نمی‌شود" in pat)
     
@@ -565,6 +571,16 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
     if not_avail_in_answer:
         # Answer acknowledges unavailability - not a contradiction
         return False
+
+    # Comparative FAQ answers (حقیقی vs حقوقی) often co-retrieve the
+    # «چک برای حقوقی تعریف نشده» note. Words like «روش» then false-trigger
+    # this guard and replace a correct definition with «یافت نشد».
+    if applied_subspace in (None, "", "general"):
+        comparative = ("حقیقی" in answer_lower and "حقوقی" in answer_lower) or (
+            "تفاوت" in answer_lower and ("حقیقی" in answer_lower or "حقوقی" in answer_lower)
+        )
+        if comparative:
+            return False
     
     log.info(
         "Contradiction guard fired for request %s: chunks say NOT available, but answer gives advice",
@@ -675,6 +691,16 @@ def _has_lexical_evidence(query: str, chunks: list, applied_subspace: str | None
     q = (query or "").strip()
     if not q:
         return False
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            lexical_evidence_requires_guarantee_letter,
+        )
+
+        if lexical_evidence_requires_guarantee_letter(q):
+            return has_guarantee_letter_lexical_evidence(q, chunks)
+    except Exception:
+        pass
     # subspace keyword map (same as infer_specification)
     subspace_kw = {
         "cheque": ["چک"],
@@ -819,18 +845,24 @@ async def format_response(state: RAGState) -> RAGState:
         # war-period/date phrasing ranked below the cut). Retry exactly once
         # against the whole KB (filter_path=None) with the ORIGINAL user query;
         # after one attempt the canonical refusal stands.
-        if (
-            _abstention_phrase() in answer_raw
-            and not state.get("broaden_after_abstention")
-            and not state.get("broaden_used")
+        if _abstention_phrase() in answer_raw and not state.get(
+            "broaden_after_abstention"
         ):
+            _has_evidence = _has_retrieval_evidence(state, chunks)
             try:
-                state = await _broaden_retrieve_and_regenerate(state)
-                answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
-                chunks = state["retrieved_chunks"]
+                if _has_evidence:
+                    state = await _regenerate_with_existing_chunks(state)
+                    answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
+                    chunks = state.get("retrieved_chunks") or chunks
+                if _abstention_phrase() in answer_raw and not state.get("broaden_used"):
+                    state = await _broaden_retrieve_and_regenerate(state)
+                    answer_raw = _to_plain_text(_clean_answer(state.get("answer") or ""))
+                    chunks = state["retrieved_chunks"]
+                if not state.get("broaden_after_abstention"):
+                    state["broaden_after_abstention"] = True
             except Exception as e:
                 log.warning(
-                    "H1 post-abstention broaden regen failed for %s: %s", request_id, e
+                    "H1 post-abstention recovery failed for %s: %s", request_id, e
                 )
 
         # Prefer Entity Data over abstention / empty / score-table bleed.
@@ -925,11 +957,20 @@ async def format_response(state: RAGState) -> RAGState:
             citations = []
             follow_ups = []
             state["follow_ups"] = follow_ups
+            # Still allow score-viz gauges (cheque/person/legal) on weak evidence
+            try:
+                from ..magic_emit import append_magic_tokens as _magic_noev
+
+                content = _magic_noev(content, state, finish_reason=finish_reason)
+            except Exception:
+                pass
+            _magic_noev_payload = state.get("magic_payload") or []
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,
                 "citations": [],
                 "follow_ups": follow_ups,
+                "magic": _magic_noev_payload if _magic_noev_payload else None,
             }
             log.info("Formatted response (no-evidence guard) for request %s", request_id)
             try:
@@ -1081,6 +1122,23 @@ async def format_response(state: RAGState) -> RAGState:
         else:
             follow_ups = []
     
+    # Post-hoc Dana magic: rule-gated (LLM judge only when precheck hits).
+    # Widgets stay off the message body (API exposes via rag.magic).
+    try:
+        from ..magic_emit import append_magic_tokens_async
+
+        content = await append_magic_tokens_async(content, state, finish_reason=finish_reason)
+    except Exception as _magic_err:
+        log.warning("magic_emit append failed for %s: %s", request_id, _magic_err)
+        try:
+            from ..magic_emit import append_magic_tokens
+
+            content = append_magic_tokens(content, state, finish_reason=finish_reason)
+        except Exception:
+            pass
+
+    magic_payload = state.get("magic_payload") or []
+
     # Store formatted response data in state for API layer (including grounded follow_ups)
     state["follow_ups"] = follow_ups
     state["formatted_response"] = {
@@ -1088,6 +1146,7 @@ async def format_response(state: RAGState) -> RAGState:
         "finish_reason": finish_reason,
         "citations": [c.model_dump() for c in citations],
         "follow_ups": follow_ups,
+        "magic": magic_payload if magic_payload else None,
     }
     
     log.info("Formatted response for request %s", request_id)
@@ -1110,13 +1169,25 @@ async def format_response(state: RAGState) -> RAGState:
     return state
 
 
+async def _regenerate_with_existing_chunks(state: RAGState) -> RAGState:
+    """H1b: one guarded_generate pass over current chunks (no KB re-retrieve)."""
+    request_id = state["request_id"]
+    log.info("H1b regen-with-existing-chunks for request %s", request_id)
+    from .build_context import build_context as _bc
+    from .guarded_generate import guarded_generate as _gg
+
+    state = await _bc(state)
+    state = await _gg(state)
+    return state
+
+
 async def _broaden_retrieve_and_regenerate(state: RAGState) -> RAGState:
     """
     H1: after a generation-time "یافت نشد", retry retrieval once against the
     whole KB (filter_path=None) using the ORIGINAL user query, then regenerate.
     Used when the history-rewritten query drifted away from matching phrasing
     (e.g. dates/war terms) so on-topic chunks ranked below the cut. Single
-    attempt only — guarded by broaden_after_abstention / broaden_used flags.
+    attempt only — guarded by broaden_after_abstention (H1b may run first).
     """
     request_id = state["request_id"]
     query = (state.get("query") or state.get("rewritten_query") or "").strip()
@@ -1171,6 +1242,16 @@ async def _broaden_retrieve_and_regenerate(state: RAGState) -> RAGState:
         state["fallback_reason"] = (
             f"{base_reason} | H1 broaden regen: len={len(fb_chunks)}"
         )
+        try:
+            from .retrieve import _maybe_record_scope_broadened_from_adopted_chunks
+
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=state.get("rewritten_query") or state.get("query"),
+            )
+        except Exception:
+            pass
         log.info(
             "H1 broaden-regenerate adopted %d chunks for request %s",
             len(fb_chunks),

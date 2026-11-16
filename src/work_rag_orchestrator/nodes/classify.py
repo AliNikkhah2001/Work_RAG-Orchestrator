@@ -12,8 +12,7 @@ try:
 except Exception:  # pragma: no cover
     _is_scattered = lambda q: False  # type: ignore
 
-# Heuristic fallback when LLM down — mirrors detect_greeting_kind but as 3-way
-_GREETING = {"سلام","درود","hello","hi","hey","صبح بخیر","وقت بخیر"}
+# Heuristic fallback when LLM down — reuse retrieve.detect_greeting_kind
 _SPEC_KEYWORDS = {
   "cheque": ["چک","صیاد","پیچک","برگشت"],
   "facilities_person": ["تسهیلات","وام","قسط"],
@@ -48,11 +47,20 @@ def _looks_like_entity_lookup(text: str) -> bool:
     return False
 
 def _heuristic_classify(text: str) -> str:
+    try:
+        from .retrieve import detect_greeting_kind
+
+        kind = detect_greeting_kind(text)
+        if kind == "greeting":
+            return "greeting"
+        if kind in ("farewell", "thanks"):
+            return "greeting"  # same short-circuit path for smalltalk
+    except Exception:
+        pass
     t = text.strip().lower()
     t = re.sub(r"\.+$","",t).strip()
     for ch in "؟?!.,،؛:\"'«»()…-": t=t.replace(ch,"")
     t = " ".join(t.replace("‌"," ").split())
-    if t in _GREETING: return "greeting"
     # specification: short (<=4 words) + subspace keyword, no question mark
     if (
         len(t.split()) <= 4
@@ -162,11 +170,29 @@ async def classify(state: RAGState) -> RAGState:
             or (("هیچ کدوم" in text or "هیچکدوم" in text) and any(kw in text for kw in ["مدیر", "هیات", "هیئت", "معرفی", "عمومی", "شرکت"]))
         ):
             state["applied_subspace"] = "general"
+        # Colour-rank without product (رتبه سبز یعنی چه؟) → clarify چک vs تسهیلات
+        # Must run BEFORE the چیست/چیه → general shortcut, which would otherwise
+        # swallow these and answer with a false cheque gauge.
+        _colour_clarify = False
+        try:
+            from ..magic_judge import _ambiguous_colour_rank
+            from ..content_registry import clarify_option_labels
+            from ..subspace_routing import L2_SUBSPACES
+
+            if _ambiguous_colour_rank(text):
+                state["applied_subspace"] = None
+                state["needs_clarification"] = True
+                state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
+                state["clarifying_question"] = None
+                _colour_clarify = True
+                log.info("classify ambiguous colour-rank -> clarify for query=%r", text[:80])
+        except Exception:
+            pass
         # P2.2: short چیست/چیه definitions prefer general (not nardban/kafil clarify)
         try:
             from .infer_specification import is_definition_question as _is_def_q
 
-            if _is_def_q(text) and not state.get("applied_subspace"):
+            if (not _colour_clarify) and _is_def_q(text) and not state.get("applied_subspace"):
                 state["applied_subspace"] = "general"
                 state["needs_clarification"] = False
         except Exception:
@@ -182,7 +208,7 @@ async def classify(state: RAGState) -> RAGState:
                 state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None
                 log.info("classify cross-product impact -> clarify for query=%r", text[:80])
-            elif not state.get("applied_subspace") and _is_scattered(text):
+            elif not state.get("applied_subspace") and not state.get("needs_clarification") and _is_scattered(text):
                 state["needs_clarification"] = True
                 state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None

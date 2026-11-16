@@ -1,4 +1,4 @@
-version: 1.0.4
+version: 1.0.5
 kind: prompts
 scope: orchestrator
 prompts:
@@ -403,3 +403,33 @@ prompts:
 
     این پاسخ به سؤال جواب می‌دهد؟ (y/n)'
   specification_ack: حوزه «{label}» انتخاب شد. حالا سوالتان را در همین حوزه بفرمایید.
+  magic_judge: 'نقش: مسیریاب ویجت Dana برای سامانه اعتبارسنجی ایران (ICS).
+    فقط وقتی یکی از خانواده‌های کاندید زیر مجاز است تصمیم بگیر؛ در غیر این صورت fire=false.
+
+    کاندیدها: {families}
+
+    ویجت‌ها:
+    - NONE: هیچ ویجتی
+    - CREDIT_SCORE_GAUGE: فقط اگر کاربر صریحاً درباره امتیاز/رتبه/رنگ/گرید بپرسد و در خودِ پرسش عدد امتیاز یا رنگ یا کد A1–E3 باشد. هرگز از سال، ماده قانون، تعداد تأمین‌کننده، یا لیست محصولات امتیاز نساز.
+    - CREDIT_SCORE_BANDS: نردبان/ladder
+    - COMPANY_TIMELINE: تاریخچه/تأسیس/معرفی شرکت اعتبارسنجی ایران
+    - SHAREHOLDERS: سهامداران شرکت اعتبارسنجی ایران
+    - CREDITORS: تأمین‌کنندگان داده شرکت اعتبارسنجی ایران
+
+    مدل امتیاز: cheque (۱–۱۰۰، چک) | person (۲۵۰–۹۰۰، حقیقی) | legal (۲۵۰–۹۰۰، حقوقی)
+    variant پیش‌فرض ring؛ نردبان=vertical/horizontal؛ خطی=linear؛ عمودی=vertical؛ افقی=horizontal.
+
+    پرسش کاربر:
+    {query}
+
+    پاسخ مدل (فقط زمینه؛ امتیاز را از اینجا اختراع نکن):
+    {answer}
+
+    خروجی فقط JSON یک خطی، یکی از:
+    {{"fire":false}}
+    {{"fire":true,"name":"CREDIT_SCORE_GAUGE","params":{{"model":"cheque","score":80,"band":null,"variant":"ring"}}}}
+    {{"fire":true,"name":"CREDIT_SCORE_BANDS","params":{{"model":"person","variant":"vertical"}}}}
+    {{"fire":true,"name":"COMPANY_TIMELINE","params":{{"variant":"vertical"}}}}
+    {{"fire":true,"name":"SHAREHOLDERS","params":{{}}}}
+    {{"fire":true,"name":"CREDITORS","params":{{}}}}
+    '

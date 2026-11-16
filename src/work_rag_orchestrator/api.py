@@ -853,12 +853,11 @@ def create_app() -> FastAPI:
 
                     query = initial_state.get("query") or (initial_state["messages"][-1]["content"] if initial_state.get("messages") else "")
                     initial_state["query"] = query
-                    yield ": agent validate_input + retrieve running\n\n"
-                    t_retrieve = time.monotonic()
-                    v_task = asyncio.create_task(node_validate(initial_state))
-                    r_task = asyncio.create_task(node_retrieve(initial_state))
-                    state = await v_task
-                    await r_task
+                    # Sequential validate → retrieve (no shared-state race). Parallel
+                    # create_task on the same dict corrupted blocked/chunks under load
+                    # and could raise into the Persian catch-all on GPU.
+                    yield ": agent validate_input running\n\n"
+                    state = await node_validate(initial_state)
                     if state.get("blocked"):
                         content = state.get("refusal_message") or __import__("work_rag_orchestrator.content_registry", fromlist=["refusal_message"]).refusal_message("stream_blocked")
                         yield ": agent validate_input done blocked=true\n\n"
@@ -867,6 +866,20 @@ def create_app() -> FastAPI:
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'content_filter'}]}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         return
+                    yield ": agent retrieve running\n\n"
+                    t_retrieve = time.monotonic()
+                    try:
+                        state = await node_retrieve(state)
+                    except Exception as retr_err:
+                        # Soft-fail: empty evidence → no_evidence / clarify paths below
+                        # instead of aborting SSE with «خطا در پردازش درخواست.»
+                        log.exception(
+                            "Streaming retrieve soft-failed for %s: %s",
+                            request_id,
+                            retr_err,
+                        )
+                        state["retrieved_chunks"] = state.get("retrieved_chunks") or []
+                        state["error"] = f"retrieve_soft_fail:{type(retr_err).__name__}"
                     retrieved = state.get("retrieved_chunks", [])
                     yield f": agent retrieve done chunks={len(retrieved)} latency_ms={int((time.monotonic()-t_retrieve)*1000)}\n\n"
 
@@ -884,10 +897,17 @@ def create_app() -> FastAPI:
                     # P2.2: FAQ direct before clarify — verified FAQ must not lose to scattered flag
                     if state.get("faq_verified") and state.get("direct_faq_answer"):
                         content = state.get("direct_faq_answer")
+                        try:
+                            from .magic_emit import append_magic_tokens as _magic_faq
+
+                            content = _magic_faq(content or "", state, finish_reason="stop")
+                        except Exception:
+                            pass
                         yield ": agent guarded_generate faq_direct streaming\n\n"
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                         sup_faq = state.get("supplemental") or state.get("injected_entities") or []
+                        _magic_faq = state.get("magic_payload") or (state.get("formatted_response") or {}).get("magic")
                         _rag_faq = {
                             "request_id": request_id,
                             "citations": [],
@@ -895,6 +915,7 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "magic": _magic_faq if _magic_faq else None,
                         }
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':_rag_faq}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -919,6 +940,7 @@ def create_app() -> FastAPI:
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                         sup_clarify = state.get("supplemental") or state.get("injected_entities") or []
+                        _magic_clarify = state.get("magic_payload") or (state.get("formatted_response") or {}).get("magic")
                         _rag_clarify = {
                             "request_id": request_id,
                             "citations": [],
@@ -926,6 +948,7 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "magic": _magic_clarify if _magic_clarify else None,
                         }
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'clarify'}],'rag':_rag_clarify}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -984,8 +1007,10 @@ def create_app() -> FastAPI:
                             pass
                         return
 
-                    # Normal RAG — REAL streaming from Guardrails->Gemma (no sleep, tokens arrive as LLM generates)
-                    yield ": agent guarded_generate streaming\n\n"
+                    # Normal RAG with evidence: buffer generation, run format/H1b, THEN
+                    # stream the final answer. Live-yielding tokens first let Gemma's
+                    # spurious «یافت نشد» reach the client before recovery could run.
+                    yield ": agent guarded_generate buffering\n\n"
                     settings = get_settings()
                     req = GuardrailsChatRequest(
                         model=settings.upstream_llm_model,
@@ -997,26 +1022,32 @@ def create_app() -> FastAPI:
                     async with GuardrailsClient() as gclient:
                         async for token in gclient.chat_completion_stream(req, request_id):
                             full_answer.append(token)
-                            chunk = {
-                                "id": f"chatcmpl-{request_id}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": request.model,
-                                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
-                            }
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                            # No sleep — real LLM pacing (~30ms/token) is the animation
 
-                    # Finalize state for citations/audit + grounded follow-ups
                     answer_text = "".join(full_answer)
                     state["answer"] = answer_text
-                    # Format citations (same as format_response) — includes grounded follow_ups
                     state = await node_format(state)
                     formatted = state.get("formatted_response", {}) or {}
+                    answer_text = (formatted.get("content") or answer_text or "").strip()
+                    state["answer"] = answer_text
+                    yield ": agent format_response done streaming_answer\n\n"
+                    for tok in re.findall(r"\S+\s*", answer_text):
+                        chunk = {
+                            "id": f"chatcmpl-{request_id}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": request.model,
+                            "choices": [{"index": 0, "delta": {"content": tok}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                     citations = formatted.get("citations", [])
                     finish_reason = formatted.get("finish_reason", "stop")
                     follow_ups_stream = formatted.get("follow_ups") or state.get("follow_ups") or []
                     supplemental_stream = state.get("supplemental") or state.get("injected_entities") or []
+                    magic_stream = (
+                        state.get("magic_payload")
+                        or formatted.get("magic")
+                        or []
+                    )
                     final_chunk = {
                         "id": f"chatcmpl-{request_id}",
                         "object": "chat.completion.chunk",
@@ -1031,18 +1062,42 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "scope_broadened": bool(state.get("scope_broadened")),
+                            "scope_broadened_to": state.get("scope_broadened_to"),
+                            "magic": magic_stream if magic_stream else None,
                         },
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     try:
                         from .tracing import update_trace
-                        update_trace(request_id, answer_text[:2000], {"finish_reason":finish_reason,"citations":len(citations),"retrieved":len(retrieved),"stream":True,"real_stream":True})
+                        update_trace(request_id, answer_text[:2000], {"finish_reason":finish_reason,"citations":len(citations),"retrieved":len(retrieved),"stream":True,"buffered_then_stream":True})
                     except Exception:
                         pass
                 except Exception as e:
-                    log.exception("Streaming failed: %s", e)
-                    err = {"id":f"chatcmpl-{request_id}","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"خطا در پردازش درخواست."},"finish_reason":"error"}]}
+                    # Keep the Persian user-facing string (QA fingerprint) but log the
+                    # real exception class for GPU diagnosis (OOM / 400 / IncompleteRead).
+                    log.exception(
+                        "Streaming failed request_id=%s exc_type=%s: %s",
+                        request_id,
+                        type(e).__name__,
+                        e,
+                    )
+                    yield f": agent stream_error type={type(e).__name__}\n\n"
+                    err = {
+                        "id": f"chatcmpl-{request_id}",
+                        "object": "chat.completion.chunk",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": "خطا در پردازش درخواست."},
+                            "finish_reason": "error",
+                        }],
+                        "rag": {
+                            "request_id": request_id,
+                            "error_type": type(e).__name__,
+                            "error": str(e)[:300],
+                        },
+                    }
                     yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
 
@@ -1286,6 +1341,11 @@ def create_app() -> FastAPI:
                 applied_subspace=final_state.get("applied_subspace"),
                 sticky_subspace=final_state.get("sticky_subspace") or final_state.get("applied_subspace"),
                 available_subspaces=final_state.get("available_subspaces"),
+                magic=(
+                    final_state.get("magic_payload")
+                    or formatted.get("magic")
+                    or None
+                ),
             ),
             audit=audit,
         )

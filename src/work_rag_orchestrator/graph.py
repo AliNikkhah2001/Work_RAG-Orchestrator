@@ -56,6 +56,19 @@ def should_clarify(state: RAGState) -> str:
     Verified FAQ / direct answers also short-circuit clarify (P2.2): e.g.
     «اعتبارسنجی چیست» must not route to nardban/kafil options.
     """
+    # Ambiguous colour-rank («رتبه سبز یعنی چه؟») must clarify چک vs تسهیلات
+    # even when an FAQ/colour glossary hit would otherwise short-circuit.
+    try:
+        from .magic_judge import _ambiguous_colour_rank
+
+        _q = state.get("query") or ""
+        if _ambiguous_colour_rank(_q):
+            state["needs_clarification"] = True
+            if not state.get("available_subspaces"):
+                state["available_subspaces"] = list(SUBSPACES)
+            return "clarify"
+    except Exception:
+        pass
     # P2.2: FAQ direct hit wins over scattered/needs_clarification
     if state.get("faq_verified") and state.get("direct_faq_answer"):
         return "continue"

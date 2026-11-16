@@ -19,13 +19,23 @@ log = logging.getLogger(__name__)
 # "سلام" can never be rewritten into an older question and RAG-fabricated.
 _GREETING = {
     "سلام", "سلام وقت بخیر", "سلام صبح بخیر", "سلام عصر بخیر", "سلام شب بخیر",
-    "درود", "درود بر شما", "هی", "هیلو", "hello", "hi", "hey", "hey there",
+    "سلام روز بخیر", "درود", "درود بر شما", "هی", "هیلو", "hello", "hi", "hey", "hey there",
     "صبح بخیر", "عصر بخیر", "شب بخیر", "روز بخیر", "وقت بخیر",
 }
 _FAREWELL = {"خداحافظ", "خدا حافظ", "بای", "bye", "goodbye", "فعلا", "فعلاً"}
 _THANKS = {
     "ممنون", "ممنونم", "مرسی", "تشکر", "متشکرم", "متشکرم", "تشکر میکنم",
     "دست شما درد نکند", "دستت درد نکند", "عالی", "باشه", "اوکی", "ok", "thanks", "thank you",
+}
+# Tokens allowed in compound greetings like "سلام روزتون بخیر" / "درود وقت بخیر".
+_GREETING_TOKENS = {
+    "سلام", "درود", "هی", "هیلو", "hello", "hi", "hey", "there",
+    "صبح", "ظهر", "عصر", "شب", "روز", "وقت", "بخیر", "بر", "شما",
+    "روزتون", "روزتان", "وقتون", "وقتتان", "صبحون", "صبحتان",
+    "عصرون", "عصرتان", "شبون", "شبتان", "و", "خوب", "خوبی", "چطورید", "چطوری",
+}
+_GREETING_ANCHORS = {
+    "سلام", "درود", "هی", "هیلو", "hello", "hi", "hey", "بخیر",
 }
 
 
@@ -47,6 +57,19 @@ def detect_greeting_kind(text: str) -> str | None:
     if t in _THANKS:
         return "thanks"
     if t in _GREETING:
+        return "greeting"
+    # Compound greetings only: short utterances made of greeting tokens
+    # (e.g. "سلام روز بخیر", "سلام، روزتون بخیر") — never a real question.
+    parts = t.split()
+    if (
+        1 < len(parts) <= 8
+        and any(p in _GREETING_ANCHORS for p in parts)
+        and all(
+            p in _GREETING_TOKENS
+            or p.startswith(("روز", "وقت", "صبح", "عصر", "شب"))
+            for p in parts
+        )
+    ):
         return "greeting"
     return None
 
@@ -387,6 +410,16 @@ def _has_lexical_evidence_retrieve(query: str, chunks: list | None, applied_subs
     q = (query or "").strip()
     if not q:
         return False
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            lexical_evidence_requires_guarantee_letter,
+        )
+
+        if lexical_evidence_requires_guarantee_letter(q):
+            return has_guarantee_letter_lexical_evidence(q, chunks)
+    except Exception:
+        pass
     subspace_kw = {
         "cheque": ["چک"],
         "facilities_person": ["تسهیلات", "وام", "قسط", "حقیقی"],
@@ -650,6 +683,54 @@ def _fuse_subspace_rrf(filtered: list, whole: list, filtered_weight: float = 1.3
     return out
 
 
+def _maybe_record_scope_broadened_from_adopted_chunks(
+    state: dict,
+    *,
+    origin_subspace: str | None = None,
+    scope_filter: str | None = None,
+    search_query: str | None = None,
+    adopted: bool = True,
+) -> None:
+    """When fallback/broaden adopts chunks, set disclosure flags if subspace shifted."""
+    if not adopted:
+        return
+    if state.get("scope_broadened"):
+        return
+    from ..subspace_routing import (
+        infer_subspace_from_chunks,
+        prefer_cheque_for_color_query,
+        subspace_topic_label,
+    )
+
+    origin = origin_subspace or state.get("sticky_subspace") or state.get("applied_subspace")
+    if not origin:
+        return
+    chunks = state.get("retrieved_chunks") or []
+    if not chunks:
+        return
+
+    new_sub = infer_subspace_from_chunks(chunks)
+    try:
+        q = search_query or state.get("query") or ""
+        new_sub = prefer_cheque_for_color_query(q, new_sub)
+    except Exception:
+        pass
+    if not new_sub or new_sub == origin:
+        return
+
+    state["scope_broadened"] = True
+    state["scope_broadened_from"] = origin
+    state["scope_broadened_to"] = new_sub
+    state["scope_broadened_filter"] = scope_filter
+    log.info(
+        "Adopted chunks subspace shift %s→%s topic=%r filter=%r",
+        origin,
+        new_sub,
+        subspace_topic_label(new_sub),
+        scope_filter,
+    )
+
+
 async def _t1_try_whole_kb_fallback(
     state: dict,
     search_query: str,
@@ -790,6 +871,12 @@ async def _t1_try_whole_kb_fallback(
             # Keep merged for audit even if chunks not adopted.
             state["injected_entities"] = merged_inj
             state["supplemental"] = merged_inj
+        if fb_len > 0:
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=search_query,
+            )
         try:
             from ..tracing import trace_span as _tsp2
 
@@ -1157,6 +1244,12 @@ async def _t2_try_broadened_retry(
                     seen.add(ent.get("list_name"))
             state["injected_entities"] = merged_inj
             state["supplemental"] = merged_inj
+        if fb_len > 0:
+            _maybe_record_scope_broadened_from_adopted_chunks(
+                state,
+                scope_filter=None,
+                search_query=search_query,
+            )
         try:
             from ..tracing import trace_span as _tsp2
             _tsp2(
@@ -1400,6 +1493,24 @@ async def retrieve(state: RAGState) -> RAGState:
         norm_query = query
     # Keep original query in state for audit, but search with normalized
     search_query = norm_query
+    try:
+        from ..lexical_phrase_ranking import anchor_guarantee_letter_in_search_query
+
+        _user_thread = " ".join(
+            (m.get("content") or "")
+            for m in (messages or [])
+            if m.get("role") == "user"
+        )
+        _anchored = anchor_guarantee_letter_in_search_query(_user_thread, search_query)
+        if _anchored != search_query:
+            log.info(
+                "Guarantee-letter search anchor: %r -> %r",
+                search_query[:80],
+                _anchored[:80],
+            )
+            search_query = _anchored
+    except Exception as _gl_anchor_e:
+        log.warning("Guarantee-letter search anchor skipped: %s", _gl_anchor_e)
     # Stage 1 (instrument): embedding subspace ambiguity, computed ONCE here so
     # every downstream path (sticky, scattered, F5) shares one signal. A scorer
     # failure — missing artifacts, embed service down — must never break
@@ -1568,12 +1679,33 @@ async def retrieve(state: RAGState) -> RAGState:
     # Entity evidence cancels a pending scattered-clarify (classify's T5 gate
     # pre-sets needs_clarification; with matched dictionary rows the model can
     # answer the code question directly instead of asking چک vs تسهیلات).
+    # Exception: ambiguous colour-rank asks («رتبه سبز یعنی چه؟») must still
+    # clarify چک vs تسهیلات — a co-retrieved score_table must NOT skip clarify
+    # and invent a cheque gauge.
     if state.get("supplemental") and state.get("needs_clarification"):
-        state["needs_clarification"] = False
-        log.info(
-            "Cancelling pending clarify for request %s: entity supplement matched",
-            request_id,
-        )
+        _keep_colour_clarify = False
+        try:
+            from ..subspace_routing import query_has_cheque_color_rank
+            from ..magic_judge import _ambiguous_colour_rank, _query_has_product
+
+            _cq = state.get("query") or ""
+            if query_has_cheque_color_rank(_cq) and (
+                _ambiguous_colour_rank(_cq) or not _query_has_product(_cq)
+            ):
+                _keep_colour_clarify = True
+        except Exception:
+            _keep_colour_clarify = False
+        if _keep_colour_clarify:
+            log.info(
+                "Keeping colour-rank clarify for request %s despite supplemental",
+                request_id,
+            )
+        else:
+            state["needs_clarification"] = False
+            log.info(
+                "Cancelling pending clarify for request %s: entity supplement matched",
+                request_id,
+            )
 
     def _item_dict(c, default_source: str) -> dict:
         d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
@@ -2779,6 +2911,47 @@ async def retrieve(state: RAGState) -> RAGState:
                 log.info("Final DLQ fallback for request %s top=%.4f < %.3f", request_id, _final_top, _final_thr)
     except Exception:
         pass
+
+    try:
+        from ..lexical_phrase_ranking import (
+            has_guarantee_letter_lexical_evidence,
+            query_wants_bank_guarantee_letter,
+            rerank_chunks_by_compound_phrases,
+        )
+
+        _gl_q = search_query or query
+        if state.get("retrieved_chunks") and query_wants_bank_guarantee_letter(_gl_q):
+            state["retrieved_chunks"] = rerank_chunks_by_compound_phrases(
+                state["retrieved_chunks"], _gl_q
+            )
+            if not has_guarantee_letter_lexical_evidence(_gl_q, state["retrieved_chunks"][:8]):
+                _gl_filter = state.get("sticky_filter_path")
+                if not _gl_filter:
+                    _gl_sub = state.get("sticky_subspace") or state.get("applied_subspace")
+                    try:
+                        from ..config import get_settings as _gs_gl
+
+                        if _gl_sub:
+                            _gl_filter = (_gs_gl().subspace_map or {}).get(_gl_sub)
+                    except Exception:
+                        _gl_filter = None
+                if _gl_filter and not state.get("scope_broadened"):
+                    try:
+                        await _t1_try_whole_kb_fallback(
+                            state,
+                            search_query,
+                            request_id,
+                            top_k=20,
+                            active_filter=_gl_filter,
+                            fallback_reason="guarantee_letter_weak_wrong_topic",
+                        )
+                        state["retrieved_chunks"] = rerank_chunks_by_compound_phrases(
+                            state.get("retrieved_chunks") or [], _gl_q
+                        )
+                    except Exception as _gl_b_e:
+                        log.warning("Guarantee-letter T1 broaden failed: %s", _gl_b_e)
+    except Exception as _gl_rank_e:
+        log.warning("Compound phrase rerank failed: %s", _gl_rank_e)
 
     elapsed = round((time.monotonic() - t0) * 1000, 1)
     if "stage_timing_ms" not in state or state["stage_timing_ms"] is None:

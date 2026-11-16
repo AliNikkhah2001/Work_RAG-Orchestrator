@@ -126,7 +126,22 @@ format_response --> END</code></pre>
           <tr><td><code>POST</code></td><td>/v1/chat/completions</td><td>OpenAI-compatible chat entry point (streaming + non-streaming)</td></tr>
         </tbody>
       </table>
-      <p class="diagram-note">Non-streaming response includes <code>rag</code> metadata (<code>request_id</code>, <code>citations</code>, <code>applied_subspace</code>, <code>available_subspaces</code>, <code>supplemental</code>, <code>follow_ups</code>) and an optional <code>audit</code> trail. Streaming returns SSE <code>data:</code> chunks ending with <code>data: [DONE]</code>; the final chunk carries <code>rag</code> metadata and <code>finish_reason</code> (<code>stop</code>, <code>content_filter</code>, or <code>clarify</code>).</p>
+      <p class="diagram-note">Non-streaming response includes <code>rag</code> metadata (<code>request_id</code>, <code>citations</code>, <code>applied_subspace</code>, <code>available_subspaces</code>, <code>supplemental</code>, <code>follow_ups</code>, <code>magic</code>) and an optional <code>audit</code> trail. Streaming returns SSE <code>data:</code> chunks ending with <code>data: [DONE]</code>; the final chunk carries <code>rag</code> metadata (including post-hoc <code>rag.magic</code> widgets) and <code>finish_reason</code> (<code>stop</code>, <code>content_filter</code>, or <code>clarify</code>). Assistant <code>content</code> is plain text only — widgets are never appended as <code>&lt;&lt;&lt;MAGIC:…&gt;&gt;&gt;</code> into the body.</p>
+    </section>
+
+    <section>
+      <h2>4.1 Dana magic — post-hoc glue</h2>
+      <div class="diagram-wrap">
+        <div class="diagram-title">Magic outside the message body</div>
+        <div class="mermaid">
+flowchart LR
+  Gen[guarded_generate<br/>plain answer] --> Fmt[format_response<br/>content]
+  Fmt --> Mag[magic_emit<br/>collect_magic_payload]
+  Mag --> API["chat/completions<br/>content + rag.magic"]
+  API --> UI[WebUI MagicRenderer]
+        </div>
+      </div>
+      <p class="diagram-note">Emit gauges only for explicit score/colour/name/grade/layout signals (cheque 0–100 vs credit 250–900). Shareholders/providers only for شرکت اعتبارسنجی ایران. Clarify cards on <code>finish_reason=clarify</code>.</p>
     </section>
 
     <section>
