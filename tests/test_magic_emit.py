@@ -86,6 +86,26 @@ def test_person_gauge_targets_explicit_score():
     assert p["band"] == "سبز"
 
 
+def test_person_query_not_forced_cheque_by_answer_prose():
+    """Greeting/product lists mentioning چک must not flip حقیقی → cheque."""
+    answer = (
+        "سلام، من در زمینه‌های گزارش اعتباری، امتیاز و رتبه و بررسی چک‌ها کمک می‌کنم. "
+        "امتیاز ۶۱۰ حقیقی در باند سبز است."
+    )
+    payload = collect_magic_payload(
+        {
+            "query": "امتیاز ۶۱۰ حقیقی در چه رنگی است؟",
+            "supplemental": [_score_ent("person", PERSON_GROUPS)],
+            "applied_subspace": "facilities_person",
+        },
+        answer,
+        finish_reason="stop",
+    )
+    assert payload and payload[0]["name"] == "CREDIT_SCORE_GAUGE"
+    assert payload[0]["params"]["model"] == "person"
+    assert payload[0]["params"]["min"] == 250
+
+
 def test_ladder_emits_bands_token():
     state = {
         "query": "نردبان اعتباری حقیقی چیست؟",
