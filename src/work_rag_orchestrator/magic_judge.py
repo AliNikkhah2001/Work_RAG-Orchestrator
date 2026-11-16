@@ -1,15 +1,15 @@
 """Rule-gated LLM judge for Dana magic widgets.
 
-Latency contract
-----------------
-* ``magic_precheck(query, finish_reason)`` is cheap and **must** return empty
-  for the vast majority of turns (generic FAQ, greeting, law articles, provider
-  counts, company prose without ICS-widget intent).
-* The LLM is called **only** when precheck returns a non-empty family set.
-* Clarify cards stay deterministic (no LLM) when ``finish_reason=clarify``.
+Contract
+--------
+1. ``magic_precheck`` — high-**recall** cheap gates per family. Empty ⇒ skip LLM.
+2. When precheck hits (except clarify chips), call the versioned KB prompt
+   ``magic_judge`` (or family-specific ``magic_judge_*``) via content_registry.
+3. LLM **validates** the candidate; on miss/failure fall back to deterministic
+   materialization of the precheck families.
 
-The judge never invents a score from incidental answer digits (ماده ۵، سال ۱۳۸۵،
-۶۸ تأمین‌کننده). Scores / colours must be anchored in the **user query**.
+Prompts live in ``packs/prompts/orchestrator/vX.Y.Z.yaml`` (KB registry) and the
+orchestrator vendored fallback YAML — never hardcoded in graph nodes.
 """
 
 from __future__ import annotations
@@ -45,8 +45,22 @@ _SCORE_INTENT = (
     "vertical",
     "linear",
     "خطی",
+    "باند",
+    "نمایش",
 )
-_PRODUCT = ("چک", "صیاد", "حقیقی", "حقوقی", "تسهیلات", "cheque", "person", "legal")
+_PRODUCT = (
+    "چک",
+    "صیاد",
+    "حقیقی",
+    "حقوقی",
+    "تسهیلات",
+    "cheque",
+    "person",
+    "legal",
+    "گزارش چک",
+    "اشخاص حقیقی",
+    "اشخاص حقوقی",
+)
 _COLOURS = ("آبی", "ابي", "سبز", "زرد", "نارنجی", "نارنجي", "قرمز")
 
 
@@ -95,19 +109,29 @@ def _query_has_product(q: str) -> bool:
 
 def _ics_company_query(query: str) -> bool:
     q = query or ""
-    return ("اعتبارسنجی ایران" in q) or ("شرکت اعتبارسنجی" in q) or ("ICS" in q.upper()) or (
-        "امتیازدهی اعتباری ایران" in q
+    qu = q.upper()
+    return (
+        ("اعتبارسنجی ایران" in q)
+        or ("شرکت اعتبارسنجی" in q)
+        or ("امتیازدهی اعتباری ایران" in q)
+        or ("ICS" in qu)
+        or ("ایران کریدیت" in q)
     )
 
 
 def _shareholders_gate(query: str) -> bool:
+    """High-recall: any shareholder ask that plausibly targets ICS."""
     q = query or ""
-    if not any(k in q for k in ("سهامدار", "سهام‌دار", "سهام دار")):
+    if not any(k in q for k in ("سهامدار", "سهام‌دار", "سهام دار", "ترکیب سهام", "سهام شرکت")):
         return False
-    return _ics_company_query(q)
+    if _ics_company_query(q):
+        return True
+    # Recall: «سهامداران» + اعتبارسنجی / شرکت without full ICS phrase
+    return ("اعتبارسنجی" in q) or ("شرکت" in q and "ایران" in q)
 
 
 def _creditors_gate(query: str) -> bool:
+    """High-recall: data-provider / creditor asks about ICS."""
     q = query or ""
     hit = any(
         k in q
@@ -121,26 +145,35 @@ def _creditors_gate(query: str) -> bool:
             "تامین کنندگان",
             "تأمین کنندگان",
             "منابع داده",
+            "منابع اطلاعاتی",
             "دیتا پروایدر",
+            "پروایدر",
             "data provider",
+            "از کجا داده",
+            "داده‌ها را از",
+            "داده را از",
+            "تأمین اطلاعات",
+            "تامین اطلاعات",
         )
     )
     if not hit:
         if ("داده" in q or "دیتا" in q) and any(
-            k in q for k in ("بانک", "نهاد", "لیزینگ", "فین‌تک", "بیمه")
+            k in q for k in ("بانک", "نهاد", "لیزینگ", "فین‌تک", "بیمه", "نئوبانک", "لندتک")
         ):
             hit = True
     if not hit:
         return False
-    return _ics_company_query(q)
+    if _ics_company_query(q):
+        return True
+    return ("اعتبارسنجی" in q) or ("شرکت" in q and "ایران" in q)
 
 
 def _timeline_gate(query: str) -> bool:
+    """High-recall: ICS history / intro / founding / products overview."""
     q = query or ""
-    # Shareholders / creditors asks are more specific than company intro
-    if _shareholders_gate(q) or _creditors_gate(q):
-        return False
-    if any(
+    # More specific ICS widgets win when both would match — still gate timeline;
+    # LLM picks the tighter widget when multiple families are candidated.
+    hist = any(
         k in q
         for k in (
             "تاریخچه",
@@ -150,58 +183,100 @@ def _timeline_gate(query: str) -> bool:
             "تایم‌لاین",
             "تایم لاین",
             "timeline",
-            "سابقه شرکت اعتبارسنجی",
+            "سابقه",
+            "بنیان",
+            "شروع به کار",
+            "کی تأسیس",
+            "کی تاسیس",
+            "چه سالی",
         )
-    ):
-        return _ics_company_query(q) or ("شرکت" in q and "اعتبارسنجی" in q)
-    if _ics_company_query(q) and any(
-        k in q for k in ("چیست", "چی هست", "معرفی", "درباره", "توضیح", "چه می‌کند", "فعالیت", "ماموریت", "محصولات")
-    ):
+    )
+    intro = any(
+        k in q
+        for k in (
+            "چیست",
+            "چی هست",
+            "معرفی",
+            "درباره",
+            "توضیح",
+            "چه می‌کند",
+            "چه میکند",
+            "فعالیت",
+            "ماموریت",
+            "مأموریت",
+            "محصولات",
+            "که هست",
+            "چه شرکتی",
+        )
+    )
+    if not (hist or intro):
+        return False
+    if _ics_company_query(q):
         return True
-    return False
+    return ("شرکت" in q and "اعتبارسنجی" in q) or ("اعتبارسنجی ایران" in q)
 
 
 def _ambiguous_colour_rank(query: str) -> bool:
-    """Colour band ask without چک/حقیقی/حقوقی → must clarify, not gauge."""
+    """Colour band ask without چک/حقیقی/حقوقی → clarify path, not score magic."""
     q = query or ""
     if not _query_has_colour(q):
         return False
     if _query_has_product(q):
         return False
-    return any(k in q for k in ("رتبه", "رنگ", "گرید", "امتیاز"))
+    return any(k in q for k in ("رتبه", "رنگ", "گرید", "امتیاز", "یعنی چه", "یعنی چی"))
 
 
-def _score_gate(query: str) -> bool:
-    """Score/bands widget candidate — query-only, never answer prose."""
+def _score_query_for_intent(query: str) -> str:
+    """Strip company name «امتیازدهی اعتباری» so it does not look like a score ask."""
     q = query or ""
-    if _ambiguous_colour_rank(q):
-        return False
+    q = q.replace("امتیازدهی اعتباری", " ")
+    q = q.replace("امتیازدهی", " ")
+    return q
+
+
+def _score_has_viz_anchor(query: str) -> bool:
+    """True when the query itself carries a score/colour/grade/ladder/layout signal."""
+    q = query or ""
     if any(k in q for k in ("نردبان", "ladder")):
         return True
-    layout = any(
-        k in q for k in ("عمودی", "افقی", "horizontal", "vertical", "linear", "خطی", "نمایش")
-    )
-    intent = any(k in q for k in _SCORE_INTENT)
-    if not intent:
-        return False
-    anchor = (
+    if any(
+        k in q for k in ("عمودی", "افقی", "horizontal", "vertical", "linear", "خطی")
+    ):
+        return True
+    return (
         _query_has_colour(q)
         or _query_has_grade(q)
         or _query_has_cheque_numeric(q)
         or _query_has_credit_numeric(q)
     )
-    product = _query_has_product(q) or any(k in q for k in ("گزارش چک", "تسهیلات", "اعتباری"))
-    # Explicit layout + score intent (e.g. «امتیاز … عمودی») with product/scope
-    if layout and product:
-        return True
-    if not anchor:
+
+
+def _score_gate(query: str) -> bool:
+    """High-recall score/bands candidate — query-only; LLM rejects weak hits."""
+    q = query or ""
+    if _ambiguous_colour_rank(q):
         return False
-    # Require product / report scope so «امتیاز من چند است؟» stays dark
-    return product
+    if any(k in q for k in ("نردبان", "ladder")):
+        return True
+    q_intent = _score_query_for_intent(q)
+    intent = any(k in q_intent for k in _SCORE_INTENT)
+    if not intent:
+        return False
+    layout = any(
+        k in q for k in ("عمودی", "افقی", "horizontal", "vertical", "linear", "خطی", "نمایش")
+    )
+    anchor = _score_has_viz_anchor(q)
+    product = _query_has_product(q) or any(
+        k in q for k in ("گزارش چک", "تسهیلات", "اعتباری", "رتبه رنگی")
+    )
+    # High recall: score-intent + (product OR anchor OR layout)
+    if product or anchor or layout:
+        return True
+    return False
 
 
 def magic_precheck(query: str, finish_reason: str | None = None) -> frozenset[str]:
-    """Return candidate magic families. Empty ⇒ **do not** call the LLM."""
+    """High-recall candidate families. Empty ⇒ **do not** call the LLM."""
     fr = finish_reason or "stop"
     if fr in ("content_filter",):
         return frozenset()
@@ -222,53 +297,34 @@ def magic_precheck(query: str, finish_reason: str | None = None) -> frozenset[st
     return frozenset(families)
 
 
-_JUDGE_PROMPT = """نقش: مسیریاب ویجت Dana برای سامانه اعتبارسنجی ایران (ICS).
-فقط وقتی یکی از خانواده‌های کاندید زیر مجاز است تصمیم بگیر؛ در غیر این صورت fire=false.
-
-کاندیدها: {families}
-
-ویجت‌ها:
-- NONE: هیچ ویجتی
-- CREDIT_SCORE_GAUGE: فقط اگر کاربر صریحاً درباره امتیاز/رتبه/رنگ/گرید بپرسد و در خودِ پرسش عدد امتیاز یا رنگ یا کد A1–E3 باشد. هرگز از سال، ماده قانون، تعداد تأمین‌کننده، یا لیست محصولات امتیاز نساز.
-- CREDIT_SCORE_BANDS: نردبان/ladder
-- COMPANY_TIMELINE: تاریخچه/تأسیس/معرفی شرکت اعتبارسنجی ایران
-- SHAREHOLDERS: سهامداران شرکت اعتبارسنجی ایران
-- CREDITORS: تأمین‌کنندگان داده شرکت اعتبارسنجی ایران
-
-مدل امتیاز: cheque (۱–۱۰۰، چک) | person (۲۵۰–۹۰۰، حقیقی) | legal (۲۵۰–۹۰۰، حقوقی)
-variant پیش‌فرض ring؛ در صورت نردبان vertical/horizontal؛ خطی=linear؛ عمودی=vertical؛ افقی=horizontal.
-
-پرسش کاربر:
-{query}
-
-پاسخ مدل (فقط برای زمینه؛ امتیاز را از اینجا اختراع نکن):
-{answer}
-
-خروجی فقط JSON یک خطی، یکی از:
-{{"fire":false}}
-{{"fire":true,"name":"CREDIT_SCORE_GAUGE","params":{{"model":"cheque","score":80,"band":null,"variant":"ring"}}}}
-{{"fire":true,"name":"CREDIT_SCORE_BANDS","params":{{"model":"person","variant":"vertical"}}}}
-{{"fire":true,"name":"COMPANY_TIMELINE","params":{{"variant":"vertical"}}}}
-{{"fire":true,"name":"SHAREHOLDERS","params":{{}}}}
-{{"fire":true,"name":"CREDITORS","params":{{}}}}
-"""
+_FAMILY_PROMPT = {
+    frozenset({"score"}): "magic_judge_score",
+    frozenset({"timeline"}): "magic_judge_timeline",
+    frozenset({"shareholders"}): "magic_judge_shareholders",
+    frozenset({"creditors"}): "magic_judge_creditors",
+}
 
 
 def build_magic_judge_prompt(query: str, answer: str, families: frozenset[str]) -> str:
-    try:
-        from .content_registry import require_prompt
+    """Load versioned prompt from KB registry / vendored YAML (never node hardcode)."""
+    from .content_registry import require_prompt
 
+    fam_key = ", ".join(sorted(families)) or "NONE"
+    name = _FAMILY_PROMPT.get(frozenset(families), "magic_judge")
+    try:
+        return require_prompt(
+            name,
+            query=query or "",
+            answer=(answer or "")[:1200],
+            families=fam_key,
+        )
+    except Exception:
+        # Single-family template missing → router prompt
         return require_prompt(
             "magic_judge",
             query=query or "",
             answer=(answer or "")[:1200],
-            families=", ".join(sorted(families)) or "NONE",
-        )
-    except Exception:
-        return _JUDGE_PROMPT.format(
-            families=", ".join(sorted(families)) or "NONE",
-            query=query or "",
-            answer=(answer or "")[:1200],
+            families=fam_key,
         )
 
 
@@ -276,7 +332,6 @@ def parse_magic_judge_response(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    # Strip fences / thinking leftovers
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I).strip()
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
@@ -310,10 +365,14 @@ async def call_magic_judge(
     *,
     request_id: str = "",
 ) -> dict[str, Any] | None:
-    """LLM call — only invoke after ``magic_precheck`` is non-empty."""
+    """LLM validation — only after ``magic_precheck`` is non-empty (non-clarify)."""
     if not _MAGIC_JUDGE_ENABLED or not families or families == frozenset({"clarify"}):
         return None
-    prompt = build_magic_judge_prompt(query, answer, families)
+    try:
+        prompt = build_magic_judge_prompt(query, answer, families)
+    except Exception as e:
+        log.warning("magic_judge prompt missing from registry: %s", e)
+        return None
     try:
         from .clients.guardrails import GuardrailsClient
         from .schemas import GuardrailsChatRequest
