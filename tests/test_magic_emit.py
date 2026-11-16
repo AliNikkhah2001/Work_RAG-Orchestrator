@@ -284,6 +284,12 @@ def test_precheck_skips_generic_and_provider_counts():
     # High-recall ICS gates
     assert "shareholders" in magic_precheck("سهامداران شرکت اعتبارسنجی ایران", "stop")
     assert "timeline" in magic_precheck("فعالیت شرکت اعتبارسنجی ایران چیست؟", "stop")
+    # Colloquial / comparison phrasings must still reach the timeline judge
+    assert "timeline" in magic_precheck("تاریخ شرکت اعتبارسنجی ایران چیه", "stop")
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران با بقیه چه فرقی داره", "stop")
+    assert "timeline" in magic_precheck("چه تفاوت شرکت اعتبارسنجی ایران با بانک‌ها دارد", "stop")
+    # Generic comparison without an ICS anchor must NOT gate (judge can't know the subject)
+    assert magic_precheck("چه تفاوتی با سایر شرکت‌ها دارد", "stop") == frozenset()
 
 
 def test_magic_judge_prompt_from_registry_not_hardcoded():
