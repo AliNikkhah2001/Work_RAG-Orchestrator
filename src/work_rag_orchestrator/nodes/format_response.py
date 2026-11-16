@@ -551,7 +551,7 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "حقوقی" in pat or "شرکت" in pat or "قانونی" in pat)
     else:
-        # For other subspaces, use general patterns but be conservative
+        # For other subspaces (incl. general), use general patterns but be conservative
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "تعریف نشده" in pat or "ارائه نمی‌شود" in pat or "پشتیبانی نمی‌شود" in pat)
     
@@ -571,6 +571,16 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
     if not_avail_in_answer:
         # Answer acknowledges unavailability - not a contradiction
         return False
+
+    # Comparative FAQ answers (حقیقی vs حقوقی) often co-retrieve the
+    # «چک برای حقوقی تعریف نشده» note. Words like «روش» then false-trigger
+    # this guard and replace a correct definition with «یافت نشد».
+    if applied_subspace in (None, "", "general"):
+        comparative = ("حقیقی" in answer_lower and "حقوقی" in answer_lower) or (
+            "تفاوت" in answer_lower and ("حقیقی" in answer_lower or "حقوقی" in answer_lower)
+        )
+        if comparative:
+            return False
     
     log.info(
         "Contradiction guard fired for request %s: chunks say NOT available, but answer gives advice",
