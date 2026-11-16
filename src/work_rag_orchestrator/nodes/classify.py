@@ -179,6 +179,20 @@ async def classify(state: RAGState) -> RAGState:
                 state["needs_clarification"] = False
         except Exception:
             pass
+        # Colour-rank without product (رتبه سبز یعنی چه؟) → clarify چک vs تسهیلات
+        try:
+            from ..magic_judge import _ambiguous_colour_rank
+            from ..content_registry import clarify_option_labels
+            from ..subspace_routing import L2_SUBSPACES
+
+            if _ambiguous_colour_rank(text):
+                state["applied_subspace"] = None
+                state["needs_clarification"] = True
+                state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
+                state["clarifying_question"] = None
+                log.info("classify ambiguous colour-rank -> clarify for query=%r", text[:80])
+        except Exception:
+            pass
         # T5 scattered / cross-product impact → clarify (do not sticky-commit)
         try:
             from ..subspace_routing import L2_SUBSPACES, is_cross_product_impact
@@ -190,7 +204,7 @@ async def classify(state: RAGState) -> RAGState:
                 state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None
                 log.info("classify cross-product impact -> clarify for query=%r", text[:80])
-            elif not state.get("applied_subspace") and _is_scattered(text):
+            elif not state.get("applied_subspace") and not state.get("needs_clarification") and _is_scattered(text):
                 state["needs_clarification"] = True
                 state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None

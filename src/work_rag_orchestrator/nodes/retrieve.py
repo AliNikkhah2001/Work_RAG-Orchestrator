@@ -1679,12 +1679,33 @@ async def retrieve(state: RAGState) -> RAGState:
     # Entity evidence cancels a pending scattered-clarify (classify's T5 gate
     # pre-sets needs_clarification; with matched dictionary rows the model can
     # answer the code question directly instead of asking چک vs تسهیلات).
+    # Exception: ambiguous colour-rank asks («رتبه سبز یعنی چه؟») must still
+    # clarify چک vs تسهیلات — a co-retrieved score_table must NOT skip clarify
+    # and invent a cheque gauge.
     if state.get("supplemental") and state.get("needs_clarification"):
-        state["needs_clarification"] = False
-        log.info(
-            "Cancelling pending clarify for request %s: entity supplement matched",
-            request_id,
-        )
+        _keep_colour_clarify = False
+        try:
+            from ..subspace_routing import query_has_cheque_color_rank
+            from ..magic_judge import _ambiguous_colour_rank, _query_has_product
+
+            _cq = state.get("query") or ""
+            if query_has_cheque_color_rank(_cq) and (
+                _ambiguous_colour_rank(_cq) or not _query_has_product(_cq)
+            ):
+                _keep_colour_clarify = True
+        except Exception:
+            _keep_colour_clarify = False
+        if _keep_colour_clarify:
+            log.info(
+                "Keeping colour-rank clarify for request %s despite supplemental",
+                request_id,
+            )
+        else:
+            state["needs_clarification"] = False
+            log.info(
+                "Cancelling pending clarify for request %s: entity supplement matched",
+                request_id,
+            )
 
     def _item_dict(c, default_source: str) -> dict:
         d = c.model_dump() if hasattr(c, "model_dump") else dict(c)
