@@ -4,24 +4,43 @@ No DB, no checkpointer: WebUI already sends the full ``messages`` history on
 every request, so the rewrite is a pure function of the incoming messages.
 
 - 0-1 user turns: return the last user message unchanged (no LLM call).
-- 2+ user turns: ask Manager (:9000, routes to TRT :8010) to rewrite the last user message
-  into a standalone question, then strip quotes/whitespace.
+- 2+ user turns: ask the configured upstream utility LLM (``UPSTREAM_LLM_BASE_URL``,
+  same endpoint compaction uses) to rewrite the last user message into a
+  standalone question, then strip quotes/whitespace.
 - On ANY error/timeout: fall back to the raw last user message (never raise).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 log = logging.getLogger(__name__)
 
+# Legacy defaults — used only when settings are unavailable. Prefer
+# ``_rewrite_endpoint()`` so Docker/GPU orch hits litellm/manager, not
+# container-local 127.0.0.1:9000 (hardcoded URL made every multi-turn rewrite
+# and left long threads without coreference resolution on GPU).
 REWRITE_URL = "http://127.0.0.1:9000/v1/chat/completions"
 REWRITE_MODEL = "gemma-4-31b-triton-trt"
 REWRITE_TIMEOUT_S = 60.0
 REWRITE_MAX_TOKENS = 128
+
+
+def _rewrite_endpoint() -> Tuple[str, str]:
+    """Return (chat_completions_url, model) from orchestrator settings."""
+    try:
+        from .config import get_settings
+
+        settings = get_settings()
+        base = (settings.upstream_llm_base_url or "http://127.0.0.1:9000/v1").rstrip("/")
+        url = base + "/chat/completions"
+        model = settings.upstream_llm_model or REWRITE_MODEL
+        return url, model
+    except Exception:
+        return REWRITE_URL, REWRITE_MODEL
 
 # Last-N exchanges kept in prompts/spans; history block budget (chars).
 HISTORY_EXCHANGES = 2
@@ -120,18 +139,19 @@ async def rewrite_query(
         return raw_last
     try:
         prompt = build_rewrite_prompt(messages)
+        rewrite_url, rewrite_model = _rewrite_endpoint()
         payload = {
-            "model": REWRITE_MODEL,
+            "model": rewrite_model,
             "messages": prompt,
             "temperature": 0,
             "max_tokens": REWRITE_MAX_TOKENS,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         if httpx_client is not None:
-            resp = await httpx_client.post(REWRITE_URL, json=payload, timeout=REWRITE_TIMEOUT_S)
+            resp = await httpx_client.post(rewrite_url, json=payload, timeout=REWRITE_TIMEOUT_S)
         else:
             async with httpx.AsyncClient(timeout=REWRITE_TIMEOUT_S) as client:
-                resp = await client.post(REWRITE_URL, json=payload, timeout=REWRITE_TIMEOUT_S)
+                resp = await client.post(rewrite_url, json=payload, timeout=REWRITE_TIMEOUT_S)
         resp.raise_for_status()
         data = resp.json()
         content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")

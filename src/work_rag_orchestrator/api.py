@@ -847,12 +847,11 @@ def create_app() -> FastAPI:
 
                     query = initial_state.get("query") or (initial_state["messages"][-1]["content"] if initial_state.get("messages") else "")
                     initial_state["query"] = query
-                    yield ": agent validate_input + retrieve running\n\n"
-                    t_retrieve = time.monotonic()
-                    v_task = asyncio.create_task(node_validate(initial_state))
-                    r_task = asyncio.create_task(node_retrieve(initial_state))
-                    state = await v_task
-                    await r_task
+                    # Sequential validate → retrieve (no shared-state race). Parallel
+                    # create_task on the same dict corrupted blocked/chunks under load
+                    # and could raise into the Persian catch-all on GPU.
+                    yield ": agent validate_input running\n\n"
+                    state = await node_validate(initial_state)
                     if state.get("blocked"):
                         content = state.get("refusal_message") or __import__("work_rag_orchestrator.content_registry", fromlist=["refusal_message"]).refusal_message("stream_blocked")
                         yield ": agent validate_input done blocked=true\n\n"
@@ -861,6 +860,20 @@ def create_app() -> FastAPI:
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'content_filter'}]}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         return
+                    yield ": agent retrieve running\n\n"
+                    t_retrieve = time.monotonic()
+                    try:
+                        state = await node_retrieve(state)
+                    except Exception as retr_err:
+                        # Soft-fail: empty evidence → no_evidence / clarify paths below
+                        # instead of aborting SSE with «خطا در پردازش درخواست.»
+                        log.exception(
+                            "Streaming retrieve soft-failed for %s: %s",
+                            request_id,
+                            retr_err,
+                        )
+                        state["retrieved_chunks"] = state.get("retrieved_chunks") or []
+                        state["error"] = f"retrieve_soft_fail:{type(retr_err).__name__}"
                     retrieved = state.get("retrieved_chunks", [])
                     yield f": agent retrieve done chunks={len(retrieved)} latency_ms={int((time.monotonic()-t_retrieve)*1000)}\n\n"
 
@@ -1056,8 +1069,29 @@ def create_app() -> FastAPI:
                     except Exception:
                         pass
                 except Exception as e:
-                    log.exception("Streaming failed: %s", e)
-                    err = {"id":f"chatcmpl-{request_id}","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"خطا در پردازش درخواست."},"finish_reason":"error"}]}
+                    # Keep the Persian user-facing string (QA fingerprint) but log the
+                    # real exception class for GPU diagnosis (OOM / 400 / IncompleteRead).
+                    log.exception(
+                        "Streaming failed request_id=%s exc_type=%s: %s",
+                        request_id,
+                        type(e).__name__,
+                        e,
+                    )
+                    yield f": agent stream_error type={type(e).__name__}\n\n"
+                    err = {
+                        "id": f"chatcmpl-{request_id}",
+                        "object": "chat.completion.chunk",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": "خطا در پردازش درخواست."},
+                            "finish_reason": "error",
+                        }],
+                        "rag": {
+                            "request_id": request_id,
+                            "error_type": type(e).__name__,
+                            "error": str(e)[:300],
+                        },
+                    }
                     yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
 
