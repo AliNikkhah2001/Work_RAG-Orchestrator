@@ -24,6 +24,34 @@ SUBSPACE_KEYWORDS = {
     "general": ["عمومی", "عام", "معرفی", "مدیر", "هیات مدیره", "هیئت مدیره", "کاربرد", "کاربردها", "شرکت"],
 }
 
+# «وام» collides with the verb clitic «خوام» (میخوام / نمیخوام / بخواد / میخواد):
+# «میخوام» == «م-ی-خ-وام», so a naive substring test marks every "I want …"
+# request as a facilities query and hijacks the subspace label. Require that
+# «وام» is not directly preceded by the «خ» of خواستن.
+_RAW_KEYWORD_PATTERNS = {
+    "وام": re.compile(r"(?<!خ)وام"),
+}
+
+
+def keyword_in_text(text: str, kw: str) -> bool:
+    """Substring keyword test with Persian clitic false-positive guards."""
+    if not text or not kw:
+        return False
+    pat = _RAW_KEYWORD_PATTERNS.get(kw)
+    if pat is not None:
+        return pat.search(text) is not None
+    return kw in text
+
+
+def has_facility_keyword(text: str) -> bool:
+    """True when text really mentions تسهیلات/وام/قسط (not the «میخوام» clitic)."""
+    return (
+        keyword_in_text(text, "تسهیلات")
+        or keyword_in_text(text, "وام")
+        or keyword_in_text(text, "قسط")
+    )
+
+
 # T5 scattered clarify gate: vague phrases without specific subspace keywords => ambiguous
 SCATTERED_VAGUE_PHRASES = ["وضعیت اعتباری", "اعتبارسنجی", "بدهکار", "بدهی"]
 # Strict subspace keywords that disambiguate a query (if any present, not scattered)
@@ -111,6 +139,63 @@ def is_scattered_ambiguous(query: str) -> bool:
             return True
     return False
 
+# Request / answer-seeking verbs: «گزارش چک حقوقی میخوام» is a product ask,
+# not a bare domain declaration («چک» alone).
+_REQUEST_INTENT_MARKERS = (
+    "میخوام",
+    "می‌خواهم",
+    "میخواهم",
+    "میخوایم",
+    "می‌خوایم",
+    "بگیرم",
+    "بگیریم",
+    "بگیرید",
+    "نیاز",
+    "درخواست",
+    "لطفا",
+    "لطفاً",
+    "لازم دارم",
+    "میخواد",
+    "می‌خواهد",
+    "want",
+    "need",
+    "دارید",
+    "داریم",
+)
+
+
+def is_request_intent(msg: str) -> bool:
+    """True when the utterance asks to get/have a product, not only name a leaf."""
+    q = (msg or "").replace("‌", " ").strip().lower()
+    if not q:
+        return False
+    return any(m in q for m in _REQUEST_INTENT_MARKERS)
+
+
+def is_cheque_for_legal_ask(msg: str) -> bool:
+    """Cheque report scoped to companies / legal entities (product that KB says DNE).
+
+    Must never be treated as a bare «چک» subspace declaration — retrieve the
+    FAQ that says گزارش چک for اشخاص حقوقی is not offered.
+
+    Bare «شرکت» alone is not enough (avoids «چک شرکت برگشت خورد» → this gate);
+    require حقوقی/شرکتی/corporate or شرکت together with گزارش/request wording.
+    """
+    q = (msg or "").replace("‌", " ").strip().lower()
+    if not q:
+        return False
+    has_cheque = ("چک" in q) or ("cheque" in q)
+    if not has_cheque:
+        return False
+    if any(kw in q for kw in ("حقوقی", "شرکتی", "اشخاص حقوقی", "legal", "corporate", "company")):
+        return True
+    if "شرکت" in q and any(
+        kw in q for kw in ("گزارش", "report", "میخوام", "بگیر", "دارید", "برای", "نیاز", "درخواست")
+    ):
+        return True
+    return False
+
+
 def _is_short_with_keyword(msg: str) -> bool:
     """Heuristic fallback: True if msg is 1-6 words and contains a subspace keyword.
 
@@ -119,6 +204,9 @@ def _is_short_with_keyword(msg: str) -> bool:
     Also handles "هیچ کدوم مدیر شرکته" → general specification.
     """
     if not msg or not msg.strip():
+        return False
+    # Product request / cheque-for-legal must retrieve, never ack-only declaration.
+    if is_request_intent(msg) or is_cheque_for_legal_ask(msg):
         return False
     # Long-phrase exception: explicit subspace declaration with اشخاص حقیقی/حقوقی
     # e.g. "اعتبارسنجی تسهیلات برای اشخاص حقیقی" (5 words) → specification
@@ -147,7 +235,7 @@ def _is_short_with_keyword(msg: str) -> bool:
     # HAS_KW: any keyword from SUBSPACE_KEYWORDS appears as substring
     for kws in SUBSPACE_KEYWORDS.values():
         for kw in kws:
-            if kw in msg:
+            if keyword_in_text(msg, kw):
                 return True
     return False
 
@@ -163,7 +251,7 @@ def label_subspace_from_query(query: str) -> Optional[str]:
     if not text:
         return None
     low = text.lower()
-    has_facility = any(kw in text for kw in ("تسهیلات", "وام", "قسط"))
+    has_facility = has_facility_keyword(text)
     has_cheque = "چک" in text
     if ("هیچ کدوم" in text or "هیچکدوم" in text) and any(
         kw in text for kw in ("مدیر", "هیات مدیره", "هیئت مدیره", "معرفی", "عمومی", "شرکت", "عام")
@@ -205,6 +293,9 @@ async def is_specification(msg: str, request_id: str) -> bool:
     for w in ("چیست", "چطور", "چگونه", "آیا", "چرا", "کجاست", "چیه", "چيست", "کیه", "کيست"):
         if w in msg:
             return False
+    # Hard gate: product requests / cheque-for-legal must retrieve (not «حوزه انتخاب شد»).
+    if is_request_intent(msg) or is_cheque_for_legal_ask(msg):
+        return False
     # Hard gate: explicit اشخاص حقیقی/حقوقی *declarations* are specifications even
     # when the LLM later labels them as topical questions (conv_facilities_person_02 T3).
     # Imperative answer-seeking («… بگو») stays a question so retrieve still answers.
@@ -215,6 +306,7 @@ async def is_specification(msg: str, request_id: str) -> bool:
         and _is_short_with_keyword(msg)
     ):
         return True
+
     try:
         from ..content_registry import require_prompt
 
