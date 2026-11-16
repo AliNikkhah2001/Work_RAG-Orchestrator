@@ -19,13 +19,23 @@ log = logging.getLogger(__name__)
 # "سلام" can never be rewritten into an older question and RAG-fabricated.
 _GREETING = {
     "سلام", "سلام وقت بخیر", "سلام صبح بخیر", "سلام عصر بخیر", "سلام شب بخیر",
-    "درود", "درود بر شما", "هی", "هیلو", "hello", "hi", "hey", "hey there",
+    "سلام روز بخیر", "درود", "درود بر شما", "هی", "هیلو", "hello", "hi", "hey", "hey there",
     "صبح بخیر", "عصر بخیر", "شب بخیر", "روز بخیر", "وقت بخیر",
 }
 _FAREWELL = {"خداحافظ", "خدا حافظ", "بای", "bye", "goodbye", "فعلا", "فعلاً"}
 _THANKS = {
     "ممنون", "ممنونم", "مرسی", "تشکر", "متشکرم", "متشکرم", "تشکر میکنم",
     "دست شما درد نکند", "دستت درد نکند", "عالی", "باشه", "اوکی", "ok", "thanks", "thank you",
+}
+# Tokens allowed in compound greetings like "سلام روزتون بخیر" / "درود وقت بخیر".
+_GREETING_TOKENS = {
+    "سلام", "درود", "هی", "هیلو", "hello", "hi", "hey", "there",
+    "صبح", "ظهر", "عصر", "شب", "روز", "وقت", "بخیر", "بر", "شما",
+    "روزتون", "روزتان", "وقتون", "وقتتان", "صبحون", "صبحتان",
+    "عصرون", "عصرتان", "شبون", "شبتان", "و", "خوب", "خوبی", "چطورید", "چطوری",
+}
+_GREETING_ANCHORS = {
+    "سلام", "درود", "هی", "هیلو", "hello", "hi", "hey", "بخیر",
 }
 
 
@@ -47,6 +57,19 @@ def detect_greeting_kind(text: str) -> str | None:
     if t in _THANKS:
         return "thanks"
     if t in _GREETING:
+        return "greeting"
+    # Compound greetings only: short utterances made of greeting tokens
+    # (e.g. "سلام روز بخیر", "سلام، روزتون بخیر") — never a real question.
+    parts = t.split()
+    if (
+        1 < len(parts) <= 8
+        and any(p in _GREETING_ANCHORS for p in parts)
+        and all(
+            p in _GREETING_TOKENS
+            or p.startswith(("روز", "وقت", "صبح", "عصر", "شب"))
+            for p in parts
+        )
+    ):
         return "greeting"
     return None
 

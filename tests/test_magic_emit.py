@@ -274,3 +274,36 @@ def test_shareholders_does_not_emit_creditors():
     }
     names = [re.match(r"<<<MAGIC:([A-Z_]+)", t).group(1) for t in build_magic_tokens(state, finish_reason="stop")]
     assert names == ["SHAREHOLDERS"]
+
+
+def test_greeting_skips_magic():
+    toks = build_magic_tokens(
+        {"query": "سلام روز بخیر", "greeting_only": "greeting", "needs_clarification": False},
+        finish_reason="stop",
+    )
+    assert toks == []
+
+
+def test_score_table_without_score_intent_emits_nothing():
+    """Co-retrieved score tables must not force a gauge."""
+    toks = build_magic_tokens(
+        {
+            "query": "گزارش تسهیلات چیست",
+            "supplemental": [_score_ent("person", PERSON_GROUPS)],
+        },
+        finish_reason="stop",
+    )
+    assert toks == []
+
+
+def test_shareholders_not_emitted_from_similarity_alone():
+    toks = build_magic_tokens(
+        {
+            "query": "گزارش اعتباری چیست",
+            "supplemental": [
+                {"similarity": 0.99, "content": {"_meta": {"kind": "shareholders"}}},
+            ],
+        },
+        finish_reason="stop",
+    )
+    assert toks == []

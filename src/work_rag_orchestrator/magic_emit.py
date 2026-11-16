@@ -394,7 +394,6 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
         )
         return tokens  # clarify turn: only chips
 
-    kinds = {_entity_kind(e) for e in ents}
     subspace = state.get("applied_subspace") or state.get("sticky_subspace")
 
     # Score tables → gauge / bands
@@ -407,6 +406,7 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
             "رنگ",
             "گرید",
             "نردبان",
+            "ladder",
             "A1",
             "B1",
             "آبی",
@@ -418,6 +418,8 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
             "جدول امتیاز",
             "عمودی",
             "افقی",
+            "horizontal",
+            "vertical",
         )
     )
     # If Entity Data missed the score table but the user clearly asks for a
@@ -447,34 +449,19 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
                 "color_groups": [],
             },
         }
-    if score_ent and (score_intent or "score_table" in kinds):
-        # Avoid attaching score gauge on pure catalog questions
+    # Score widgets only when the user explicitly asked about score/rank/colour.
+    # Do NOT attach gauges merely because a score_table entity was retrieved.
+    if score_ent and score_intent:
         catalog_only = any(k in query for k in ("سهامدار", "تامین", "تأمین", "وام", "عناوین")) and not score_intent
         if not catalog_only:
             tokens.extend(_score_tokens(score_ent, query))
 
-    # Shareholders / creditors — query intent wins; otherwise pick the
-    # higher-similarity catalog so co-retrieved lists don't double-emit.
+    # Shareholders / creditors — explicit query intent only (never co-retrieval).
     want_sh = _shareholders_query(query)
     want_cr = _creditors_query(query)
-    sh_sim = _best_kind_sim(ents, "shareholders")
-    cr_sim = _best_kind_sim(ents, "data_providers")
-    emit_sh = False
-    emit_cr = False
-    if want_sh and not want_cr:
-        emit_sh = True
-    elif want_cr and not want_sh:
-        emit_cr = True
-    elif want_sh and want_cr:
-        emit_sh = emit_cr = True
-    elif not score_intent:
-        if sh_sim >= 0 and sh_sim >= cr_sim:
-            emit_sh = True
-        if cr_sim >= 0 and cr_sim > sh_sim:
-            emit_cr = True
-    if emit_sh:
+    if want_sh:
         tokens.append(_token("SHAREHOLDERS", {"title": "سهامداران شرکت اعتبارسنجی ایران"}))
-    if emit_cr:
+    if want_cr:
         tokens.append(
             _token(
                 "CREDITORS",
