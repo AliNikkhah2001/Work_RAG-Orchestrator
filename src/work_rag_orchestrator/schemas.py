@@ -58,6 +58,13 @@ class RAGMetadata(BaseModel):
         default=None,
         description="Clarify option labels when finish_reason=clarify",
     )
+    magic: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Post-hoc Dana magic widgets glued outside assistant content. "
+            "Each item is {name, params}; never embedded in message body."
+        ),
+    )
 
 
 class AuditTrail(BaseModel):

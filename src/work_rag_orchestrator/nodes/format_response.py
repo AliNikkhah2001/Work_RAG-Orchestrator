@@ -954,11 +954,13 @@ async def format_response(state: RAGState) -> RAGState:
                 content = _magic_noev(content, state, finish_reason=finish_reason)
             except Exception:
                 pass
+            _magic_noev_payload = state.get("magic_payload") or []
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,
                 "citations": [],
                 "follow_ups": follow_ups,
+                "magic": _magic_noev_payload if _magic_noev_payload else None,
             }
             log.info("Formatted response (no-evidence guard) for request %s", request_id)
             try:
@@ -1110,14 +1112,16 @@ async def format_response(state: RAGState) -> RAGState:
         else:
             follow_ups = []
     
-    # Append Dana magic widgets (gauges / timeline / shareholders / …) from
-    # supplemental Entity Data + query heuristics. Open WebUI renders them.
+    # Post-hoc Dana magic: compute widgets AFTER the answer is final and keep
+    # them off the message body (API exposes via rag.magic).
     try:
         from ..magic_emit import append_magic_tokens
 
         content = append_magic_tokens(content, state, finish_reason=finish_reason)
     except Exception as _magic_err:
         log.warning("magic_emit append failed for %s: %s", request_id, _magic_err)
+
+    magic_payload = state.get("magic_payload") or []
 
     # Store formatted response data in state for API layer (including grounded follow_ups)
     state["follow_ups"] = follow_ups
@@ -1126,6 +1130,7 @@ async def format_response(state: RAGState) -> RAGState:
         "finish_reason": finish_reason,
         "citations": [c.model_dump() for c in citations],
         "follow_ups": follow_ups,
+        "magic": magic_payload if magic_payload else None,
     }
     
     log.info("Formatted response for request %s", request_id)

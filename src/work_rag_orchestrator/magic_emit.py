@@ -1,9 +1,8 @@
 """Deterministic Dana magic-token emission from supplements / clarify state.
 
-The LLM answers in plain Persian. Open WebUI parses ``<<<MAGIC:TOKEN {json}>>>``
-blocks from assistant content. This module appends those tokens after the
-text answer so widgets (gauges, timeline, shareholders, creditors, clarify)
-render automatically.
+Magic is computed POST-HOC after the model answer is final. Widgets are returned
+in ``rag.magic`` (structured), NOT embedded into assistant ``content``, so the
+plain-text answer is never altered by emission.
 """
 
 from __future__ import annotations
@@ -105,12 +104,19 @@ def _color_groups_to_bands(groups: list[Any]) -> list[dict[str, Any]]:
             continue
         if hi_f < lo_f:
             lo_f, hi_f = hi_f, lo_f
+        letter = str(g.get("گروه حرفی") or g.get("letter") or "").strip()
+        ranks = g.get("رتبه‌ها") or g.get("ranks") or []
+        if not isinstance(ranks, list):
+            ranks = []
+        codes = [str(x).strip() for x in ranks if str(x).strip()]
         bands.append(
             {
                 "label": label or "—",
                 "min": int(lo_f) if lo_f == int(lo_f) else lo_f,
                 "max": int(hi_f) if hi_f == int(hi_f) else hi_f,
                 "color": _COLOR_HEX.get(label, "#90A4AE"),
+                "code": letter or (codes[0] if codes else ""),
+                "codes": codes,
             }
         )
     # Ladder expects low → high
@@ -187,7 +193,12 @@ def _is_horizontal_layout(query: str) -> bool:
 
 def _is_vertical_layout(query: str) -> bool:
     q = query or ""
-    return "عمودی" in q
+    return "عمودی" in q or "vertical" in (q or "").lower()
+
+
+def _is_linear_layout(query: str) -> bool:
+    q = query or ""
+    return any(k in q for k in ("خطی", "linear"))
 
 
 def _is_ladder_query(query: str) -> bool:
@@ -196,10 +207,16 @@ def _is_ladder_query(query: str) -> bool:
 
 
 def _score_widget(query: str) -> tuple[str, str]:
-    """Return (MAGIC token name, variant) for score visualization."""
+    """Return (MAGIC token name, variant) for score visualization.
+
+    Concerns are separated by layout keyword — thermometer/vertical bulb is
+    only chosen when the user asks for عمودی; linear is its own bar variant.
+    """
     if _is_ladder_query(query):
         variant = "horizontal" if _is_horizontal_layout(query) else "vertical"
         return "CREDIT_SCORE_BANDS", variant
+    if _is_linear_layout(query):
+        return "CREDIT_SCORE_GAUGE", "linear"
     if _is_vertical_layout(query):
         return "CREDIT_SCORE_GAUGE", "vertical"
     if _is_horizontal_layout(query):
@@ -207,7 +224,30 @@ def _score_widget(query: str) -> tuple[str, str]:
     return "CREDIT_SCORE_GAUGE", "ring"
 
 
-def _score_tokens(ent: dict, query: str) -> list[str]:
+def _infer_model_from_signals(query: str, subspace: str | None, blob: str) -> str:
+    """Pick cheque (0–100) vs person/legal (250–900) from explicit signals only."""
+    q = query or ""
+    sub = (subspace or "").lower()
+    b = blob or q
+    if "چک" in b or "cheque" in sub or "صیاد" in b:
+        return "cheque"
+    if "حقوقی" in b or "شرکت" in q or "legal" in sub or "facilities_company" in sub:
+        return "legal"
+    if "حقیقی" in b or "person" in sub or "facilities_person" in sub:
+        return "person"
+    # Colour-rank alone defaults to cheque ICS palette
+    if any(c in b for c in ("آبی", "ابي", "سبز", "زرد", "نارنجی", "نارنجي", "قرمز")):
+        if _blob_has_credit_numeric(b) and not _blob_has_cheque_numeric(b):
+            return "person"
+        return "cheque"
+    if _blob_has_credit_numeric(b) and not _blob_has_cheque_numeric(b):
+        return "person"
+    if _blob_has_cheque_numeric(b) and not _blob_has_credit_numeric(b):
+        return "cheque"
+    return "person"
+
+
+def _score_tokens(ent: dict, query: str, *, answer_blob: str = "") -> list[str]:
     content = _entity_content(ent)
     meta = _entity_meta(ent)
     model = str(meta.get("model") or "person")
@@ -220,29 +260,29 @@ def _score_tokens(ent: dict, query: str) -> list[str]:
     # the whole ladder while targeting the asked colour/score.
     if model == "cheque":
         defaults = [
-            {"label": "قرمز", "min": 1, "max": 40, "color": "#E53935"},
-            {"label": "نارنجی", "min": 40, "max": 55, "color": "#FB8C00"},
-            {"label": "زرد", "min": 55, "max": 70, "color": "#FDD835"},
-            {"label": "سبز", "min": 70, "max": 85, "color": "#43A047"},
-            {"label": "آبی", "min": 85, "max": 100, "color": "#26C6DA"},
+            {"label": "قرمز", "min": 1, "max": 40, "color": "#E53935", "code": "E", "codes": ["E1", "E2", "E3"]},
+            {"label": "نارنجی", "min": 40, "max": 55, "color": "#FB8C00", "code": "D", "codes": ["D1", "D2", "D3"]},
+            {"label": "زرد", "min": 55, "max": 70, "color": "#FDD835", "code": "C", "codes": ["C1", "C2", "C3"]},
+            {"label": "سبز", "min": 70, "max": 85, "color": "#43A047", "code": "B", "codes": ["B1", "B2", "B3"]},
+            {"label": "آبی", "min": 85, "max": 100, "color": "#26C6DA", "code": "A", "codes": ["A1", "A2", "A3"]},
         ]
         score_min, score_max = 1.0, 100.0
     elif model == "legal":
         defaults = [
-            {"label": "قرمز", "min": 250, "max": 459, "color": "#E53935"},
-            {"label": "نارنجی", "min": 460, "max": 519, "color": "#FB8C00"},
-            {"label": "زرد", "min": 520, "max": 574, "color": "#FDD835"},
-            {"label": "سبز", "min": 575, "max": 619, "color": "#43A047"},
-            {"label": "آبی", "min": 620, "max": 900, "color": "#26C6DA"},
+            {"label": "قرمز", "min": 250, "max": 459, "color": "#E53935", "code": "E", "codes": ["E1", "E2", "E3"]},
+            {"label": "نارنجی", "min": 460, "max": 519, "color": "#FB8C00", "code": "D", "codes": ["D1", "D2", "D3"]},
+            {"label": "زرد", "min": 520, "max": 574, "color": "#FDD835", "code": "C", "codes": ["C1", "C2", "C3"]},
+            {"label": "سبز", "min": 575, "max": 619, "color": "#43A047", "code": "B", "codes": ["B1", "B2", "B3"]},
+            {"label": "آبی", "min": 620, "max": 900, "color": "#26C6DA", "code": "A", "codes": ["A1", "A2", "A3"]},
         ]
         score_min, score_max = 250.0, 900.0
     else:
         defaults = [
-            {"label": "قرمز", "min": 250, "max": 459, "color": "#E53935"},
-            {"label": "نارنجی", "min": 460, "max": 519, "color": "#FB8C00"},
-            {"label": "زرد", "min": 520, "max": 579, "color": "#FDD835"},
-            {"label": "سبز", "min": 580, "max": 639, "color": "#43A047"},
-            {"label": "آبی", "min": 640, "max": 900, "color": "#26C6DA"},
+            {"label": "قرمز", "min": 250, "max": 459, "color": "#E53935", "code": "E", "codes": ["E1", "E2", "E3"]},
+            {"label": "نارنجی", "min": 460, "max": 519, "color": "#FB8C00", "code": "D", "codes": ["D1", "D2", "D3"]},
+            {"label": "زرد", "min": 520, "max": 579, "color": "#FDD835", "code": "C", "codes": ["C1", "C2", "C3"]},
+            {"label": "سبز", "min": 580, "max": 639, "color": "#43A047", "code": "B", "codes": ["B1", "B2", "B3"]},
+            {"label": "آبی", "min": 640, "max": 900, "color": "#26C6DA", "code": "A", "codes": ["A1", "A2", "A3"]},
         ]
         score_min, score_max = 250.0, 900.0
     if len(bands) < 3:
@@ -251,18 +291,47 @@ def _score_tokens(ent: dict, query: str) -> list[str]:
         # Prefer entity mins/maxes when a full palette survived trimming
         score_min = float(meta.get("score_min") or score_min)
         score_max = float(meta.get("score_max") or score_max)
+        # Fill missing codes from defaults by colour label
+        by_label = {str(d["label"]): d for d in defaults}
+        for b in bands:
+            if not b.get("code") and not b.get("codes"):
+                d = by_label.get(str(b.get("label") or ""))
+                if d:
+                    b["code"] = d.get("code", "")
+                    b["codes"] = list(d.get("codes") or [])
 
+    # Prefer query; fall back to already-generated answer (post-hoc glue).
     score = _extract_score(query, bands, score_min, score_max)
-    # If no explicit score, park needle at mid of scale (still shows bands)
-    if score is None:
-        score = (score_min + score_max) / 2.0
+    if score is None and answer_blob:
+        score = _extract_score(answer_blob, bands, score_min, score_max)
 
-    # Active band label for gauge
+    # Active band label / codes for gauge
     band_label = ""
+    band_code = ""
+    band_codes: list[str] = []
     for b in bands:
-        if float(b["min"]) <= score <= float(b["max"]):
+        if score is not None and float(b["min"]) <= score <= float(b["max"]):
             band_label = str(b["label"])
+            band_code = str(b.get("code") or "")
+            raw_codes = b.get("codes") or []
+            band_codes = [str(x) for x in raw_codes if str(x).strip()]
             break
+
+    # If no explicit score, park needle at mid of active colour band or scale
+    if score is None:
+        if band_label:
+            for b in bands:
+                if str(b["label"]) == band_label:
+                    score = (float(b["min"]) + float(b["max"])) / 2.0
+                    break
+        if score is None:
+            score = (score_min + score_max) / 2.0
+            for b in bands:
+                if float(b["min"]) <= score <= float(b["max"]):
+                    band_label = str(b["label"])
+                    band_code = str(b.get("code") or "")
+                    band_codes = [str(x) for x in (b.get("codes") or []) if str(x).strip()]
+                    break
 
     label = {
         "cheque": "امتیاز اعتبارسنجی چک",
@@ -276,8 +345,11 @@ def _score_tokens(ent: dict, query: str) -> list[str]:
         "max": int(score_max),
         "label": label,
         "band": band_label,
+        "code": band_code,
+        "codes": band_codes,
         "model": model,
         "bands": bands,
+        "color_mode": "stepped",
     }
 
     token_name, variant = _score_widget(query)
@@ -368,13 +440,23 @@ def _history_query(query: str) -> bool:
     ) or ("تاریخ" in q and "شرکت" in q and "اعتبارسنجی" in q)
 
 
+def _ics_company_query(query: str) -> bool:
+    """True when the ask is about شرکت اعتبارسنجی ایران specifically."""
+    q = query or ""
+    return ("اعتبارسنجی ایران" in q) or ("شرکت اعتبارسنجی" in q) or ("ICS" in q.upper())
+
+
 def _shareholders_query(query: str) -> bool:
-    return any(k in (query or "") for k in ("سهامدار", "سهام‌دار", "سهام دار"))
+    q = query or ""
+    if not any(k in q for k in ("سهامدار", "سهام‌دار", "سهام دار")):
+        return False
+    # Do not fire on generic credit-scoring asks — require ICS company context.
+    return _ics_company_query(q)
 
 
 def _creditors_query(query: str) -> bool:
     q = query or ""
-    if any(
+    hit = any(
         k in q
         for k in (
             "تامین‌کننده",
@@ -390,14 +472,15 @@ def _creditors_query(query: str) -> bool:
             "تامین کننده اطلاعات",
             "تأمین کننده اطلاعات",
         )
-    ):
-        return True
-    # «چه بانک‌هایی داده می‌دهند» style
-    if ("داده" in q or "دیتا" in q) and any(
-        k in q for k in ("بانک", "نئوبانک", "لیزینگ", "لندتک", "بیمه", "صندوق")
-    ):
-        return True
-    return False
+    )
+    if not hit:
+        if ("داده" in q or "دیتا" in q) and any(
+            k in q for k in ("بانک", "نئوبانک", "لیزینگ", "لندتک", "بیمه", "صندوق")
+        ):
+            hit = True
+    if not hit:
+        return False
+    return _ics_company_query(q)
 
 
 def _best_kind_sim(ents: list[dict], kind: str) -> float:
@@ -432,46 +515,41 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
 
     subspace = state.get("applied_subspace") or state.get("sticky_subspace")
 
-    # Score tables → gauge / bands
-    score_ent = _pick_score_entity(ents, query, subspace if isinstance(subspace, str) else None)
-    score_intent = any(
-        k in query
-        for k in (
-            "امتیاز",
-            "رتبه",
-            "رنگ",
-            "گرید",
-            "نردبان",
-            "ladder",
-            "A1",
-            "B1",
-            "آبی",
-            "ابي",
-            "سبز",
-            "زرد",
-            "نارنجی",
-            "قرمز",
-            "جدول امتیاز",
-            "عمودی",
-            "افقی",
-            "horizontal",
-            "vertical",
+    # Score tables → gauge / bands. Emit only on SPECIFIC score signals
+    # (numeric in model range, colour tag, named band, grade code, or an
+    # explicit layout keyword) — never on generic «اعتبارسنجی چیست؟».
+    answer_blob = str(state.get("_magic_answer_blob") or "")
+    signal_blob = f"{query}\n{answer_blob}"
+    specific = bool(state.get("_magic_specific_score"))
+    if not specific:
+        specific = (
+            _blob_has_cheque_numeric(signal_blob)
+            or _blob_has_credit_numeric(signal_blob)
+            or _blob_has_colour_tag(signal_blob)
+            or _blob_has_named_band(signal_blob)
+            or _blob_has_grade_code(signal_blob)
+            or any(
+                k in query
+                for k in (
+                    "نردبان",
+                    "ladder",
+                    "عمودی",
+                    "افقی",
+                    "horizontal",
+                    "vertical",
+                    "خطی",
+                    "linear",
+                )
+            )
         )
-    )
-    # If Entity Data missed the score table but the user clearly asks for a
-    # score/colour/layout gauge, synthesize ICS defaults for the inferred model.
-    if not score_ent and score_intent:
-        model = "person"
-        if "چک" in query or (isinstance(subspace, str) and "cheque" in subspace):
-            model = "cheque"
-        elif "حقوقی" in query or "شرکت" in query or (
-            isinstance(subspace, str) and "legal" in subspace
-        ):
-            model = "legal"
-        elif "حقیقی" in query or (
-            isinstance(subspace, str) and "person" in subspace
-        ):
-            model = "person"
+
+    score_ent = _pick_score_entity(ents, query, subspace if isinstance(subspace, str) else None)
+    # If Entity Data missed the score table but the turn has a specific score
+    # signal, synthesize ICS defaults for the inferred model family.
+    if not score_ent and specific:
+        model = _infer_model_from_signals(
+            query, subspace if isinstance(subspace, str) else None, signal_blob
+        )
         score_ent = {
             "similarity": 0.0,
             "list_name": f"synthetic-{model}",
@@ -485,12 +563,25 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
                 "color_groups": [],
             },
         }
-    # Score widgets only when the user explicitly asked about score/rank/colour.
-    # Do NOT attach gauges merely because a score_table entity was retrieved.
-    if score_ent and score_intent:
-        catalog_only = any(k in query for k in ("سهامدار", "تامین", "تأمین", "وام", "عناوین")) and not score_intent
-        if not catalog_only:
-            tokens.extend(_score_tokens(score_ent, query))
+    if score_ent and specific:
+        # Override entity model when query/answer clearly points at another scale
+        inferred = _infer_model_from_signals(
+            query, subspace if isinstance(subspace, str) else None, signal_blob
+        )
+        ent_model = str(_entity_meta(score_ent).get("model") or "")
+        if inferred and ent_model and inferred != ent_model:
+            # Prefer explicit cheque/credit signals over co-retrieved table
+            if (inferred == "cheque" and _blob_has_cheque_numeric(signal_blob)) or (
+                inferred != "cheque" and _blob_has_credit_numeric(signal_blob)
+            ):
+                meta = dict(_entity_meta(score_ent))
+                meta["model"] = inferred
+                meta["score_min"] = 1 if inferred == "cheque" else 250
+                meta["score_max"] = 100 if inferred == "cheque" else 900
+                content = dict(_entity_content(score_ent))
+                content["_meta"] = meta
+                score_ent = {**score_ent, "content": content}
+        tokens.extend(_score_tokens(score_ent, query, answer_blob=answer_blob))
 
     # Shareholders / creditors — explicit query intent only (never co-retrieval).
     want_sh = _shareholders_query(query)
@@ -512,10 +603,139 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
     return tokens
 
 
+def strip_magic_from_content(content: str) -> str:
+    """Remove any MAGIC blocks from assistant text (defense in depth)."""
+    text = _MAGIC_RE.sub("", content or "")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _parse_token_string(token: str) -> dict[str, Any] | None:
+    m = re.match(r"<<<MAGIC:([A-Z][A-Z0-9_]*)\s*(\{.*\})?\s*>>>", token or "", re.S)
+    if not m:
+        return None
+    name = m.group(1)
+    params: dict[str, Any] = {}
+    raw = (m.group(2) or "").strip()
+    if raw:
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                params = obj
+        except json.JSONDecodeError:
+            params = {}
+    return {"name": name, "params": params}
+
+
+def _blob_has_cheque_numeric(blob: str) -> bool:
+    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+    q = (blob or "").translate(fa_map)
+    for m in re.finditer(r"(?<![.\d])(\d{1,3})(?![.\d])", q):
+        n = int(m.group(1))
+        if 0 <= n <= 100:
+            return True
+    return False
+
+
+def _blob_has_credit_numeric(blob: str) -> bool:
+    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+    q = (blob or "").translate(fa_map)
+    for m in re.finditer(r"(?<![.\d])(\d{3})(?![.\d])", q):
+        n = int(m.group(1))
+        if 250 <= n <= 900:
+            return True
+    return False
+
+
+def _blob_has_colour_tag(blob: str) -> bool:
+    return any(c in (blob or "") for c in ("آبی", "ابي", "سبز", "زرد", "نارنجی", "نارنجي", "قرمز"))
+
+
+def _blob_has_named_band(blob: str) -> bool:
+    return any(
+        k in (blob or "")
+        for k in ("عالی", "خوب", "متوسط", "ضعیف", "قابل قبول", "ریسک خیلی پایین", "ریسک پایین")
+    )
+
+
+def _blob_has_grade_code(blob: str) -> bool:
+    return bool(re.search(r"\b[A-Ea-e]\s*[1-3]\b", blob or ""))
+
+
+def collect_magic_payload(
+    state: dict,
+    content: str = "",
+    *,
+    finish_reason: str | None = None,
+) -> list[dict[str, Any]]:
+    """Post-hoc magic items for ``rag.magic`` — never mutates content.
+
+    Gating uses the already-generated answer + query so widgets only appear when
+    the turn already contains an explicit score/colour/name/ICS-company signal.
+    """
+    if state.get("blocked") or state.get("greeting_only"):
+        return []
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    if fr == "content_filter":
+        return []
+
+    query = state.get("query") or state.get("rewritten_query") or ""
+    answer = strip_magic_from_content(content or state.get("answer") or "")
+    blob = f"{query}\n{answer}"
+
+    # Narrow score emission: require explicit numeric / colour / name / grade
+    # in query∪answer — not a generic «اعتبارسنجی چیست؟».
+    specific_score = (
+        _blob_has_cheque_numeric(blob)
+        or _blob_has_credit_numeric(blob)
+        or _blob_has_colour_tag(blob)
+        or _blob_has_named_band(blob)
+        or _blob_has_grade_code(blob)
+        or any(k in query for k in ("نردبان", "ladder", "عمودی", "افقی", "horizontal", "vertical", "linear"))
+    )
+
+    prev_answer = state.get("_magic_answer_blob")
+    state["_magic_answer_blob"] = blob
+    state["_magic_specific_score"] = specific_score
+    try:
+        built = build_magic_tokens(state, finish_reason=fr)
+    except Exception as e:
+        log.warning("magic_emit collect failed: %s", e)
+        built = []
+    finally:
+        if prev_answer is None:
+            state.pop("_magic_answer_blob", None)
+        else:
+            state["_magic_answer_blob"] = prev_answer
+        state.pop("_magic_specific_score", None)
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for t in built:
+        item = _parse_token_string(t)
+        if not item:
+            continue
+        name = item["name"]
+        if name in seen:
+            continue
+        # Drop score widgets when the turn has no specific score signal
+        if name in ("CREDIT_SCORE_GAUGE", "CREDIT_SCORE_BANDS") and not specific_score:
+            continue
+        seen.add(name)
+        out.append(item)
+    state["magic_payload"] = out
+    return out
+
+
 def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None = None) -> str:
-    """Append magic tokens to assistant content (idempotent)."""
-    text = (content or "").rstrip()
+    """Backward-compatible entry: strip MAGIC from body and stash payload on state.
+
+    Does NOT append MAGIC into content anymore — callers must send
+    ``state['magic_payload']`` via ``rag.magic``.
+    """
+    text = strip_magic_from_content(content or "")
     if not text:
+        collect_magic_payload(state, "", finish_reason=finish_reason)
         return content or ""
 
     query = state.get("query") or state.get("rewritten_query") or ""
@@ -523,30 +743,10 @@ def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None 
         k in query
         for k in ("امتیاز", "رتبه", "رنگ", "نردبان", "عمودی", "افقی", "آبی", "سبز", "زرد", "نارنجی", "قرمز")
     )
-    # Skip plain refusals unless the user asked for a score visualization —
-    # then still attach the gauge so the UI can render the asked number/band.
     if "یافت نشد" in text and len(text) < 160 and not score_viz:
+        state["magic_payload"] = []
         return text
 
-    existing = set(_MAGIC_RE.findall(text))
-    try:
-        fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
-        built = build_magic_tokens(state, finish_reason=fr)
-    except Exception as e:
-        log.warning("magic_emit failed: %s", e)
-        return text
-
-    present_names = {m.group(1) for m in re.finditer(r"<<<MAGIC:([A-Z][A-Z0-9_]*)", text)}
-    extras: list[str] = []
-    for t in built:
-        m = re.match(r"<<<MAGIC:([A-Z][A-Z0-9_]*)", t)
-        if not m:
-            continue
-        if m.group(1) in present_names or t in existing:
-            continue
-        extras.append(t)
-        present_names.add(m.group(1))
-
-    if not extras:
-        return text
-    return text + "\n\n" + "\n".join(extras)
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    collect_magic_payload(state, text, finish_reason=fr)
+    return text
