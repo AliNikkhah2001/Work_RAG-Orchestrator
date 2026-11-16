@@ -12,8 +12,7 @@ try:
 except Exception:  # pragma: no cover
     _is_scattered = lambda q: False  # type: ignore
 
-# Heuristic fallback when LLM down — mirrors detect_greeting_kind but as 3-way
-_GREETING = {"سلام","درود","hello","hi","hey","صبح بخیر","وقت بخیر"}
+# Heuristic fallback when LLM down — reuse retrieve.detect_greeting_kind
 _SPEC_KEYWORDS = {
   "cheque": ["چک","صیاد","پیچک","برگشت"],
   "facilities_person": ["تسهیلات","وام","قسط"],
@@ -48,11 +47,20 @@ def _looks_like_entity_lookup(text: str) -> bool:
     return False
 
 def _heuristic_classify(text: str) -> str:
+    try:
+        from .retrieve import detect_greeting_kind
+
+        kind = detect_greeting_kind(text)
+        if kind == "greeting":
+            return "greeting"
+        if kind in ("farewell", "thanks"):
+            return "greeting"  # same short-circuit path for smalltalk
+    except Exception:
+        pass
     t = text.strip().lower()
     t = re.sub(r"\.+$","",t).strip()
     for ch in "؟?!.,،؛:\"'«»()…-": t=t.replace(ch,"")
     t = " ".join(t.replace("‌"," ").split())
-    if t in _GREETING: return "greeting"
     # specification: short (<=4 words) + subspace keyword, no question mark
     if (
         len(t.split()) <= 4
