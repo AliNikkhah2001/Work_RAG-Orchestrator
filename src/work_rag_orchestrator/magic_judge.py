@@ -267,7 +267,7 @@ def _score_gate(query: str) -> bool:
     )
     anchor = _score_has_viz_anchor(q)
     product = _query_has_product(q) or any(
-        k in q for k in ("گزارش چک", "تسهیلات", "اعتباری", "رتبه رنگی")
+        k in q for k in ("گزارش چک", "تسهیلات", "رتبه رنگی", "گزارش اعتبار")
     )
     # High recall: score-intent + (product OR anchor OR layout)
     if product or anchor or layout:

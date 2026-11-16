@@ -323,10 +323,10 @@ def _score_tokens(ent: dict, query: str, *, answer_blob: str = "") -> list[str]:
                     b["code"] = d.get("code", "")
                     b["codes"] = list(d.get("codes") or [])
 
-    # Prefer query; fall back to already-generated answer (post-hoc glue).
+    # Score/colour/grade ONLY from the user query — never from the answer
+    # (answers often contain ماده N, years, provider counts, product lists).
     score = _extract_score(query, bands, score_min, score_max)
-    if score is None and answer_blob:
-        score = _extract_score(answer_blob, bands, score_min, score_max)
+    _ = answer_blob  # retained for call-site compat; intentionally unused
 
     # Active band label / codes for gauge
     band_label = ""

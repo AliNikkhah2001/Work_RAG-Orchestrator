@@ -316,6 +316,28 @@ def test_provider_answer_digits_no_gauge():
     assert [p["name"] for p in payload] == ["CREDITORS"]
 
 
+def test_company_name_and_poisoned_answer_never_gauge():
+    """Judge/precheck must key off the query; answer ماده۵/سبز/چک must not invent a gauge."""
+    poison = (
+        "شرکت در سال ۱۳۸۵ بر اساس ماده (۵) تأسیس شد. "
+        "محصولات شامل امتیاز چک و رتبه سبز است. ۶۸ تأمین‌کننده و رنگ پرچم آبی."
+    )
+    for q in (
+        "شرکت اعتبارسنجی ایران چیست؟",
+        "نام شرکت اعتبارسنجی ایران چیست؟",
+        "شرکت امتیازدهی اعتباری ایران را معرفی کن",
+        "ICS چیست؟",
+    ):
+        payload = collect_magic_payload(
+            {"query": q, "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)]},
+            poison,
+            finish_reason="stop",
+        )
+        names = [p["name"] for p in payload]
+        assert "CREDIT_SCORE_GAUGE" not in names and "CREDIT_SCORE_BANDS" not in names, (q, names)
+        assert names == ["COMPANY_TIMELINE"], (q, names)
+
+
 def test_clarify_emits_cards():
     toks = build_magic_tokens(
         {
