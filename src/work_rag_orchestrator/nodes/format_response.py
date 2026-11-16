@@ -947,6 +947,7 @@ async def format_response(state: RAGState) -> RAGState:
             citations = []
             follow_ups = []
             state["follow_ups"] = follow_ups
+            # No magic widgets on no-evidence refusals
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,
@@ -1103,6 +1104,15 @@ async def format_response(state: RAGState) -> RAGState:
         else:
             follow_ups = []
     
+    # Append Dana magic widgets (gauges / timeline / shareholders / …) from
+    # supplemental Entity Data + query heuristics. Open WebUI renders them.
+    try:
+        from ..magic_emit import append_magic_tokens
+
+        content = append_magic_tokens(content, state, finish_reason=finish_reason)
+    except Exception as _magic_err:
+        log.warning("magic_emit append failed for %s: %s", request_id, _magic_err)
+
     # Store formatted response data in state for API layer (including grounded follow_ups)
     state["follow_ups"] = follow_ups
     state["formatted_response"] = {
