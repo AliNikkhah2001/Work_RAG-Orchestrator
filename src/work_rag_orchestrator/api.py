@@ -31,6 +31,20 @@ from .state import RAGState
 
 log = logging.getLogger(__name__)
 
+
+def _has_facility_keyword(text: str) -> bool:
+    """تسهیلات/وام/قسط with the «میخوام» clitic guard («وام» ⊂ «میخوام»).
+
+    Without this, every "I want …" request looks like a facilities query
+    because «میخوام» ends in the characters «وام».
+    """
+    try:
+        from .nodes.infer_specification import has_facility_keyword
+
+        return has_facility_keyword(text)
+    except Exception:
+        return "تسهیلات" in text or "قسط" in text
+
 # Opt-in app-level INFO logging (running under `-m uvicorn` configures only
 # uvicorn's own loggers; without this, app INFO lines never reach stderr).
 if os.environ.get("ORCH_DEBUG") == "1":
@@ -389,7 +403,7 @@ def create_app() -> FastAPI:
                     elif "حقوقی" in hc or "شرکت" in hc:
                         # "شرکت" alone without تسهیلات/چک already handled above as general; here it is with facility context
                         # distinguish: if also has تسهیلات/وام → facilities_legal else general (already returned)
-                        if "تسهیلات" in hc or "وام" in hc or "حقوقی" in hc:
+                        if _has_facility_keyword(hc) or "حقوقی" in hc:
                             sticky_applied = "facilities_legal"; break
                         else:
                             sticky_applied = "general"; break
@@ -501,21 +515,36 @@ def create_app() -> FastAPI:
             _alias_hits = [a for a in _declarations if a and a in _decl_norm]
             # Prefer longer aliases (نردبان اعتباری before نردبان)
             _alias_hits.sort(key=len, reverse=True)
-            if len(_alias_hits) == 1 and not any(
-                w in _decl_norm
-                for w in (
-                    "چیست",
-                    "چيه",
-                    "چیه",
-                    "چيست",
-                    "چی",
-                    "چطور",
-                    "چگونه",
-                    "آیا",
-                    "چرا",
-                    "کیه",
-                    "؟",
-                    "?",
+            # Product requests / cheque-for-legal are questions, not leaf declarations
+            _skip_decl = False
+            try:
+                from .nodes.infer_specification import (
+                    is_cheque_for_legal_ask as _cheque_legal,
+                    is_request_intent as _req_intent,
+                )
+
+                _skip_decl = bool(_req_intent(_decl_norm) or _cheque_legal(_decl_norm))
+            except Exception:
+                _skip_decl = False
+            if (
+                not _skip_decl
+                and len(_alias_hits) == 1
+                and not any(
+                    w in _decl_norm
+                    for w in (
+                        "چیست",
+                        "چيه",
+                        "چیه",
+                        "چيست",
+                        "چی",
+                        "چطور",
+                        "چگونه",
+                        "آیا",
+                        "چرا",
+                        "کیه",
+                        "؟",
+                        "?",
+                    )
                 )
             ):
                 _decl = _declarations[_alias_hits[0]]
@@ -663,7 +692,7 @@ def create_app() -> FastAPI:
         if sticky_applied is not None:
             # Generic follow-up heuristic: does current query contain any explicit subspace keyword of a DIFFERENT subspace?
             _cur_has_cheque = "چک" in cur_q
-            _cur_has_facility = "تسهیلات" in cur_q or "وام" in cur_q
+            _cur_has_facility = _has_facility_keyword(cur_q)
             _cur_has_legal = "حقوقی" in cur_q
             _cur_has_general = any(kw in cur_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عام","کاربرد","قاسم","بور"])
             _cur_is_spec_candidate = False
@@ -727,7 +756,7 @@ def create_app() -> FastAPI:
         if not _req_filter_path and sticky_applied is not None and _sc_target is None:
             # Check if current query is generic (no explicit different subspace) - same heuristic as above
             _cur_has_cheque2 = "چک" in cur_q
-            _cur_has_facility2 = "تسهیلات" in cur_q or "وام" in cur_q
+            _cur_has_facility2 = _has_facility_keyword(cur_q)
             _cur_has_legal2 = "حقوقی" in cur_q
             _cur_has_general2 = any(kw in cur_q for kw in ["مدیر","هیات مدیره","هیئت مدیره","معرفی","عام","کاربرد","قاسم","بور"])
             _is_explicit_different = False

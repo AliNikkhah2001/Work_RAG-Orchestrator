@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover
 # Heuristic fallback when LLM down — reuse retrieve.detect_greeting_kind
 _SPEC_KEYWORDS = {
   "cheque": ["چک","صیاد","پیچک","برگشت"],
-  "facilities_person": ["تسهیلات","وام","قسط"],
+  "facilities_person": ["تسهیلات","قسط"],
   "facilities_legal": ["حقوقی","سهامدار"],
   "credit_ladder": ["نردبان"],
   "guarantor": ["کفیل","کفالت"],
@@ -55,6 +55,14 @@ def _heuristic_classify(text: str) -> str:
             return "greeting"
         if kind in ("farewell", "thanks"):
             return "greeting"  # same short-circuit path for smalltalk
+    except Exception:
+        pass
+    # Product request / cheque-for-legal → retrieve FAQ («تعریف نشده»), never ack-only.
+    try:
+        from .infer_specification import is_cheque_for_legal_ask, is_request_intent
+
+        if is_request_intent(text) or is_cheque_for_legal_ask(text):
+            return "question"
     except Exception:
         pass
     t = text.strip().lower()
@@ -118,11 +126,24 @@ async def classify(state: RAGState) -> RAGState:
         except Exception as e:
             log.warning("classify LLM failed: %s", e)
             cat=_heuristic_classify(text)
+    # Override LLM if it acks a product request / cheque-for-legal as specification
+    try:
+        from .infer_specification import is_cheque_for_legal_ask, is_request_intent
+
+        if cat == "specification" and (is_request_intent(text) or is_cheque_for_legal_ask(text)):
+            cat = "question"
+    except Exception:
+        pass
     state["classify"]=cat
     # If specification, also set the subspace label
     if cat=="specification":
         low=text.lower()
-        has_facility_kw = "تسهیلات" in text or "وام" in text or "قسط" in text
+        try:
+            from .infer_specification import has_facility_keyword as _has_fac
+
+            has_facility_kw = _has_fac(text)
+        except Exception:
+            has_facility_kw = "تسهیلات" in text or "قسط" in text
         has_cheque_kw = "چک" in text
         is_general_kw = any(kw in text for kw in ["عام","عمومی","معرفی","مدیر","هیات مدیره","هیئت مدیره","کاربرد"]) or "general" in low
         if "نردبان" in text:
@@ -158,6 +179,18 @@ async def classify(state: RAGState) -> RAGState:
             elif any(kw in text for kw in ["کفیل", "کفالت", "وجه‌الکفاله", "وجه الکفاله"]):
                 state["applied_subspace"] = "guarantor"
                 state["needs_clarification"] = False
+        # Cheque-for-legal-entity requests always pin cheque, so the FAQ
+        # «برای اشخاص حقوقی (شرکت‌ها) تعریف نشده است» is retrieved instead of
+        # leaking into facilities_legal via sticky subspace.
+        try:
+            from .infer_specification import is_cheque_for_legal_ask
+
+            if is_cheque_for_legal_ask(text):
+                state["applied_subspace"] = "cheque"
+                state["needs_clarification"] = False
+                state["sticky_subspace"] = "cheque"
+        except Exception:
+            pass
         # P2.3: board/CEO interrogatives leave facilities sticky → general
         # (is_specification rejects کیه, so classify must pin general here)
         if (
