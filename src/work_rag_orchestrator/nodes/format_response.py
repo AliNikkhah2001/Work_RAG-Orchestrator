@@ -947,7 +947,13 @@ async def format_response(state: RAGState) -> RAGState:
             citations = []
             follow_ups = []
             state["follow_ups"] = follow_ups
-            # No magic widgets on no-evidence refusals
+            # Still allow score-viz gauges (cheque/person/legal) on weak evidence
+            try:
+                from ..magic_emit import append_magic_tokens as _magic_noev
+
+                content = _magic_noev(content, state, finish_reason=finish_reason)
+            except Exception:
+                pass
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,

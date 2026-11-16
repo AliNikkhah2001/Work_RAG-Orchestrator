@@ -180,6 +180,33 @@ def _pick_score_entity(ents: list[dict], query: str, subspace: str | None) -> di
     return max(scores, key=rank)
 
 
+def _is_horizontal_layout(query: str) -> bool:
+    q = query or ""
+    return any(k in q for k in ("افقی", "horizontal"))
+
+
+def _is_vertical_layout(query: str) -> bool:
+    q = query or ""
+    return "عمودی" in q
+
+
+def _is_ladder_query(query: str) -> bool:
+    q = query or ""
+    return any(k in q for k in ("نردبان", "ladder"))
+
+
+def _score_widget(query: str) -> tuple[str, str]:
+    """Return (MAGIC token name, variant) for score visualization."""
+    if _is_ladder_query(query):
+        variant = "horizontal" if _is_horizontal_layout(query) else "vertical"
+        return "CREDIT_SCORE_BANDS", variant
+    if _is_vertical_layout(query):
+        return "CREDIT_SCORE_GAUGE", "vertical"
+    if _is_horizontal_layout(query):
+        return "CREDIT_SCORE_GAUGE", "horizontal"
+    return "CREDIT_SCORE_GAUGE", "ring"
+
+
 def _score_tokens(ent: dict, query: str) -> list[str]:
     content = _entity_content(ent)
     meta = _entity_meta(ent)
@@ -253,28 +280,8 @@ def _score_tokens(ent: dict, query: str) -> list[str]:
         "bands": bands,
     }
 
-    tokens: list[str] = []
-    if any(k in (query or "") for k in ("نردبان", "ladder")):
-        tokens.append(
-            _token(
-                "CREDIT_SCORE_BANDS",
-                {
-                    **params_common,
-                    "variant": "vertical",
-                },
-            )
-        )
-    else:
-        tokens.append(
-            _token(
-                "CREDIT_SCORE_GAUGE",
-                {
-                    **params_common,
-                    "variant": "ring",
-                },
-            )
-        )
-    return tokens
+    token_name, variant = _score_widget(query)
+    return [_token(token_name, {**params_common, "variant": variant})]
 
 
 def _clarify_items(state: dict) -> list[dict[str, str]]:
@@ -409,8 +416,37 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
             "نارنجی",
             "قرمز",
             "جدول امتیاز",
+            "عمودی",
+            "افقی",
         )
     )
+    # If Entity Data missed the score table but the user clearly asks for a
+    # score/colour/layout gauge, synthesize ICS defaults for the inferred model.
+    if not score_ent and score_intent:
+        model = "person"
+        if "چک" in query or (isinstance(subspace, str) and "cheque" in subspace):
+            model = "cheque"
+        elif "حقوقی" in query or "شرکت" in query or (
+            isinstance(subspace, str) and "legal" in subspace
+        ):
+            model = "legal"
+        elif "حقیقی" in query or (
+            isinstance(subspace, str) and "person" in subspace
+        ):
+            model = "person"
+        score_ent = {
+            "similarity": 0.0,
+            "list_name": f"synthetic-{model}",
+            "content": {
+                "_meta": {
+                    "kind": "score_table",
+                    "model": model,
+                    "score_min": 1 if model == "cheque" else 250,
+                    "score_max": 100 if model == "cheque" else 900,
+                },
+                "color_groups": [],
+            },
+        }
     if score_ent and (score_intent or "score_table" in kinds):
         # Avoid attaching score gauge on pure catalog questions
         catalog_only = any(k in query for k in ("سهامدار", "تامین", "تأمین", "وام", "عناوین")) and not score_intent
@@ -456,10 +492,17 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
 def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None = None) -> str:
     """Append magic tokens to assistant content (idempotent)."""
     text = (content or "").rstrip()
-    # Skip refusals
     if not text:
         return content or ""
-    if "یافت نشد" in text and len(text) < 120:
+
+    query = state.get("query") or state.get("rewritten_query") or ""
+    score_viz = any(
+        k in query
+        for k in ("امتیاز", "رتبه", "رنگ", "نردبان", "عمودی", "افقی", "آبی", "سبز", "زرد", "نارنجی", "قرمز")
+    )
+    # Skip plain refusals unless the user asked for a score visualization —
+    # then still attach the gauge so the UI can render the asked number/band.
+    if "یافت نشد" in text and len(text) < 160 and not score_viz:
         return text
 
     existing = set(_MAGIC_RE.findall(text))
