@@ -493,14 +493,14 @@ prompts:
     یا {{"fire":false}}
 
     '
-  magic_judge_timeline: 'نقش: داور COMPANY_TIMELINE برای ICS. فقط اگر پرسش درباره تاریخچه/تأسیس/معرفی
-    شرکت اعتبارسنجی ایران است fire=true.
+  magic_judge_timeline: 'نقش: داور COMPANY_TIMELINE برای ICS. فقط اگر پرسش درباره تاریخچه/تأسیس، معرفی کلی
+    شرکت اعتبارسنجی ایران، یا تفاوت توضیحی آن با سایر شرکت‌هاست fire=true.
 
     کاندیدها: {families}
 
     پرسش: {query}
 
-    پاسخ: {answer}
+    پاسخ (فقط زمینه؛ معیار نیست): {answer}
 
     خروجی: {{"fire":true,"name":"COMPANY_TIMELINE","params":{{"variant":"vertical"}}}} یا {{"fire":false}}
 
