@@ -91,6 +91,76 @@ def test_ladder_emits_bands_token():
     }
     toks = build_magic_tokens(state, finish_reason="stop")
     assert toks[0].startswith("<<<MAGIC:CREDIT_SCORE_BANDS")
+    p = _parse_params(toks[0])
+    assert p["variant"] == "vertical"
+    assert p["model"] == "person"
+
+
+def test_ladder_horizontal_when_query_requests():
+    state = {
+        "query": "نردبان افقی اعتباری حقوقی",
+        "supplemental": [_score_ent("legal", PERSON_GROUPS)],
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert p["variant"] == "horizontal"
+    assert p["model"] == "legal"
+    assert p["min"] == 250 and p["max"] == 900
+
+
+def test_ladder_horizontal_english_keyword():
+    state = {
+        "query": "credit ladder horizontal for cheque",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        "applied_subspace": "cheque",
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert p["variant"] == "horizontal"
+    assert p["model"] == "cheque"
+
+
+def test_gauge_vertical_variant():
+    state = {
+        "query": "امتیاز اعتباری به صورت عمودی نشان بده",
+        "supplemental": [_score_ent("person", PERSON_GROUPS)],
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert build_magic_tokens(state, finish_reason="stop")[0].startswith("<<<MAGIC:CREDIT_SCORE_GAUGE")
+    assert p["variant"] == "vertical"
+    assert p["model"] == "person"
+
+
+def test_gauge_horizontal_variant():
+    state = {
+        "query": "گرید افقی امتیاز چک",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        "applied_subspace": "cheque",
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert build_magic_tokens(state, finish_reason="stop")[0].startswith("<<<MAGIC:CREDIT_SCORE_GAUGE")
+    assert p["variant"] == "horizontal"
+    assert p["model"] == "cheque"
+
+
+def test_default_gauge_ring_variant():
+    state = {
+        "query": "رتبه سبز چک چقدر است؟",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        "applied_subspace": "cheque",
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert build_magic_tokens(state, finish_reason="stop")[0].startswith("<<<MAGIC:CREDIT_SCORE_GAUGE")
+    assert p["variant"] == "ring"
+    assert p["model"] == "cheque"
+
+
+def test_person_gauge_includes_model_field():
+    state = {
+        "query": "امتیاز ۵۵۰ حقیقی",
+        "supplemental": [_score_ent("person", PERSON_GROUPS)],
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert p["model"] == "person"
+    assert p["variant"] == "ring"
 
 
 def test_shareholders_and_creditors():
@@ -174,6 +244,24 @@ def test_truncated_color_groups_restored():
     assert len(p["bands"]) == 5
     assert p["band"] == "آبی"
     assert p["min"] == 1 and p["max"] == 100
+    assert p["model"] == "cheque"
+
+
+def test_truncated_legal_color_groups_restored():
+    state = {
+        "query": "رتبه قرمز حقوقی",
+        "supplemental": [
+            _score_ent(
+                "legal",
+                [{"رنگ": "قرمز", "حد پایین امتیاز گروه": 250.0, "حد بالای امتیاز گروه": 459.0}],
+            )
+        ],
+        "applied_subspace": "facilities_company",
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert len(p["bands"]) == 5
+    assert p["model"] == "legal"
+    assert p["min"] == 250 and p["max"] == 900
 
 
 def test_shareholders_does_not_emit_creditors():
