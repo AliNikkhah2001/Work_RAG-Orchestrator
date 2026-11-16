@@ -238,24 +238,34 @@ def _score_widget(query: str) -> tuple[str, str]:
 
 
 def _infer_model_from_signals(query: str, subspace: str | None, blob: str) -> str:
-    """Pick cheque (0–100) vs person/legal (250–900) from explicit signals only."""
+    """Pick cheque (0–100) vs person/legal (250–900) from explicit signals only.
+
+    Query + subspace win over answer prose — Dana greetings often mention «بررسی
+    چک‌ها», which must not force cheque on «امتیاز ۶۱۰ حقیقی».
+    """
     q = query or ""
     sub = (subspace or "").lower()
     b = blob or q
-    if "چک" in b or "cheque" in sub or "صیاد" in b:
+    # 1) Explicit query / sticky subspace
+    if "چک" in q or "صیاد" in q or "cheque" in sub:
         return "cheque"
-    if "حقوقی" in b or "شرکت" in q or "legal" in sub or "facilities_company" in sub:
+    if "حقوقی" in q or "legal" in sub or "facilities_company" in sub or "facilities_legal" in sub:
         return "legal"
-    if "حقیقی" in b or "person" in sub or "facilities_person" in sub:
+    if "حقیقی" in q or "person" in sub or "facilities_person" in sub:
         return "person"
+    if "شرکت" in q and ("امتیاز" in q or "رتبه" in q):
+        return "legal"
+    # 2) Answer-side product wording only when query has no person/legal cue
+    if ("چک" in b or "صیاد" in b) and "حقیقی" not in q and "حقوقی" not in q:
+        return "cheque"
     # Colour-rank alone defaults to cheque ICS palette
-    if any(c in b for c in ("آبی", "ابي", "سبز", "زرد", "نارنجی", "نارنجي", "قرمز")):
-        if _blob_has_credit_numeric(b) and not _blob_has_cheque_numeric(b):
+    if any(c in q for c in ("آبی", "ابي", "سبز", "زرد", "نارنجی", "نارنجي", "قرمز")):
+        if _blob_has_credit_numeric(q) and not _blob_has_cheque_numeric(q):
             return "person"
         return "cheque"
-    if _blob_has_credit_numeric(b) and not _blob_has_cheque_numeric(b):
+    if _blob_has_credit_numeric(q) and not _blob_has_cheque_numeric(q):
         return "person"
-    if _blob_has_cheque_numeric(b) and not _blob_has_credit_numeric(b):
+    if _blob_has_cheque_numeric(q) and not _blob_has_credit_numeric(q):
         return "cheque"
     return "person"
 
