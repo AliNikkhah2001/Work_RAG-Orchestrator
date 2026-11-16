@@ -551,7 +551,7 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "حقوقی" in pat or "شرکت" in pat or "قانونی" in pat)
     else:
-        # For other subspaces, use general patterns but be conservative
+        # For other subspaces (incl. general), use general patterns but be conservative
         has_not_available = any(pat.lower() in chunk_lower for pat in _NOT_AVAILABLE_PATTERNS 
                                 if "تعریف نشده" in pat or "ارائه نمی‌شود" in pat or "پشتیبانی نمی‌شود" in pat)
     
@@ -571,6 +571,16 @@ async def _check_contradiction(answer: str, chunks: list, request_id: str, appli
     if not_avail_in_answer:
         # Answer acknowledges unavailability - not a contradiction
         return False
+
+    # Comparative FAQ answers (حقیقی vs حقوقی) often co-retrieve the
+    # «چک برای حقوقی تعریف نشده» note. Words like «روش» then false-trigger
+    # this guard and replace a correct definition with «یافت نشد».
+    if applied_subspace in (None, "", "general"):
+        comparative = ("حقیقی" in answer_lower and "حقوقی" in answer_lower) or (
+            "تفاوت" in answer_lower and ("حقیقی" in answer_lower or "حقوقی" in answer_lower)
+        )
+        if comparative:
+            return False
     
     log.info(
         "Contradiction guard fired for request %s: chunks say NOT available, but answer gives advice",
@@ -954,11 +964,13 @@ async def format_response(state: RAGState) -> RAGState:
                 content = _magic_noev(content, state, finish_reason=finish_reason)
             except Exception:
                 pass
+            _magic_noev_payload = state.get("magic_payload") or []
             state["formatted_response"] = {
                 "content": content,
                 "finish_reason": finish_reason,
                 "citations": [],
                 "follow_ups": follow_ups,
+                "magic": _magic_noev_payload if _magic_noev_payload else None,
             }
             log.info("Formatted response (no-evidence guard) for request %s", request_id)
             try:
@@ -1110,14 +1122,16 @@ async def format_response(state: RAGState) -> RAGState:
         else:
             follow_ups = []
     
-    # Append Dana magic widgets (gauges / timeline / shareholders / …) from
-    # supplemental Entity Data + query heuristics. Open WebUI renders them.
+    # Post-hoc Dana magic: compute widgets AFTER the answer is final and keep
+    # them off the message body (API exposes via rag.magic).
     try:
         from ..magic_emit import append_magic_tokens
 
         content = append_magic_tokens(content, state, finish_reason=finish_reason)
     except Exception as _magic_err:
         log.warning("magic_emit append failed for %s: %s", request_id, _magic_err)
+
+    magic_payload = state.get("magic_payload") or []
 
     # Store formatted response data in state for API layer (including grounded follow_ups)
     state["follow_ups"] = follow_ups
@@ -1126,6 +1140,7 @@ async def format_response(state: RAGState) -> RAGState:
         "finish_reason": finish_reason,
         "citations": [c.model_dump() for c in citations],
         "follow_ups": follow_ups,
+        "magic": magic_payload if magic_payload else None,
     }
     
     log.info("Formatted response for request %s", request_id)

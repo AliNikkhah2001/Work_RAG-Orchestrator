@@ -8,6 +8,8 @@ import re
 from work_rag_orchestrator.magic_emit import (
     append_magic_tokens,
     build_magic_tokens,
+    collect_magic_payload,
+    strip_magic_from_content,
     _extract_score,
     _color_groups_to_bands,
 )
@@ -163,7 +165,7 @@ def test_person_gauge_includes_model_field():
     assert p["variant"] == "ring"
 
 
-def test_shareholders_and_creditors():
+def test_shareholders_and_creditors_require_ics_company():
     sh = {
         "similarity": 0.9,
         "content": {"_meta": {"kind": "shareholders"}, "records": []},
@@ -172,17 +174,33 @@ def test_shareholders_and_creditors():
         "similarity": 0.9,
         "content": {"_meta": {"kind": "data_providers"}, "records": []},
     }
+    # Generic company ask — no ICS context → no widgets
+    assert build_magic_tokens(
+        {"query": "سهامداران شرکت چه کسانی هستند؟", "supplemental": [sh]},
+        finish_reason="stop",
+    ) == []
+    assert build_magic_tokens(
+        {"query": "تامین‌کنندگان دیتا کدام‌اند؟", "supplemental": [pr]},
+        finish_reason="stop",
+    ) == []
+    # Explicit شرکت اعتبارسنجی ایران
     assert any(
         t.startswith("<<<MAGIC:SHAREHOLDERS")
         for t in build_magic_tokens(
-            {"query": "سهامداران شرکت چه کسانی هستند؟", "supplemental": [sh]},
+            {
+                "query": "سهامداران شرکت اعتبارسنجی ایران چه کسانی هستند؟",
+                "supplemental": [sh],
+            },
             finish_reason="stop",
         )
     )
     assert any(
         t.startswith("<<<MAGIC:CREDITORS")
         for t in build_magic_tokens(
-            {"query": "تامین‌کنندگان دیتا کدام‌اند؟", "supplemental": [pr]},
+            {
+                "query": "تامین‌کنندگان دیتای شرکت اعتبارسنجی ایران کدام‌اند؟",
+                "supplemental": [pr],
+            },
             finish_reason="stop",
         )
     )
@@ -227,15 +245,61 @@ def test_clarify_cards_match_cheque_facilities_fork():
     assert ids == ["person", "cheque"] or ids == ["cheque", "person"]
 
 
-def test_append_idempotent():
+def test_append_keeps_body_clean_and_stashes_payload():
     state = {
         "query": "تاریخچه شرکت اعتبارسنجی ایران",
         "supplemental": [],
     }
     once = append_magic_tokens("متن پاسخ", state, finish_reason="stop")
     twice = append_magic_tokens(once, state, finish_reason="stop")
-    assert once.count("COMPANY_TIMELINE") == 1
-    assert twice.count("COMPANY_TIMELINE") == 1
+    assert "<<<MAGIC:" not in once
+    assert "<<<MAGIC:" not in twice
+    assert once == "متن پاسخ"
+    assert twice == "متن پاسخ"
+    assert state.get("magic_payload")
+    assert state["magic_payload"][0]["name"] == "COMPANY_TIMELINE"
+
+
+def test_collect_magic_payload_posthoc():
+    state = {
+        "query": "امتیاز ۶۱۰ حقیقی",
+        "supplemental": [_score_ent("person", PERSON_GROUPS)],
+        "applied_subspace": "facilities_person",
+    }
+    payload = collect_magic_payload(state, "امتیاز شما ۶۱۰ است", finish_reason="stop")
+    assert payload and payload[0]["name"] == "CREDIT_SCORE_GAUGE"
+    assert payload[0]["params"]["score"] == 610
+    assert payload[0]["params"]["model"] == "person"
+    assert "codes" in payload[0]["params"]["bands"][0] or payload[0]["params"].get("codes") is not None
+
+
+def test_generic_credit_ask_emits_no_gauge():
+    payload = collect_magic_payload(
+        {
+            "query": "اعتبارسنجی چیست؟",
+            "supplemental": [_score_ent("person", PERSON_GROUPS)],
+        },
+        "اعتبارسنجی فرایند ارزیابی ریسک اعتباری است.",
+        finish_reason="stop",
+    )
+    assert payload == []
+
+
+def test_strip_magic_from_content():
+    raw = "پاسخ\n\n<<<MAGIC:CREDIT_SCORE_GAUGE {\"score\":10}>>>\n"
+    assert "<<<MAGIC:" not in strip_magic_from_content(raw)
+    assert "پاسخ" in strip_magic_from_content(raw)
+
+
+def test_linear_variant():
+    state = {
+        "query": "نمایش خطی امتیاز چک ۸۰",
+        "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        "applied_subspace": "cheque",
+    }
+    p = _parse_params(build_magic_tokens(state, finish_reason="stop")[0])
+    assert p["variant"] == "linear"
+    assert p["model"] == "cheque"
 
 
 def test_extract_score_persian_digits():

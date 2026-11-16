@@ -90,6 +90,7 @@ class RAGState(TypedDict):
     classify: Optional[str]
 
     follow_ups: NotRequired[Optional[List[str]]]
+    magic_payload: NotRequired[Optional[List[Dict[str, Any]]]]
 
     # T1: filtered → whole-KB fallback audit (single retry)
     fallback_used: NotRequired[bool]

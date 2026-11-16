@@ -888,6 +888,7 @@ def create_app() -> FastAPI:
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                         sup_faq = state.get("supplemental") or state.get("injected_entities") or []
+                        _magic_faq = state.get("magic_payload") or (state.get("formatted_response") or {}).get("magic")
                         _rag_faq = {
                             "request_id": request_id,
                             "citations": [],
@@ -895,6 +896,7 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace") or state.get("applied_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "magic": _magic_faq if _magic_faq else None,
                         }
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'stop'}],'rag':_rag_faq}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -919,6 +921,7 @@ def create_app() -> FastAPI:
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
                         sup_clarify = state.get("supplemental") or state.get("injected_entities") or []
+                        _magic_clarify = state.get("magic_payload") or (state.get("formatted_response") or {}).get("magic")
                         _rag_clarify = {
                             "request_id": request_id,
                             "citations": [],
@@ -926,6 +929,7 @@ def create_app() -> FastAPI:
                             "applied_subspace": state.get("applied_subspace"),
                             "sticky_subspace": state.get("sticky_subspace"),
                             "available_subspaces": state.get("available_subspaces"),
+                            "magic": _magic_clarify if _magic_clarify else None,
                         }
                         yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{},'finish_reason':'clarify'}],'rag':_rag_clarify}, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -1020,6 +1024,11 @@ def create_app() -> FastAPI:
                     finish_reason = formatted.get("finish_reason", "stop")
                     follow_ups_stream = formatted.get("follow_ups") or state.get("follow_ups") or []
                     supplemental_stream = state.get("supplemental") or state.get("injected_entities") or []
+                    magic_stream = (
+                        state.get("magic_payload")
+                        or formatted.get("magic")
+                        or []
+                    )
                     final_chunk = {
                         "id": f"chatcmpl-{request_id}",
                         "object": "chat.completion.chunk",
@@ -1036,6 +1045,7 @@ def create_app() -> FastAPI:
                             "available_subspaces": state.get("available_subspaces"),
                             "scope_broadened": bool(state.get("scope_broadened")),
                             "scope_broadened_to": state.get("scope_broadened_to"),
+                            "magic": magic_stream if magic_stream else None,
                         },
                     }
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
@@ -1291,6 +1301,11 @@ def create_app() -> FastAPI:
                 applied_subspace=final_state.get("applied_subspace"),
                 sticky_subspace=final_state.get("sticky_subspace") or final_state.get("applied_subspace"),
                 available_subspaces=final_state.get("available_subspaces"),
+                magic=(
+                    final_state.get("magic_payload")
+                    or formatted.get("magic")
+                    or None
+                ),
             ),
             audit=audit,
         )
