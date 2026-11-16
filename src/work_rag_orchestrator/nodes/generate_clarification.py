@@ -57,6 +57,14 @@ async def generate_clarification(state: RAGState) -> RAGState:
         trace_span(request_id, "generate_clarification", span_input=query, span_output=text)
     except Exception:
         pass
+    # Attach clickable ICS clarify cards for Open WebUI
+    try:
+        from ..magic_emit import append_magic_tokens
+
+        text = append_magic_tokens(text, state, finish_reason="clarify")
+    except Exception as e:
+        log.warning("clarify magic_emit failed: %s", e)
     state["answer"] = text
+    state["clarifying_question"] = text
     state["formatted_response"] = {"content": text, "finish_reason": "clarify", "citations": []}
     return state

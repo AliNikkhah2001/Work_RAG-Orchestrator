@@ -878,6 +878,12 @@ def create_app() -> FastAPI:
                     # P2.2: FAQ direct before clarify — verified FAQ must not lose to scattered flag
                     if state.get("faq_verified") and state.get("direct_faq_answer"):
                         content = state.get("direct_faq_answer")
+                        try:
+                            from .magic_emit import append_magic_tokens as _magic_faq
+
+                            content = _magic_faq(content or "", state, finish_reason="stop")
+                        except Exception:
+                            pass
                         yield ": agent guarded_generate faq_direct streaming\n\n"
                         for tok in re.findall(r"\S+\s*", content):
                             yield f"data: {json.dumps({'id':f'chatcmpl-{request_id}','object':'chat.completion.chunk','choices':[{'index':0,'delta':{'content':tok}}]}, ensure_ascii=False)}\n\n"
