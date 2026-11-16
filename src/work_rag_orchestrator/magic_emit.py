@@ -247,7 +247,7 @@ def _infer_model_from_signals(query: str, subspace: str | None, blob: str) -> st
     sub = (subspace or "").lower()
     b = blob or q
     # 1) Explicit query / sticky subspace
-    if "چک" in q or "صیاد" in q or "cheque" in sub:
+    if "چک" in q or "صیاد" in q or "cheque" in q.lower() or "cheque" in sub:
         return "cheque"
     if "حقوقی" in q or "legal" in sub or "facilities_company" in sub or "facilities_legal" in sub:
         return "legal"
@@ -549,18 +549,70 @@ def _best_kind_sim(ents: list[dict], kind: str) -> float:
     return max(sims) if sims else -1.0
 
 
-def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list[str]:
-    """Return magic token strings to append (may be empty)."""
+def _synthetic_score_ent(model: str) -> dict:
+    return {
+        "similarity": 0.0,
+        "list_name": f"synthetic-{model}",
+        "content": {
+            "_meta": {
+                "kind": "score_table",
+                "model": model,
+                "score_min": 1 if model == "cheque" else 250,
+                "score_max": 100 if model == "cheque" else 900,
+            },
+            "color_groups": [],
+        },
+    }
+
+
+def _emit_score_tokens(state: dict, query: str) -> list[str]:
+    """Deterministic score/bands — query-anchored only (never answer digits)."""
+    from .magic_judge import _score_gate
+
+    if not _score_gate(query):
+        return []
+    ents = _supplemental(state)
+    subspace = state.get("applied_subspace") or state.get("sticky_subspace")
+    sub = subspace if isinstance(subspace, str) else None
+    # Model from query/subspace only — ignore answer prose («بررسی چک‌ها»).
+    model = _infer_model_from_signals(query, sub, query)
+    score_ent = _pick_score_entity(ents, query, sub) or _synthetic_score_ent(model)
+    ent_model = str(_entity_meta(score_ent).get("model") or "")
+    if model and ent_model and model != ent_model:
+        meta = dict(_entity_meta(score_ent))
+        meta["model"] = model
+        meta["score_min"] = 1 if model == "cheque" else 250
+        meta["score_max"] = 100 if model == "cheque" else 900
+        content = dict(_entity_content(score_ent))
+        content["_meta"] = meta
+        score_ent = {**score_ent, "content": content}
+    # Extract score from QUERY only — answer may contain ماده ۵ / provider counts.
+    return _score_tokens(score_ent, query, answer_blob="")
+
+
+def build_magic_tokens(
+    state: dict,
+    *,
+    finish_reason: str | None = None,
+    families: frozenset | None = None,
+    judge: dict | None = None,
+) -> list[str]:
+    """Deterministic (and optional judge-driven) magic token strings.
+
+    Emission is gated by ``magic_precheck`` — empty families ⇒ no widgets.
+    Incidental answer numbers never open a gauge.
+    """
+    from .magic_judge import magic_precheck
+
     if state.get("blocked") or state.get("greeting_only"):
         return []
     if finish_reason == "content_filter":
         return []
 
     query = state.get("query") or state.get("rewritten_query") or ""
-    ents = _supplemental(state)
     tokens: list[str] = []
 
-    # Clarify companion / primary
+    # Clarify companion / primary — deterministic chips, no LLM
     if finish_reason == "clarify" or state.get("needs_clarification"):
         items = _clarify_items(state)
         tokens.append(
@@ -572,78 +624,71 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
                 },
             )
         )
-        return tokens  # clarify turn: only chips
+        return tokens
 
-    subspace = state.get("applied_subspace") or state.get("sticky_subspace")
+    fam = families if families is not None else magic_precheck(query, finish_reason)
+    if not fam:
+        return []
 
-    # Score tables → gauge / bands. Emit only when the QUERY has score intent
-    # (never on generic «شرکت اعتبارسنجی ایران چیست؟» / answer-side ماده ۵).
-    answer_blob = str(state.get("_magic_answer_blob") or "")
-    signal_blob = f"{query}\n{answer_blob}"
-    if "_magic_specific_score" in state:
-        specific = bool(state.get("_magic_specific_score"))
-    else:
-        specific = _query_has_score_intent(query)
-
-    score_ent = _pick_score_entity(ents, query, subspace if isinstance(subspace, str) else None)
-    # If Entity Data missed the score table but the turn has a specific score
-    # signal, synthesize ICS defaults for the inferred model family.
-    if not score_ent and specific:
-        model = _infer_model_from_signals(
-            query, subspace if isinstance(subspace, str) else None, signal_blob
+    # Prefer structured LLM judge when present and consistent with precheck
+    if judge and judge.get("fire") and judge.get("name"):
+        name = str(judge["name"]).upper()
+        params = dict(judge.get("params") or {})
+        family_ok = (
+            (name in ("CREDIT_SCORE_GAUGE", "CREDIT_SCORE_BANDS") and "score" in fam)
+            or (name == "SHAREHOLDERS" and "shareholders" in fam)
+            or (name == "CREDITORS" and "creditors" in fam)
+            or (name == "COMPANY_TIMELINE" and "timeline" in fam)
         )
-        score_ent = {
-            "similarity": 0.0,
-            "list_name": f"synthetic-{model}",
-            "content": {
-                "_meta": {
-                    "kind": "score_table",
-                    "model": model,
-                    "score_min": 1 if model == "cheque" else 250,
-                    "score_max": 100 if model == "cheque" else 900,
-                },
-                "color_groups": [],
-            },
-        }
-    if score_ent and specific:
-        # Override entity model when query/answer clearly points at another scale
-        inferred = _infer_model_from_signals(
-            query, subspace if isinstance(subspace, str) else None, signal_blob
-        )
-        ent_model = str(_entity_meta(score_ent).get("model") or "")
-        if inferred and ent_model and inferred != ent_model:
-            # Prefer explicit cheque/credit signals over co-retrieved table
-            if (inferred == "cheque" and _blob_has_cheque_numeric(signal_blob)) or (
-                inferred != "cheque" and _blob_has_credit_numeric(signal_blob)
-            ):
-                meta = dict(_entity_meta(score_ent))
-                meta["model"] = inferred
-                meta["score_min"] = 1 if inferred == "cheque" else 250
-                meta["score_max"] = 100 if inferred == "cheque" else 900
-                content = dict(_entity_content(score_ent))
-                content["_meta"] = meta
-                score_ent = {**score_ent, "content": content}
-        tokens.extend(_score_tokens(score_ent, query, answer_blob=answer_blob))
+        if family_ok:
+            if name in ("CREDIT_SCORE_GAUGE", "CREDIT_SCORE_BANDS"):
+                # Rebuild full gauge params from query anchors (judge may omit bands)
+                score_toks = _emit_score_tokens(state, query)
+                if score_toks:
+                    # Override variant/model hints from judge when provided
+                    if params.get("variant") or params.get("model"):
+                        parsed = _parse_token_string(score_toks[0]) or {}
+                        p = dict(parsed.get("params") or {})
+                        if params.get("variant"):
+                            p["variant"] = params["variant"]
+                        if params.get("model") in ("cheque", "person", "legal"):
+                            # Rematerialize with forced model
+                            forced = _emit_score_tokens(
+                                {**state, "applied_subspace": (
+                                    "cheque" if params["model"] == "cheque"
+                                    else "facilities_person" if params["model"] == "person"
+                                    else "facilities_company"
+                                )},
+                                query,
+                            )
+                            if forced:
+                                return forced
+                        return [_token(name if name == "CREDIT_SCORE_BANDS" or _is_ladder_query(query) else parsed.get("name") or name, {**p, **{k: v for k, v in params.items() if k in ("variant",)}})]
+                    return score_toks
+            else:
+                return [_token(name, params or (
+                    {"variant": "vertical"} if name == "COMPANY_TIMELINE"
+                    else {"title": "سهامداران شرکت اعتبارسنجی ایران"} if name == "SHAREHOLDERS"
+                    else {"title": "تأمین‌کنندگان داده‌های شرکت اعتبارسنجی ایران"} if name == "CREDITORS"
+                    else {}
+                ))]
 
-    # Shareholders / creditors — explicit query intent only (never co-retrieval).
-    want_sh = _shareholders_query(query)
-    want_cr = _creditors_query(query)
-    if want_sh:
+    # Deterministic fallback from precheck families (no LLM / judge miss)
+    if "score" in fam:
+        tokens.extend(_emit_score_tokens(state, query))
+    if "shareholders" in fam:
         tokens.append(_token("SHAREHOLDERS", {"title": "سهامداران شرکت اعتبارسنجی ایران"}))
-    if want_cr:
+    if "creditors" in fam:
         tokens.append(
             _token(
                 "CREDITORS",
                 {"title": "تأمین‌کنندگان داده‌های شرکت اعتبارسنجی ایران"},
             )
         )
-
-    # Company history timeline (chunk-backed; no entity kind required)
-    if _history_query(query, answer_blob):
+    if "timeline" in fam:
         tokens.append(_token("COMPANY_TIMELINE", {"variant": "vertical"}))
-        # Company intro/history turns must not also glue a co-retrieved score
-        # gauge (e.g. «ماده (۵)» misread as cheque score 5).
-        if not _query_has_score_intent(query):
+        # Timeline/intro wins over a co-gated score false positive
+        if "score" not in fam:
             tokens = [t for t in tokens if "CREDIT_SCORE_GAUGE" not in t and "CREDIT_SCORE_BANDS" not in t]
 
     return tokens
@@ -706,80 +751,7 @@ def _blob_has_grade_code(blob: str) -> bool:
     return bool(re.search(r"\b[A-Ea-e]\s*[1-3]\b", blob or ""))
 
 
-def _query_has_score_intent(query: str) -> bool:
-    """Score widgets require an explicit ask in the user query — never answer prose alone.
-
-    Incidental digits in answers (ماده ۵، سال ۱۳۸۵، «امتیاز چک» product lists) must
-    not invent a CREDIT_SCORE_GAUGE on company-overview turns.
-    """
-    q = query or ""
-    if not q.strip():
-        return False
-    if any(
-        k in q
-        for k in (
-            "امتیاز",
-            "رتبه",
-            "رنگ",
-            "نردبان",
-            "گرید",
-            "نمره",
-            "ladder",
-            "عمودی",
-            "افقی",
-            "horizontal",
-            "vertical",
-            "linear",
-            "خطی",
-        )
-    ):
-        return True
-    if _blob_has_colour_tag(q) or _blob_has_named_band(q) or _blob_has_grade_code(q):
-        return True
-    if _blob_has_cheque_numeric(q) or _blob_has_credit_numeric(q):
-        return True
-    return False
-
-
-def collect_magic_payload(
-    state: dict,
-    content: str = "",
-    *,
-    finish_reason: str | None = None,
-) -> list[dict[str, Any]]:
-    """Post-hoc magic items for ``rag.magic`` — never mutates content.
-
-    Score gauges gate on the **query** (explicit score/colour/name/layout).
-    ICS timeline/shareholders gate on company intent (+ answer founding cues).
-    """
-    if state.get("blocked") or state.get("greeting_only"):
-        return []
-    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
-    if fr == "content_filter":
-        return []
-
-    query = state.get("query") or state.get("rewritten_query") or ""
-    answer = strip_magic_from_content(content or state.get("answer") or "")
-    blob = f"{query}\n{answer}"
-
-    # Query-only score gate — answer digits/colours never open a gauge alone.
-    specific_score = _query_has_score_intent(query)
-
-    prev_answer = state.get("_magic_answer_blob")
-    state["_magic_answer_blob"] = blob
-    state["_magic_specific_score"] = specific_score
-    try:
-        built = build_magic_tokens(state, finish_reason=fr)
-    except Exception as e:
-        log.warning("magic_emit collect failed: %s", e)
-        built = []
-    finally:
-        if prev_answer is None:
-            state.pop("_magic_answer_blob", None)
-        else:
-            state["_magic_answer_blob"] = prev_answer
-        state.pop("_magic_specific_score", None)
-
+def _tokens_to_payload(built: list[str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for t in built:
@@ -789,20 +761,88 @@ def collect_magic_payload(
         name = item["name"]
         if name in seen:
             continue
-        # Drop score widgets when the turn has no specific score signal
-        if name in ("CREDIT_SCORE_GAUGE", "CREDIT_SCORE_BANDS") and not specific_score:
-            continue
         seen.add(name)
         out.append(item)
-    state["magic_payload"] = out
     return out
 
 
-def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None = None) -> str:
-    """Backward-compatible entry: strip MAGIC from body and stash payload on state.
+def collect_magic_payload(
+    state: dict,
+    content: str = "",
+    *,
+    finish_reason: str | None = None,
+    judge: dict | None = None,
+    families: frozenset | None = None,
+) -> list[dict[str, Any]]:
+    """Post-hoc magic items for ``rag.magic`` — never mutates content.
 
-    Does NOT append MAGIC into content anymore — callers must send
-    ``state['magic_payload']`` via ``rag.magic``.
+    Sync path: rule precheck → deterministic emit (used by unit tests and as
+    LLM-judge fallback). Production prefers :func:`collect_magic_payload_async`.
+    """
+    from .magic_judge import magic_precheck
+
+    if state.get("blocked") or state.get("greeting_only"):
+        state["magic_payload"] = []
+        return []
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    if fr == "content_filter":
+        state["magic_payload"] = []
+        return []
+
+    query = state.get("query") or state.get("rewritten_query") or ""
+    answer = strip_magic_from_content(content or state.get("answer") or "")
+    fam = families if families is not None else magic_precheck(query, fr)
+    if not fam and fr != "clarify" and not state.get("needs_clarification"):
+        state["magic_payload"] = []
+        return []
+
+    try:
+        built = build_magic_tokens(state, finish_reason=fr, families=fam, judge=judge)
+    except Exception as e:
+        log.warning("magic_emit collect failed: %s", e)
+        built = []
+
+    out = _tokens_to_payload(built)
+    state["magic_payload"] = out
+    state["magic_precheck_families"] = sorted(fam)
+    return out
+
+
+async def collect_magic_payload_async(
+    state: dict,
+    content: str = "",
+    *,
+    finish_reason: str | None = None,
+) -> list[dict[str, Any]]:
+    """Rule-gated LLM judge then deterministic materialization.
+
+    * precheck empty → return [] immediately (no LLM, no latency)
+    * clarify → deterministic cards only
+    * else → short LLM JSON judge; on failure fall back to rules
+    """
+    from .magic_judge import call_magic_judge, magic_precheck
+
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    query = state.get("query") or state.get("rewritten_query") or ""
+    answer = strip_magic_from_content(content or state.get("answer") or "")
+    fam = magic_precheck(query, fr)
+    judge = None
+    if fam and fam != frozenset({"clarify"}):
+        judge = await call_magic_judge(
+            query,
+            answer,
+            fam,
+            request_id=str(state.get("request_id") or ""),
+        )
+    return collect_magic_payload(
+        state, content, finish_reason=fr, judge=judge, families=fam
+    )
+
+
+def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None = None) -> str:
+    """Sync entry: strip MAGIC from body and stash payload (deterministic rules).
+
+    Does NOT append MAGIC into content — callers send ``rag.magic``.
     """
     text = strip_magic_from_content(content or "")
     if not text:
@@ -810,14 +850,31 @@ def append_magic_tokens(content: str, state: dict, *, finish_reason: str | None 
         return content or ""
 
     query = state.get("query") or state.get("rewritten_query") or ""
-    score_viz = any(
-        k in query
-        for k in ("امتیاز", "رتبه", "رنگ", "نردبان", "عمودی", "افقی", "آبی", "سبز", "زرد", "نارنجی", "قرمز")
-    )
-    if "یافت نشد" in text and len(text) < 160 and not score_viz:
+    from .magic_judge import magic_precheck
+
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    if "یافت نشد" in text and len(text) < 160 and not magic_precheck(query, fr):
         state["magic_payload"] = []
         return text
 
-    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
     collect_magic_payload(state, text, finish_reason=fr)
+    return text
+
+
+async def append_magic_tokens_async(
+    content: str, state: dict, *, finish_reason: str | None = None
+) -> str:
+    """Async entry used by format_response — may call the gated LLM judge."""
+    text = strip_magic_from_content(content or "")
+    fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
+    if not text:
+        await collect_magic_payload_async(state, "", finish_reason=fr)
+        return content or ""
+    query = state.get("query") or state.get("rewritten_query") or ""
+    from .magic_judge import magic_precheck
+
+    if "یافت نشد" in text and len(text) < 160 and not magic_precheck(query, fr):
+        state["magic_payload"] = []
+        return text
+    await collect_magic_payload_async(state, text, finish_reason=fr)
     return text

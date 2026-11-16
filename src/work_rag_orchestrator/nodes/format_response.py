@@ -1122,14 +1122,20 @@ async def format_response(state: RAGState) -> RAGState:
         else:
             follow_ups = []
     
-    # Post-hoc Dana magic: compute widgets AFTER the answer is final and keep
-    # them off the message body (API exposes via rag.magic).
+    # Post-hoc Dana magic: rule-gated (LLM judge only when precheck hits).
+    # Widgets stay off the message body (API exposes via rag.magic).
     try:
-        from ..magic_emit import append_magic_tokens
+        from ..magic_emit import append_magic_tokens_async
 
-        content = append_magic_tokens(content, state, finish_reason=finish_reason)
+        content = await append_magic_tokens_async(content, state, finish_reason=finish_reason)
     except Exception as _magic_err:
         log.warning("magic_emit append failed for %s: %s", request_id, _magic_err)
+        try:
+            from ..magic_emit import append_magic_tokens
+
+            content = append_magic_tokens(content, state, finish_reason=finish_reason)
+        except Exception:
+            pass
 
     magic_payload = state.get("magic_payload") or []
 

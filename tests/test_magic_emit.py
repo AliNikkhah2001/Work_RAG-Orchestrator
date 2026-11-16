@@ -270,6 +270,40 @@ def test_law_article_digit_is_not_cheque_score():
     assert _extract_score(blob, _color_groups_to_bands(CHEQUE_GROUPS), 1, 100) is None
 
 
+def test_precheck_skips_generic_and_provider_counts():
+    from work_rag_orchestrator.magic_judge import magic_precheck
+
+    assert magic_precheck("اعتبارسنجی چیست؟", "stop") == frozenset()
+    assert magic_precheck("امتیاز من چند است؟", "stop") == frozenset()
+    assert "timeline" in magic_precheck("شرکت اعتبارسنجی ایران چیست؟", "stop")
+    assert "creditors" in magic_precheck(
+        "تأمین‌کنندگان داده شرکت اعتبارسنجی ایران چه نهادهایی هستند؟", "stop"
+    )
+    assert magic_precheck("رتبه سبز یعنی چه؟", "stop") == frozenset()  # ambiguous colour
+    assert "score" in magic_precheck("امتیاز چک ۸۰ در چه رنگی است؟", "stop")
+
+
+def test_ambiguous_colour_no_gauge_on_stop():
+    payload = collect_magic_payload(
+        {"query": "رتبه سبز یعنی چه؟", "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)]},
+        "رتبه سبز در چک بازه ۷۰ تا ۸۵ است.",
+        finish_reason="stop",
+    )
+    assert payload == []
+
+
+def test_provider_answer_digits_no_gauge():
+    payload = collect_magic_payload(
+        {
+            "query": "شرکت اعتبارسنجی ایران داده‌ها را از چه نهادهایی می‌گیرد؟",
+            "supplemental": [_score_ent("cheque", CHEQUE_GROUPS)],
+        },
+        "۶۸ تأمین‌کننده فعال شامل ۲۸ بانک و ۵ لیزینگ.",
+        finish_reason="stop",
+    )
+    assert [p["name"] for p in payload] == ["CREDITORS"]
+
+
 def test_clarify_emits_cards():
     toks = build_magic_tokens(
         {
