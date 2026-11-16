@@ -124,14 +124,27 @@ def _color_groups_to_bands(groups: list[Any]) -> list[dict[str, Any]]:
     return bands
 
 
+def _mask_non_score_numbers(text: str) -> str:
+    """Blank years / law-article refs so they cannot be read as ICS scores.
+
+    Real answers often contain «ماده (۵) قانون…» or «سال ۱۳۸۵» — those digits
+    must not trip cheque (0–100) / credit (250–900) detectors.
+    """
+    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+    t = (text or "").translate(fa_map)
+    t = re.sub(r"ماده\s*\(?\s*\d{1,3}\s*\)?", " ", t)
+    t = re.sub(r"\b(13|14|19|20)\d{2}\b", " ", t)  # Persian/Gregorian years
+    t = re.sub(r"سال\s+\d{2,4}", " ", t)
+    return t
+
+
 def _extract_score(query: str, bands: list[dict[str, Any]], score_min: float, score_max: float) -> float | None:
     """Resolve an explicit score / colour / grade from the user query."""
     if not query:
         return None
 
-    # Latin or Persian digits as a standalone score
-    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
-    q_lat = query.translate(fa_map)
+    # Latin or Persian digits as a standalone score (years / ماده N masked out)
+    q_lat = _mask_non_score_numbers(query)
 
     # Letter grades A1..E3
     grade_m = re.search(r"\b([A-Ea-e])\s*([1-3])\b", q_lat)
@@ -424,20 +437,58 @@ def _clarify_items(state: dict) -> list[dict[str, str]]:
     return out or [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
 
 
-def _history_query(query: str) -> bool:
+def _history_query(query: str, answer: str = "") -> bool:
+    """ICS company history / intro → COMPANY_TIMELINE.
+
+    Matches explicit تاریخچه/تأسیس asks, ICS «چیست/معرفی» intros, and
+    founding language already present in the generated answer.
+    """
     q = query or ""
-    return any(
+    a = answer or ""
+    if any(
         k in q
         for k in (
             "تاریخچه",
             "تاریخ شرکت",
-            "تأسیس شرکت",
-            "تاسیس شرکت",
-            " chronologie",  # never
+            "تأسیس",
+            "تاسیس",
             "سابقه شرکت اعتبارسنجی",
             "خط زمان",
+            "تایم‌لاین",
+            "تایم لاین",
+            "timeline",
         )
-    ) or ("تاریخ" in q and "شرکت" in q and "اعتبارسنجی" in q)
+    ) or ("تاریخ" in q and "شرکت" in q and "اعتبارسنجی" in q):
+        return True
+    if _ics_company_query(q):
+        if any(
+            k in q
+            for k in (
+                "چیست",
+                "چی هست",
+                "کیست",
+                "معرفی",
+                "درباره",
+                "توضیح",
+                "که هست",
+                "چه شرکتی",
+            )
+        ):
+            return True
+        if any(
+            k in a
+            for k in (
+                "تأسیس",
+                "تاسیس",
+                "تاریخچه",
+                "آبان",
+                "سال ۱۳۸",
+                "سال 138",
+                "ماده",
+            )
+        ):
+            return True
+    return False
 
 
 def _ics_company_query(query: str) -> bool:
@@ -515,33 +566,14 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
 
     subspace = state.get("applied_subspace") or state.get("sticky_subspace")
 
-    # Score tables → gauge / bands. Emit only on SPECIFIC score signals
-    # (numeric in model range, colour tag, named band, grade code, or an
-    # explicit layout keyword) — never on generic «اعتبارسنجی چیست؟».
+    # Score tables → gauge / bands. Emit only when the QUERY has score intent
+    # (never on generic «شرکت اعتبارسنجی ایران چیست؟» / answer-side ماده ۵).
     answer_blob = str(state.get("_magic_answer_blob") or "")
     signal_blob = f"{query}\n{answer_blob}"
-    specific = bool(state.get("_magic_specific_score"))
-    if not specific:
-        specific = (
-            _blob_has_cheque_numeric(signal_blob)
-            or _blob_has_credit_numeric(signal_blob)
-            or _blob_has_colour_tag(signal_blob)
-            or _blob_has_named_band(signal_blob)
-            or _blob_has_grade_code(signal_blob)
-            or any(
-                k in query
-                for k in (
-                    "نردبان",
-                    "ladder",
-                    "عمودی",
-                    "افقی",
-                    "horizontal",
-                    "vertical",
-                    "خطی",
-                    "linear",
-                )
-            )
-        )
+    if "_magic_specific_score" in state:
+        specific = bool(state.get("_magic_specific_score"))
+    else:
+        specific = _query_has_score_intent(query)
 
     score_ent = _pick_score_entity(ents, query, subspace if isinstance(subspace, str) else None)
     # If Entity Data missed the score table but the turn has a specific score
@@ -597,8 +629,12 @@ def build_magic_tokens(state: dict, *, finish_reason: str | None = None) -> list
         )
 
     # Company history timeline (chunk-backed; no entity kind required)
-    if _history_query(query):
+    if _history_query(query, answer_blob):
         tokens.append(_token("COMPANY_TIMELINE", {"variant": "vertical"}))
+        # Company intro/history turns must not also glue a co-retrieved score
+        # gauge (e.g. «ماده (۵)» misread as cheque score 5).
+        if not _query_has_score_intent(query):
+            tokens = [t for t in tokens if "CREDIT_SCORE_GAUGE" not in t and "CREDIT_SCORE_BANDS" not in t]
 
     return tokens
 
@@ -628,8 +664,7 @@ def _parse_token_string(token: str) -> dict[str, Any] | None:
 
 
 def _blob_has_cheque_numeric(blob: str) -> bool:
-    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
-    q = (blob or "").translate(fa_map)
+    q = _mask_non_score_numbers(blob)
     for m in re.finditer(r"(?<![.\d])(\d{1,3})(?![.\d])", q):
         n = int(m.group(1))
         if 0 <= n <= 100:
@@ -638,8 +673,7 @@ def _blob_has_cheque_numeric(blob: str) -> bool:
 
 
 def _blob_has_credit_numeric(blob: str) -> bool:
-    fa_map = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
-    q = (blob or "").translate(fa_map)
+    q = _mask_non_score_numbers(blob)
     for m in re.finditer(r"(?<![.\d])(\d{3})(?![.\d])", q):
         n = int(m.group(1))
         if 250 <= n <= 900:
@@ -662,6 +696,41 @@ def _blob_has_grade_code(blob: str) -> bool:
     return bool(re.search(r"\b[A-Ea-e]\s*[1-3]\b", blob or ""))
 
 
+def _query_has_score_intent(query: str) -> bool:
+    """Score widgets require an explicit ask in the user query — never answer prose alone.
+
+    Incidental digits in answers (ماده ۵، سال ۱۳۸۵، «امتیاز چک» product lists) must
+    not invent a CREDIT_SCORE_GAUGE on company-overview turns.
+    """
+    q = query or ""
+    if not q.strip():
+        return False
+    if any(
+        k in q
+        for k in (
+            "امتیاز",
+            "رتبه",
+            "رنگ",
+            "نردبان",
+            "گرید",
+            "نمره",
+            "ladder",
+            "عمودی",
+            "افقی",
+            "horizontal",
+            "vertical",
+            "linear",
+            "خطی",
+        )
+    ):
+        return True
+    if _blob_has_colour_tag(q) or _blob_has_named_band(q) or _blob_has_grade_code(q):
+        return True
+    if _blob_has_cheque_numeric(q) or _blob_has_credit_numeric(q):
+        return True
+    return False
+
+
 def collect_magic_payload(
     state: dict,
     content: str = "",
@@ -670,8 +739,8 @@ def collect_magic_payload(
 ) -> list[dict[str, Any]]:
     """Post-hoc magic items for ``rag.magic`` — never mutates content.
 
-    Gating uses the already-generated answer + query so widgets only appear when
-    the turn already contains an explicit score/colour/name/ICS-company signal.
+    Score gauges gate on the **query** (explicit score/colour/name/layout).
+    ICS timeline/shareholders gate on company intent (+ answer founding cues).
     """
     if state.get("blocked") or state.get("greeting_only"):
         return []
@@ -683,16 +752,8 @@ def collect_magic_payload(
     answer = strip_magic_from_content(content or state.get("answer") or "")
     blob = f"{query}\n{answer}"
 
-    # Narrow score emission: require explicit numeric / colour / name / grade
-    # in query∪answer — not a generic «اعتبارسنجی چیست؟».
-    specific_score = (
-        _blob_has_cheque_numeric(blob)
-        or _blob_has_credit_numeric(blob)
-        or _blob_has_colour_tag(blob)
-        or _blob_has_named_band(blob)
-        or _blob_has_grade_code(blob)
-        or any(k in query for k in ("نردبان", "ladder", "عمودی", "افقی", "horizontal", "vertical", "linear"))
-    )
+    # Query-only score gate — answer digits/colours never open a gauge alone.
+    specific_score = _query_has_score_intent(query)
 
     prev_answer = state.get("_magic_answer_blob")
     state["_magic_answer_blob"] = blob
