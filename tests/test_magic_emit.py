@@ -281,6 +281,18 @@ def test_precheck_skips_generic_and_provider_counts():
     )
     assert magic_precheck("رتبه سبز یعنی چه؟", "stop") == frozenset()  # ambiguous colour
     assert "score" in magic_precheck("امتیاز چک ۸۰ در چه رنگی است؟", "stop")
+    # High-recall ICS gates
+    assert "shareholders" in magic_precheck("سهامداران شرکت اعتبارسنجی ایران", "stop")
+    assert "timeline" in magic_precheck("فعالیت شرکت اعتبارسنجی ایران چیست؟", "stop")
+
+
+def test_magic_judge_prompt_from_registry_not_hardcoded():
+    from work_rag_orchestrator.magic_judge import build_magic_judge_prompt
+
+    p = build_magic_judge_prompt("امتیاز چک ۸۰", "", frozenset({"score"}))
+    assert "CREDIT_SCORE_GAUGE" in p or "داور" in p or "ویجت" in p
+    assert "{query}" not in p  # formatted
+    assert "۸۰" in p or "80" in p
 
 
 def test_ambiguous_colour_no_gauge_on_stop():

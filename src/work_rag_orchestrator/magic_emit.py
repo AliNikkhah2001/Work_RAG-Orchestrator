@@ -673,8 +673,13 @@ def build_magic_tokens(
                     else {}
                 ))]
 
-    # Deterministic fallback from precheck families (no LLM / judge miss)
-    if "score" in fam:
+    # Deterministic fallback from precheck families (no LLM / judge miss).
+    # Score gauges need a viz anchor in the query — high-recall precheck may
+    # still gate «امتیاز چک من چقدر است؟» for the LLM, but rules alone must not
+    # invent a midpoint needle.
+    from .magic_judge import _score_has_viz_anchor
+
+    if "score" in fam and _score_has_viz_anchor(query):
         tokens.extend(_emit_score_tokens(state, query))
     if "shareholders" in fam:
         tokens.append(_token("SHAREHOLDERS", {"title": "سهامداران شرکت اعتبارسنجی ایران"}))
@@ -685,10 +690,10 @@ def build_magic_tokens(
                 {"title": "تأمین‌کنندگان داده‌های شرکت اعتبارسنجی ایران"},
             )
         )
-    if "timeline" in fam:
+    # Prefer specific ICS widgets over company-intro timeline when both gated
+    if "timeline" in fam and "shareholders" not in fam and "creditors" not in fam:
         tokens.append(_token("COMPANY_TIMELINE", {"variant": "vertical"}))
-        # Timeline/intro wins over a co-gated score false positive
-        if "score" not in fam:
+        if "score" not in fam or not _score_has_viz_anchor(query):
             tokens = [t for t in tokens if "CREDIT_SCORE_GAUGE" not in t and "CREDIT_SCORE_BANDS" not in t]
 
     return tokens
@@ -827,9 +832,9 @@ async def collect_magic_payload_async(
     answer = strip_magic_from_content(content or state.get("answer") or "")
     fam = magic_precheck(query, fr)
     judge = None
-    # LLM only for ambiguous score family — ICS widgets are deterministic.
-    # Avoids +LLM latency on timeline/shareholders/creditors / every gated turn.
-    if fam == frozenset({"score"}) or (fam and "score" in fam and len(fam) == 1):
+    # High-recall precheck → LLM validates any non-clarify family set.
+    # Clarify chips stay deterministic (finish_reason=clarify).
+    if fam and fam != frozenset({"clarify"}):
         judge = await call_magic_judge(
             query,
             answer,
