@@ -87,7 +87,7 @@ Validated against `src/work_rag_orchestrator/graph.py` exactly:
 | `generate_clarification` | LLM asks a short Persian disambiguating question listing the 4 subspaces; sets `finish_reason="clarify"` |
 | `build_context` | Numbered sources (`[1]..[20]`) ≤14000 chars; system prompt (ICS credit scoring) + history + question; ranks/compacts Entity Data (~9000 char budget; catalog kinds boosted for loan/shareholder/provider/consumer queries) |
 | `guarded_generate` | POST Guardrails `/v1/chat/completions` (model `gemma-4-31b-triton-trt`); maps `content_filter` → blocked |
-| `format_response` | Returns `{content, finish_reason, citations}`; handles blocked, greeting, specification-ack, FAQ, G5 no-evidence refusal, faith/contradiction/subspace-mismatch guards; **Entity Data recovery** when the LLM abstains/empties/bleeds a score table despite authoritative catalog/score rows |
+| `format_response` | Returns `{content, finish_reason, citations, magic?}`; handles blocked, greeting, specification-ack, FAQ, G5 no-evidence refusal, faith/contradiction/subspace-mismatch guards; **Entity Data recovery**; **post-hoc Dana magic** via `magic_emit.collect_magic_payload` → `rag.magic` (never mutates answer body) |
 | `format_refusal` | Reuses `format_response` (`graph.py` registers it as a second alias under that name) |
 
 ### 2.2 Graph wiring (`graph.py`)
@@ -200,7 +200,32 @@ Per-subspace evidence thresholds (T3): `cheque 0.05`, `facilities_person 0.10`, 
 
 ## 6. State (`RAGState`)
 
-Carried through the graph: `request_id`, `messages`, `query`, `rewritten_query`, `guardrail_decision`, `blocked`, `refusal_message`, `retrieved_chunks`, `prompt_messages`, `answer`, `citations`, `formatted_response`, `classify`, `applied_subspace`, `sticky_subspace`, `needs_clarification`, `clarifying_question`, `available_subspaces`, `filter_path`, `injected_entities`, `supplemental`, `greeting_only`, `direct_faq_answer`, `faq_matched`, `faq_verified`, `stage_timing_ms`, `fallback_used`, `fallback_reason`, `broaden_used`, `error`, `follow_ups`, plus ambiguity score fields (`ambiguity_score`, `ambiguity_margin`, `ambiguity_entropy`, `ambiguity_ambiguous`, `ambiguity_source`, `subspace_sims`).
+Carried through the graph: `request_id`, `messages`, `query`, `rewritten_query`, `guardrail_decision`, `blocked`, `refusal_message`, `retrieved_chunks`, `prompt_messages`, `answer`, `citations`, `formatted_response`, `classify`, `applied_subspace`, `sticky_subspace`, `needs_clarification`, `clarifying_question`, `available_subspaces`, `filter_path`, `injected_entities`, `supplemental`, `greeting_only`, `direct_faq_answer`, `faq_matched`, `faq_verified`, `stage_timing_ms`, `fallback_used`, `fallback_reason`, `broaden_used`, `error`, `follow_ups`, `magic_payload`, plus ambiguity score fields (`ambiguity_score`, `ambiguity_margin`, `ambiguity_entropy`, `ambiguity_ambiguous`, `ambiguity_source`, `subspace_sims`).
+
+## 6.1 Dana magic widgets (`rag.magic`) — post-hoc
+
+Magic is **not** dumped into the assistant body. After `format_response` finalizes
+plain text, `magic_emit` builds a structured list and the API returns it on
+`rag.magic` (streaming final chunk and non-stream body).
+
+```mermaid
+flowchart LR
+  A[guarded_generate<br/>plain answer] --> B[format_response<br/>content only]
+  B --> C[magic_emit.collect_magic_payload<br/>query ∪ answer ∪ supplemental]
+  C --> D["API response<br/>content + rag.magic[]"]
+  D --> E[WebUI<br/>message.magic / MagicRenderer]
+```
+
+| Concern | When emitted |
+|---|---|
+| Cheque gauge (0–100) | Explicit cheque numeric / colour / grade / layout |
+| Person/legal gauge (250–900) | Explicit credit numeric / colour / name / layout |
+| `CREDIT_SCORE_BANDS` | Ladder / نردبان asks |
+| `CLARIFY_OPTIONS` | `finish_reason=clarify` (cards mirror the fork) |
+| `SHAREHOLDERS` / `CREDITORS` | Explicit ICS company stakeholders / data providers |
+| `COMPANY_TIMELINE` | ICS company history asks |
+
+**Do not** emit gauges for generic «اعتبارسنجی چیست؟». Body must never contain `<<<MAGIC:…>>>`.
 
 `record_timing(state, stage, elapsed_ms)` centralizes stage-timing bookkeeping (`state.py`).
 
@@ -212,7 +237,7 @@ Every request creates a trace keyed by `X-Request-ID` with spans: `validate_inpu
 
 | Version | Summary |
 |---------|---------|
-| `v0.1.0` (current, production) | Deterministic LangGraph orchestrator: ambiguity resolver over 4 subspaces (`cheque`, `facilities_person`, `facilities_legal`, `general`), clarifying-question generator, metadata filtering (`filter_path`), sticky subspace with T4 injection and B sticky decay, T1–T7 recall fixes, G5 faith/contradiction/subspace-mismatch guards, grounded follow-ups, thresholded hybrid SVM→Gemma classifier, EntityList supplement + DLQ, Langfuse tracing, OpenAI-compatible streaming API |
+| `v0.1.0` (current, production) | Deterministic LangGraph orchestrator: ambiguity resolver over 4 subspaces (`cheque`, `facilities_person`, `facilities_legal`, `general`), clarifying-question generator, metadata filtering (`filter_path`), sticky subspace with T4 injection and B sticky decay, T1–T7 recall fixes, G5 faith/contradiction/subspace-mismatch guards, grounded follow-ups, thresholded hybrid SVM→Gemma classifier, EntityList supplement + DLQ, **post-hoc `rag.magic` widgets** (no in-body MAGIC dump), Langfuse tracing, OpenAI-compatible streaming API |
 
 ## 9. Running locally & tests
 

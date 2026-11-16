@@ -181,7 +181,7 @@ format_response --> END</code></pre>
         <li>Core: <code>request_id</code>, <code>messages</code>, <code>query</code>, <code>rewritten_query</code>, <code>guardrail_decision</code>, <code>blocked</code>, <code>refusal_message</code>, <code>retrieved_chunks</code>, <code>prompt_messages</code>, <code>answer</code>, <code>citations</code>, <code>formatted_response</code></li>
         <li>Classification/subspace: <code>classify</code>, <code>applied_subspace</code>, <code>sticky_subspace</code>, <code>needs_clarification</code>, <code>clarifying_question</code>, <code>available_subspaces</code>, <code>filter_path</code>, <code>injected_entities</code>, <code>supplemental</code></li>
         <li>Greeter/FAQ: <code>greeting_only</code>, <code>direct_faq_answer</code>, <code>faq_matched</code>, <code>faq_verified</code></li>
-        <li>Timing/fallback: <code>stage_timing_ms</code>, <code>fallback_used</code>, <code>fallback_reason</code>, <code>broaden_used</code>, <code>error</code>, <code>follow_ups</code></li>
+        <li>Timing/fallback: <code>stage_timing_ms</code>, <code>fallback_used</code>, <code>fallback_reason</code>, <code>broaden_used</code>, <code>error</code>, <code>follow_ups</code>, <code>magic_payload</code> (post-hoc widgets → <code>rag.magic</code>)</li>
         <li>Ambiguity: <code>ambiguity_score</code>, <code>ambiguity_margin</code>, <code>ambiguity_entropy</code>, <code>ambiguity_ambiguous</code>, <code>ambiguity_source</code>, <code>subspace_sims</code></li>
       </ul>
       <p><code>record_timing(state, stage, elapsed_ms)</code> centralizes stage-timing bookkeeping (<code>state.py</code>).</p>
@@ -236,7 +236,17 @@ format_response --> END</code></pre>
   "stream": true,
   "filter_path": "گزارش اعتبارسنجی چک"
 }</code></pre>
-      <p>Non-streaming response includes <code>rag</code> metadata (<code>request_id</code>, <code>citations</code>, <code>applied_subspace</code>, <code>available_subspaces</code>, <code>supplemental</code>, <code>follow_ups</code>) and an optional <code>audit</code> trail. Streaming returns SSE <code>data:</code> chunks ending with <code>data: [DONE]</code>; the final chunk carries <code>rag</code> metadata and <code>finish_reason</code> (<code>stop</code>, <code>content_filter</code>, or <code>clarify</code>). Graph failure → <code>500 {"detail":"Orchestration failed"}</code>; unhandled exception → <code>500 {"detail":"Internal server error"}</code>.</p>
+      <p>Non-streaming response includes <code>rag</code> metadata (<code>request_id</code>, <code>citations</code>, <code>applied_subspace</code>, <code>available_subspaces</code>, <code>supplemental</code>, <code>follow_ups</code>, <strong><code>magic</code></strong>) and an optional <code>audit</code> trail. Streaming returns SSE <code>data:</code> chunks ending with <code>data: [DONE]</code>; the final chunk carries <code>rag</code> (including post-hoc <code>rag.magic: [{name, params}, …]</code>) and <code>finish_reason</code> (<code>stop</code>, <code>content_filter</code>, or <code>clarify</code>). <strong>Do not</strong> expect <code>&lt;&lt;&lt;MAGIC:…&gt;&gt;&gt;</code> inside <code>choices[].message.content</code> — that dump-to-body path is removed. Graph failure → <code>500 {"detail":"Orchestration failed"}</code>; unhandled exception → <code>500 {"detail":"Internal server error"}</code>.</p>
+      <div class="diagram-wrap">
+        <div class="diagram-title">Post-hoc magic emission</div>
+        <div class="mermaid">
+flowchart LR
+  Gg[guarded_generate] --> Fr[format_response<br/>plain content]
+  Fr --> Me[magic_emit.collect_magic_payload]
+  Me --> Rag["rag.magic on API / SSE final chunk"]
+  Rag --> WebUI[message.magic → MagicRenderer]
+        </div>
+      </div>
       <p>The API layer restores sticky <code>applied_subspace</code> from the LangGraph <code>MemorySaver</code> checkpoint, and — because Open WebUI sends no <code>X-Request-ID</code> (new thread per turn) — mines sticky from the user-only chat history (interrogatives skipped, so only declarations set scope). T4 injection applies the sticky <code>filter_path</code> for generic follow-ups; B sticky decay drops the subspace after <code>sticky_decay_turns</code> (default 3) consecutive generic turns.</p>
     </section>
 
