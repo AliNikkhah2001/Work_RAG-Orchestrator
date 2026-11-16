@@ -827,7 +827,9 @@ async def collect_magic_payload_async(
     answer = strip_magic_from_content(content or state.get("answer") or "")
     fam = magic_precheck(query, fr)
     judge = None
-    if fam and fam != frozenset({"clarify"}):
+    # LLM only for ambiguous score family — ICS widgets are deterministic.
+    # Avoids +LLM latency on timeline/shareholders/creditors / every gated turn.
+    if fam == frozenset({"score"}) or (fam and "score" in fam and len(fam) == 1):
         judge = await call_magic_judge(
             query,
             answer,

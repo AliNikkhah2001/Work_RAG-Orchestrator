@@ -170,16 +170,10 @@ async def classify(state: RAGState) -> RAGState:
             or (("هیچ کدوم" in text or "هیچکدوم" in text) and any(kw in text for kw in ["مدیر", "هیات", "هیئت", "معرفی", "عمومی", "شرکت"]))
         ):
             state["applied_subspace"] = "general"
-        # P2.2: short چیست/چیه definitions prefer general (not nardban/kafil clarify)
-        try:
-            from .infer_specification import is_definition_question as _is_def_q
-
-            if _is_def_q(text) and not state.get("applied_subspace"):
-                state["applied_subspace"] = "general"
-                state["needs_clarification"] = False
-        except Exception:
-            pass
         # Colour-rank without product (رتبه سبز یعنی چه؟) → clarify چک vs تسهیلات
+        # Must run BEFORE the چیست/چیه → general shortcut, which would otherwise
+        # swallow these and answer with a false cheque gauge.
+        _colour_clarify = False
         try:
             from ..magic_judge import _ambiguous_colour_rank
             from ..content_registry import clarify_option_labels
@@ -190,7 +184,17 @@ async def classify(state: RAGState) -> RAGState:
                 state["needs_clarification"] = True
                 state["available_subspaces"] = clarify_option_labels() or list(L2_SUBSPACES)
                 state["clarifying_question"] = None
+                _colour_clarify = True
                 log.info("classify ambiguous colour-rank -> clarify for query=%r", text[:80])
+        except Exception:
+            pass
+        # P2.2: short چیست/چیه definitions prefer general (not nardban/kafil clarify)
+        try:
+            from .infer_specification import is_definition_question as _is_def_q
+
+            if (not _colour_clarify) and _is_def_q(text) and not state.get("applied_subspace"):
+                state["applied_subspace"] = "general"
+                state["needs_clarification"] = False
         except Exception:
             pass
         # T5 scattered / cross-product impact → clarify (do not sticky-commit)
