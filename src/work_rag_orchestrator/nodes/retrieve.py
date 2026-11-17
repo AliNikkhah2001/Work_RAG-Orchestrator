@@ -1686,11 +1686,14 @@ async def retrieve(state: RAGState) -> RAGState:
         _keep_colour_clarify = False
         try:
             from ..subspace_routing import query_has_cheque_color_rank
-            from ..magic_judge import _ambiguous_colour_rank, _query_has_product
+            from ..magic_judge import _ambiguous_colour_rank, _query_has_product, product_resolved
 
             _cq = state.get("query") or ""
-            if query_has_cheque_color_rank(_cq) and (
-                _ambiguous_colour_rank(_cq) or not _query_has_product(_cq)
+            # Post-clarify declaration («گزارش چک»): the product IS answered, so
+            # never re-ask — the rewritten prior question would loop forever.
+            if not product_resolved(state) and query_has_cheque_color_rank(_cq) and (
+                _ambiguous_colour_rank(_cq, product_known=False)
+                or not _query_has_product(_cq)
             ):
                 _keep_colour_clarify = True
         except Exception:

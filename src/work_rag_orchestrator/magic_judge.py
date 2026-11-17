@@ -203,13 +203,24 @@ def _timeline_gate(query: str) -> bool:
             "معرفی",
             "درباره",
             "توضیح",
+            "شرح",
             "چه می‌کند",
             "چه میکند",
+            "چیکار",
+            "چه کار",
+            "چه کاری",
+            "چه کرد",
+            "چه کرده",
+            "چه اقدام",
+            "چه فعالیت",
             "فعالیت",
             "ماموریت",
             "مأموریت",
             "محصولات",
+            "که بود",
             "که هست",
+            "کی بود",
+            "کی هست",
             "چه شرکتی",
             "چه فرقی",
             "فرقی داره",
@@ -227,8 +238,15 @@ def _timeline_gate(query: str) -> bool:
     return ("شرکت" in q and "اعتبارسنجی" in q) or ("اعتبارسنجی ایران" in q)
 
 
-def _ambiguous_colour_rank(query: str) -> bool:
-    """Colour band ask without چک/حقیقی/حقوقی → clarify path, not score magic."""
+def _ambiguous_colour_rank(query: str, product_known: bool = False) -> bool:
+    """Colour band ask without چک/حقیقی/حقوقی → clarify path, not score magic.
+
+    *product_known* is set when the product was already resolved (e.g. the user
+    just answered a colour clarify with «گزارش چک»), so the rank is no longer
+    ambiguous and the gauge may fire instead of asking again.
+    """
+    if product_known:
+        return False
     q = query or ""
     if not _query_has_colour(q):
         return False
@@ -262,10 +280,10 @@ def _score_has_viz_anchor(query: str) -> bool:
     )
 
 
-def _score_gate(query: str) -> bool:
+def _score_gate(query: str, product_known: bool = False) -> bool:
     """High-recall score/bands candidate — query-only; LLM rejects weak hits."""
     q = query or ""
-    if _ambiguous_colour_rank(q):
+    if _ambiguous_colour_rank(q, product_known=product_known):
         return False
     if any(k in q for k in ("نردبان", "ladder")):
         return True
@@ -286,8 +304,18 @@ def _score_gate(query: str) -> bool:
     return False
 
 
-def magic_precheck(query: str, finish_reason: str | None = None) -> frozenset[str]:
-    """High-recall candidate families. Empty ⇒ **do not** call the LLM."""
+def magic_precheck(
+    query: str,
+    finish_reason: str | None = None,
+    *,
+    product_known: bool = False,
+) -> frozenset[str]:
+    """High-recall candidate families. Empty ⇒ **do not** call the LLM.
+
+    *product_known* says the product/report type was already resolved (e.g. the
+    user just answered a colour clarify with «گزارش چک»), which removes the
+    cheque-vs-facilities ambiguity that normally forces clarify.
+    """
     fr = finish_reason or "stop"
     if fr in ("content_filter",):
         return frozenset()
@@ -297,7 +325,7 @@ def magic_precheck(query: str, finish_reason: str | None = None) -> frozenset[st
     if not q.strip():
         return frozenset()
     families: set[str] = set()
-    if _score_gate(q):
+    if _score_gate(q, product_known=product_known):
         families.add("score")
     if _shareholders_gate(q):
         families.add("shareholders")
@@ -314,6 +342,18 @@ _FAMILY_PROMPT = {
     frozenset({"shareholders"}): "magic_judge_shareholders",
     frozenset({"creditors"}): "magic_judge_creditors",
 }
+
+# Subspaces that pin an actual credit product/report type (as opposed to a
+# loose topic like «general» or «credit_ladder»).
+_PRODUCT_LEAVES = frozenset({"cheque", "facilities_person", "facilities_legal"})
+
+
+def product_resolved(state: dict) -> bool:
+    """True when this turn already resolved the report type (post-clarify answer)."""
+    if not state.get("declaration_followup"):
+        return False
+    sub = str(state.get("applied_subspace") or "").strip().lower()
+    return sub in _PRODUCT_LEAVES or "cheque" in sub or "facilities" in sub
 
 
 def build_magic_judge_prompt(query: str, answer: str, families: frozenset[str]) -> str:

@@ -567,9 +567,9 @@ def _synthetic_score_ent(model: str) -> dict:
 
 def _emit_score_tokens(state: dict, query: str) -> list[str]:
     """Deterministic score/bands — query-anchored only (never answer digits)."""
-    from .magic_judge import _score_gate
+    from .magic_judge import _score_gate, product_resolved
 
-    if not _score_gate(query):
+    if not _score_gate(query, product_known=product_resolved(state)):
         return []
     ents = _supplemental(state)
     subspace = state.get("applied_subspace") or state.get("sticky_subspace")
@@ -796,7 +796,14 @@ def collect_magic_payload(
 
     query = state.get("query") or state.get("rewritten_query") or ""
     answer = strip_magic_from_content(content or state.get("answer") or "")
-    fam = families if families is not None else magic_precheck(query, fr)
+    from .magic_judge import product_resolved
+
+    _prod = product_resolved(state)
+    fam = (
+        families
+        if families is not None
+        else magic_precheck(query, fr, product_known=_prod)
+    )
     if not fam and fr != "clarify" and not state.get("needs_clarification"):
         state["magic_payload"] = []
         return []
@@ -825,12 +832,12 @@ async def collect_magic_payload_async(
     * clarify → deterministic cards only
     * else → short LLM JSON judge; on failure fall back to rules
     """
-    from .magic_judge import call_magic_judge, magic_precheck
+    from .magic_judge import call_magic_judge, magic_precheck, product_resolved
 
     fr = finish_reason or (state.get("formatted_response") or {}).get("finish_reason")
     query = state.get("query") or state.get("rewritten_query") or ""
     answer = strip_magic_from_content(content or state.get("answer") or "")
-    fam = magic_precheck(query, fr)
+    fam = magic_precheck(query, fr, product_known=product_resolved(state))
     judge = None
     # High-recall precheck → LLM validates any non-clarify family set.
     # Clarify chips stay deterministic (finish_reason=clarify).
