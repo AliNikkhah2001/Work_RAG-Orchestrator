@@ -556,6 +556,38 @@ def create_app() -> FastAPI:
                 _decl = _declarations[_alias_hits[0]]
                 _decl_key = _alias_hits[0]
         _declared_filter = None
+        _reason_code_model: str | None = None
+        # Reason-code model disambiguation: when the previous turn asked
+        # «کدام مدل؟» for a colliding code (AGE2 main/substitute, NGL1–3
+        # main/legal), the reply «مدل جایگزین» / «اشخاص حقوقی» is a MODEL pick.
+        # This is a STRUCTURED question with fixed answers, not the generic
+        # «چک یا تسهیلات؟» clarify, so it is handled on its own track: the
+        # prior code question is carried forward unchanged and answered from
+        # the chosen catalog.
+        try:
+            from .subspace_routing import (
+                parse_reason_code_model as _parse_rc_model,
+                query_has_reason_code as _has_rc_token,
+            )
+
+            _rc_pick = _parse_rc_model(_raw_decl_utterance)
+        except Exception:
+            _rc_pick = None
+        _prior_q = None
+        for _pm in reversed(request.messages[:-1]):
+            if _pm.get("role") != "user":
+                continue
+            _pq = str(_pm.get("content") or "").strip()
+            if _pq:
+                _prior_q = _pq
+                break
+        if _prior_q is None and prev and getattr(prev, "values", None):
+            _pvc = str(prev.values.get("query") or "").strip()
+            if _pvc:
+                _prior_q = _pvc
+        if _rc_pick and _prior_q and _has_rc_token(_prior_q):
+            _reason_code_model = _rc_pick
+            cur_q = _prior_q
         if _decl:
             sticky_applied = _decl
             _prev_q = None
@@ -576,7 +608,7 @@ def create_app() -> FastAPI:
                     _pvc = str(prev.values.get("query") or "").strip()
                     if _pvc:
                         _prev_q = _pvc
-            if _prev_q:
+            if _prev_q and not _reason_code_model:
                 cur_q = _prev_q
             # Colour ranks (آبی/سبز/…) live on the cheque report. If the prior
             # question asked about those colours, do not keep a facilities leaf
@@ -605,6 +637,19 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
             log.info("Declaration follow-up %r -> subspace=%s query=%r", _decl_key, _decl, cur_q[:80])
+        if _reason_code_model:
+            # Scope by model, not by subspace folder: the prior code question
+            # may live in any subspace (reason-code catalogs are injected
+            # regardless), so a facilities_legal filter would drop the very
+            # catalog the user asked for.
+            sticky_applied = None
+            _declared_filter = None
+            log.info(
+                "Reason-code model pick %r -> model=%s query=%r",
+                _raw_decl_utterance[:40],
+                _reason_code_model,
+                cur_q[:80],
+            )
         # --- C: Per-turn subspace switch by the embedding scorer ---
         # Sticky subspace is preserved ONLY while the CURRENT query scores
         # ambiguous AND sticky is still competitive with the argmax candidate.
@@ -846,6 +891,7 @@ def create_app() -> FastAPI:
             # re-run P2.1 scattered clarify on the *rewritten* prior question.
             "declaration_followup": bool(_decl),
             "raw_user_utterance": _raw_decl_utterance,
+            "reason_code_model": _reason_code_model,
             "needs_clarification": False,
             "clarifying_question": None,
             "available_subspaces": None,
@@ -955,8 +1001,21 @@ def create_app() -> FastAPI:
                             pass
                         return
 
-                    # Clarify branch — scattered but no sticky (F5 conditional edge)
-                    if state.get("needs_clarification"):
+                    # Clarify branch — scattered but no sticky (F5 conditional edge).
+                    # Route through should_clarify (not the raw flag) so the
+                    # post-retrieve safety nets it enforces — notably the
+                    # reason-code cross-model ask (AGE2/NGL1–3) and colour-rank
+                    # — cannot be clobbered by later granularity logic.
+                    _clarify_decision = "continue"
+                    try:
+                        from .graph import should_clarify as _should_clarify
+
+                        _clarify_decision = _should_clarify(state)
+                    except Exception as _sc_err:
+                        log.warning("should_clarify check failed: %s", _sc_err)
+                        _clarify_decision = "clarify" if state.get("needs_clarification") else "continue"
+                    if _clarify_decision == "clarify":
+                        state["needs_clarification"] = True
                         from .nodes.generate_clarification import generate_clarification as node_clarify
                         state = await node_clarify(state)
                         from .content_registry import require_prompt as _rp, canned_message, refusal_message

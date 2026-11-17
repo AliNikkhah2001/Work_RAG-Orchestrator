@@ -26,6 +26,8 @@ class KnowledgebaseClient:
         self.search_url = settings.kb_search_url
         self.timeout = timeout or settings.request_timeout_seconds
         self._client: Optional[httpx.AsyncClient] = None
+        # Populated by supplementary_search when a code exists in >1 model.
+        self.last_reason_code_membership: List[Dict] = []
 
     async def __aenter__(self) -> "KnowledgebaseClient":
         self._client = httpx.AsyncClient(
@@ -160,6 +162,7 @@ class KnowledgebaseClient:
         *,
         subspace: str | None = None,
         filter_path: str | None = None,
+        reason_code_model: str | None = None,
     ) -> List[Dict]:
         """Direct EntityList search as tool-call (not hidden step-8 inject).
 
@@ -174,11 +177,15 @@ class KnowledgebaseClient:
             body["subspace"] = subspace
         if filter_path:
             body["filter_path"] = filter_path
+        if reason_code_model:
+            body["reason_code_model"] = reason_code_model
         params = {"query": query, "threshold": threshold}
         if subspace:
             params["subspace"] = subspace
         if filter_path:
             params["filter_path"] = filter_path
+        if reason_code_model:
+            params["reason_code_model"] = reason_code_model
         # Canonical tool endpoint first (POST /search/supplement with list_name+description embedding, thr 0.4)
         for path in ("/search/supplement", "/entity_lists/search", "/supplementary/search", "/supplemental/search"):
             try:
@@ -213,6 +220,9 @@ class KnowledgebaseClient:
                         if isinstance(data, list):
                             return data
                         if isinstance(data, dict):
+                            mem = data.get("reason_code_membership")
+                            if isinstance(mem, list):
+                                self.last_reason_code_membership = mem
                             for key in ("results", "injected_entities", "entity_lists", "data"):
                                 if key in data and isinstance(data[key], list):
                                     return data[key]

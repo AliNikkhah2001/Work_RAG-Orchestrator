@@ -375,6 +375,43 @@ async def build_context(state: RAGState) -> RAGState:
             )
             system_message += entity_section
 
+            # A model pick from a prior «کدام مدل؟» turn (AGE2/NGL1–3) is
+            # already resolved: tell the model not to re-ask and to answer only
+            # the exact queried code. Prompt text lives in the versioned pack
+            # (prompts_orchestrator ≥ 1.0.7).
+            _rc_model = str(state.get("reason_code_model") or "")
+            if _rc_model:
+                _rc_label = _rc_model
+                for _e in (state.get("supplemental") or []):
+                    _meta = ((_e or {}).get("content") or {}).get("_meta") or {}
+                    if _meta.get("model") == _rc_model:
+                        _rc_label = str(_meta.get("model_label") or _rc_model)
+                        break
+                # The exact code the user asked about (carried forward into
+                # state["query"] by the api's model-pick rewrite).
+                _rc_code = ""
+                try:
+                    from ..subspace_routing import _REASON_CODE_TOKEN_RE as _rc_re
+
+                    _m = _rc_re.search(str(state.get("query") or ""))
+                    _rc_code = _m.group(0).upper() if _m else ""
+                except Exception:
+                    _rc_code = ""
+                if not _rc_code:
+                    _rc_code = "—"
+                try:
+                    _rc_note = require_prompt(
+                        "reason_code_model_resolved",
+                        model_label=_rc_label,
+                        code=_rc_code,
+                    ).strip()
+                    if _rc_note:
+                        system_message += "\n\n" + _rc_note
+                except Exception as _rc_err:
+                    log.warning(
+                        "reason_code_model_resolved prompt unavailable: %s", _rc_err
+                    )
+
             # Also prepend to user content for extra prominence when KB chunks may not be relevant
             if ent_blocks:
                 user_content = entity_section + "\n\n" + user_content

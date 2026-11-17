@@ -219,6 +219,11 @@ def _entity_tool_relevant(query: str, state: dict) -> bool:
     import re as _re
     if _re.search(r"\b[A-Za-z]\d{1,2}\b", q):
         return True
+    # Reason-code vocabulary: «کد HAD1» / «کدهای علل» carry no «دلیل» token.
+    if any(k in q for k in ("کد علت", "کدهای علل", "کدهای دلیل", "reason code")):
+        return True
+    if _re.search(r"\b[A-Za-z]{2,6}\d{1,2}(?:-\d{1,2})?\b", q):
+        return True
     return False
 
 
@@ -1643,6 +1648,8 @@ async def retrieve(state: RAGState) -> RAGState:
     # receives matching dictionary rows as tool responses.
     try:
         if _entity_tool_relevant(query, state):
+            _rc_membership: list = []
+            _rc_model_pick = str(state.get("reason_code_model") or "")
             async with KnowledgebaseClient() as _ent_client:
                 _ents = await _ent_client.supplementary_search(
                     query,
@@ -1650,7 +1657,9 @@ async def retrieve(state: RAGState) -> RAGState:
                     request_id=request_id,
                     subspace=state.get("applied_subspace") or state.get("subspace"),
                     filter_path=state.get("filter_path"),
+                    reason_code_model=_rc_model_pick or None,
                 )
+                _rc_membership = list(getattr(_ent_client, "last_reason_code_membership", []) or [])
             if _ents:
                 existing = state.get("injected_entities") or []
                 seen = {e.get("list_name") for e in existing}
@@ -1673,6 +1682,37 @@ async def retrieve(state: RAGState) -> RAGState:
                     "Entity tool call returned %d lists for request %s (query=%r)",
                     len(merged), request_id, query[:80],
                 )
+            # Cross-model ambiguity: a code defined in >1 model (AGE2
+            # main/substitute, NGL1–3 main/legal) must ask which model instead
+            # of silently answering from whichever catalog was injected.
+            # A model pick from the previous turn resolves it (never re-ask).
+            if _rc_membership:
+                _models = {m.get("model") for m in _rc_membership if m.get("model")}
+                # A model pick from a prior «کدام مدل؟» turn resolves the
+                # ambiguity: never re-ask, and drop the other models so only
+                # the chosen catalog is used.
+                if _rc_model_pick:
+                    _models = {_rc_model_pick}
+                if len(_models) > 1:
+                    _labels = []
+                    for m in _rc_membership:
+                        lbl = m.get("model_label") or m.get("model")
+                        if lbl and lbl not in _labels:
+                            _labels.append(lbl)
+                    state["needs_clarification"] = True
+                    state["applied_subspace"] = None
+                    state["sticky_subspace"] = None
+                    state["clarifying_question"] = (
+                        "این کد در چند مدل وجود دارد: "
+                        + "، ".join(str(x) for x in _labels)
+                        + ". کدام مدل مدنظر شماست؟"
+                    )
+                    state["available_subspaces"] = _labels
+                    state["reason_code_membership"] = _rc_membership
+                    log.info(
+                        "Reason code ambiguous across %s for request %s (query=%r)",
+                        _labels, request_id, query[:80],
+                    )
     except Exception as _e:
         log.warning("Entity tool call failed for request %s: %s", request_id, _e)
 
@@ -1684,6 +1724,17 @@ async def retrieve(state: RAGState) -> RAGState:
     # and invent a cheque gauge.
     if state.get("supplemental") and state.get("needs_clarification"):
         _keep_colour_clarify = False
+        # A reason code present in >1 model must keep its model-clarify — the
+        # injected catalogs are exactly why we cannot answer yet. A model pick
+        # from the previous turn already resolved it, so do not re-ask.
+        _rc_mem = state.get("reason_code_membership") or []
+        _rc_model_pick = str(state.get("reason_code_model") or "")
+        if not _rc_model_pick and len({m.get("model") for m in _rc_mem if m.get("model")}) > 1:
+            log.info(
+                "Keeping reason-code model clarify for request %s despite supplemental",
+                request_id,
+            )
+            _keep_colour_clarify = True
         try:
             from ..subspace_routing import query_has_cheque_color_rank
             from ..magic_judge import _ambiguous_colour_rank, _query_has_product
@@ -2462,7 +2513,18 @@ async def retrieve(state: RAGState) -> RAGState:
                     granular = True
                 from ..subspace_routing import is_cross_product_impact
 
-                if is_cross_product_impact(last_q):
+                # A reason code defined in >1 model (AGE2 main/substitute,
+                # NGL1–3 main/legal) already asked for a model clarify above.
+                # This block is granularity-only and must NOT clobber that
+                # decision — otherwise the code is silently answered from
+                # whichever catalog retrieval happened to rank first.
+                _rc_mem_pin = state.get("reason_code_membership") or []
+                _rc_model_pick = str(state.get("reason_code_model") or "")
+                _rc_ambiguous = (
+                    not _rc_model_pick
+                    and len({m.get("model") for m in _rc_mem_pin if isinstance(m, dict) and m.get("model")}) > 1
+                )
+                if is_cross_product_impact(last_q) or _rc_ambiguous:
                     granular = False
                     state["needs_clarification"] = True
                 else:

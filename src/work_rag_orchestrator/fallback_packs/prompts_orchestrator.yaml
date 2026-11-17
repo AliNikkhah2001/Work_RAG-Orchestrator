@@ -1,4 +1,4 @@
-version: 1.0.5
+version: 1.0.6
 kind: prompts
 scope: orchestrator
 prompts:
@@ -239,6 +239,12 @@ prompts:
   entity_priority_footer: 'مهم: اگر [Entity Data] اطلاعات مرتبط دارد (کد کاهش امتیاز، سهامدار، عنوان وام،
     نرخ سود و مشابه)، اولویت آن از [Context from Knowledge Base] بالاتر است؛ از آن برای پاسخ استفاده کن
     و جزئیات مرتبط را بیاور.
+
+    '
+  reason_code_model_resolved: 'مهم: کاربر در پیام قبلی مدلِ کد دلیل را انتخاب کرده است (مدل: {model_label}).
+    کاربر دقیقاً دربارهٔ کد «{code}» پرسیده است. فقط ردیف همان کد را از کاتالوگ [Entity Data]
+    بیاور و بر اساس آن پاسخ بده. هیچ‌گاه دوباره «کدام مدل؟» نپرس و هیچ کد دیگری را به جای آن
+    توضیح نده.
 
     '
   followup_system: 'You suggest follow-up questions for a Persian credit-scoring assistant.

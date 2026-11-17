@@ -9,6 +9,8 @@ be 4-way until rebuilt; routing maps / sticky / clarify use the full L2 set.
 
 from __future__ import annotations
 
+import re
+
 # Full L2 set used for sticky / clarify / suggest parsing.
 L2_SUBSPACES: tuple[str, ...] = (
     "cheque",
@@ -234,6 +236,43 @@ def is_cross_product_impact(query: str) -> bool:
     if ("چکم" in q or "امتیاز چک" in q) and ("تسهیلات" in q or "امتیاز تسهیلات" in q):
         return True
     return False
+
+
+_REASON_CODE_TOKEN_RE = re.compile(r"\b[A-Za-z]{2,6}\d{1,2}(?:-\d{1,2})?\b")
+
+
+def query_has_reason_code(query: str) -> bool:
+    """True when the query carries a reason-code token (HAD1, DAG1-2, …).
+
+    Used to tell a reason-code model pick apart from a generic clarify answer:
+    only a carried-forward *code* question should be answered from the chosen
+    model catalog.
+    """
+    return bool(_REASON_CODE_TOKEN_RE.search(query or ""))
+
+
+def parse_reason_code_model(answer: str) -> str | None:
+    """Map a short clarify answer to a reason-code *model* id (or None).
+
+    Used when a reason code exists in more than one model (AGE2 in
+    person_main/person_substitute, NGL1–3 in person_main/legal). The models
+    are :data:`kb_manager.entity_lists.REASON_CODE_SPECS` ids; the user picks
+    with «مدل اصلی» / «مدل جایگزین» / «اشخاص حقوقی» / «حقیقی» / «حقوقی».
+    """
+    low = (answer or "").replace("ي", "ی").replace("ك", "ک").strip().lower()
+    if not low:
+        return None
+    # Order matters: «مدل اصلی/جایگزین» before the generic حقیقی/حقوقی tokens,
+    # and legal before person for «اشخاص حقوقی».
+    if "جایگزین" in low:
+        return "person_substitute"
+    if "اصلی" in low:
+        return "person_main"
+    if "حقوقی" in low or "شرکت" in low or "legal" in low:
+        return "legal"
+    if "حقیقی" in low or "شخصی" in low or "person" in low:
+        return "person_main"
+    return None
 
 
 def parse_subspace_label(ans: str) -> str | None:

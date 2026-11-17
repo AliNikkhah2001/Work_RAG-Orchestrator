@@ -69,6 +69,22 @@ def should_clarify(state: RAGState) -> str:
             return "clarify"
     except Exception:
         pass
+    # Reason-code cross-model ambiguity: a code defined in >1 model (AGE2
+    # main/substitute, NGL1–3 main/legal) must ask which model. This wins over
+    # the supplemental short-circuit below, because the injected catalogs are
+    # exactly why we cannot answer yet.
+    try:
+        _rc_mem = state.get("reason_code_membership") or []
+        _rc_pick = str(state.get("reason_code_model") or "")
+        if not _rc_pick and len({m.get("model") for m in _rc_mem if isinstance(m, dict) and m.get("model")}) > 1:
+            state["needs_clarification"] = True
+            if not state.get("available_subspaces"):
+                state["available_subspaces"] = [
+                    m.get("model_label") or m.get("model") for m in _rc_mem
+                ]
+            return "clarify"
+    except Exception:
+        pass
     # P2.2: FAQ direct hit wins over scattered/needs_clarification
     if state.get("faq_verified") and state.get("direct_faq_answer"):
         return "continue"

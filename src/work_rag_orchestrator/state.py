@@ -80,6 +80,12 @@ class RAGState(TypedDict):
     needs_clarification: bool
     clarifying_question: Optional[str]
     available_subspaces: Optional[List[str]]
+    reason_code_membership: NotRequired[Optional[List[Dict[str, Any]]]]
+    # Model the user picked to disambiguate a reason code defined in >1 model
+    # (AGE2 main/substitute, NGL1–3 main/legal). Set by api on the declaration
+    # follow-up so retrieve can answer from that exact catalog instead of
+    # re-asking forever.
+    reason_code_model: NotRequired[Optional[str]]
 
     injected_entities: Optional[List[Dict[str, Any]]]
     supplemental: Optional[List[Dict[str, Any]]]
