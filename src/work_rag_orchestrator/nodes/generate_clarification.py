@@ -16,6 +16,21 @@ async def generate_clarification(state: RAGState) -> RAGState:
     available = state.get("available_subspaces") or clarify_option_labels()
     # Colour bands (آبی/سبز/…) are cheque-report UI — ask چک vs تسهیلات, not حقیقی/حقوقی.
     text = ""
+    # A reason code defined in >1 model has a fixed, model-specific question;
+    # build it from the membership so it survives later state rewrites.
+    _rc_mem = state.get("reason_code_membership") or []
+    _rc_models = {m.get("model") for m in _rc_mem if isinstance(m, dict) and m.get("model")}
+    if len(_rc_models) > 1 and not state.get("reason_code_model"):
+        _labels: list[str] = []
+        for m in _rc_mem:
+            lbl = m.get("model_label") or m.get("model")
+            if lbl and lbl not in _labels:
+                _labels.append(str(lbl))
+        text = (
+            "این کد در چند مدل وجود دارد: "
+            + "، ".join(_labels)
+            + ". کدام مدل مدنظر شماست؟"
+        )
     try:
         from ..subspace_routing import query_has_cheque_color_rank
 
