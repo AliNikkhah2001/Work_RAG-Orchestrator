@@ -95,6 +95,13 @@ class TestValidateInput:
 class TestRetrieve:
     """Test retrieve node."""
 
+    def test_normalize_query_digits(self):
+        from work_rag_orchestrator.nodes.retrieve import _normalize_query_digits
+
+        assert _normalize_query_digits("امتیاز ۶۱۰") == "امتیاز 610"
+        assert _normalize_query_digits("امتیاز ٦١٠") == "امتیاز 610"
+        assert _normalize_query_digits("امتیاز 610") == "امتیاز 610"
+
     @pytest.mark.asyncio
     async def test_calls_kb_and_normalizes_results(self):
         """Should call KB client and normalize results."""

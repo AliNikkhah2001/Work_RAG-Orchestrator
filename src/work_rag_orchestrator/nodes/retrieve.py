@@ -14,6 +14,17 @@ from ..faq_direct import find_direct_answer
 
 log = logging.getLogger(__name__)
 
+_DIGIT_TRANSLATION = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789",
+)
+
+
+def _normalize_query_digits(query: str) -> str:
+    """Normalize Persian and Arabic-Indic query digits to ASCII."""
+    return query.translate(_DIGIT_TRANSLATION)
+
+
 # Messages that need no retrieval: exact match after normalization.
 # Checked against the RAW last user message BEFORE history rewrite, so a bare
 # "سلام" can never be rewritten into an older question and RAG-fabricated.
@@ -1476,6 +1487,7 @@ async def retrieve(state: RAGState) -> RAGState:
     # queries: unify ZWNJ/space and ي/ك variants so BM25 matches KB wording,
     # and drop politeness filler that dilutes lexical scores.
     norm_query = norm_query.replace("‌", " ").replace("ي", "ی").replace("ك", "ک")
+    norm_query = _normalize_query_digits(norm_query)
     try:
         from ..subspace_routing import normalize_cheque_color_typos as _norm_color
 
