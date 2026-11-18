@@ -414,22 +414,42 @@ def _score_tokens(ent: dict, query: str, *, answer_blob: str = "") -> list[str]:
     return [_token(token_name, {**params_common, "variant": variant})]
 
 
+def _keys_named_in_question(clarify_q: str) -> list[str]:
+    """Card keys whose own label or prompt the question actually names.
+
+    Matching the card text (not a loose keyword) is what keeps «تامین‌کننده
+    اطلاعات یا معرفی شرکت» on supplier_legal + general instead of a facilities card.
+    """
+    hits = []
+    for key in _CLARIFY_ORDER:
+        card = _CLARIFY_CARDS[key]
+        needles = [card["label"], card["prompt"]]
+        if any(n and n in clarify_q for n in needles):
+            hits.append(key)
+    return hits
+
+
 def _clarify_items(state: dict) -> list[dict[str, str]]:
     """Clarify cards = the options the question offers (>=2, never a single card).
 
-    ``generate_clarification`` stores ``clarify_options`` (L2 ids) next to the
-    question; those win and keep their canonical order. Keyword matching is only a
-    fallback, and an under-filled result is padded to the default fork.
+    ``generate_clarification`` stores ``clarify_options`` (card keys) next to the
+    question; those win. Otherwise the question text is matched against each
+    card's own label. Keyword matching is only a last resort, and a result with
+    fewer than two cards is widened rather than shipped as one button.
     """
     explicit = state.get("clarify_options") or []
-    keys_explicit = {k for k in explicit if isinstance(k, str) and k in _CLARIFY_CARDS}
-    if len(keys_explicit) >= 2:
-        return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in keys_explicit]
+    keys_explicit = [k for k in explicit if isinstance(k, str) and k in _CLARIFY_CARDS]
+    if len(set(keys_explicit)) >= 2:
+        return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in set(keys_explicit)]
 
     query = state.get("query") or ""
     clarify_q = state.get("clarifying_question") or ""
     if "<<<MAGIC:" in clarify_q:
         clarify_q = _MAGIC_RE.sub("", clarify_q)
+
+    named = _keys_named_in_question(clarify_q)
+    if len(named) >= 2:
+        return [_CLARIFY_CARDS[k] for k in named]
 
     keys: list[str] = []
     try:
@@ -450,6 +470,7 @@ def _clarify_items(state: dict) -> list[dict[str, str]]:
         if any(k in blob for k in ("حقوقی", "شرکت", "شرکتی", "facilities_legal")):
             keys.append("legal")
 
+    # A single named card is still wrong — widen to the default fork, don't ship one.
     for k in ("person", "legal"):
         if len(keys) >= 2:
             break

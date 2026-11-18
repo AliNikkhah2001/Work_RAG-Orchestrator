@@ -608,3 +608,17 @@ def test_clarify_explicit_options_keep_canonical_order():
         {"query": "x", "clarifying_question": "q", "clarify_options": ["general", "cheque", "guarantor"]}
     )
     assert [c["subspace"] for c in items] == ["cheque", "guarantor", "general"]
+
+
+def test_clarify_question_text_selects_named_cards_without_explicit_options():
+    """The live bug: question names provider vs company, no clarify_options set yet."""
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    items = _clarify_items(
+        {
+            "query": "اعتبارسنجی داده هاشو از کجا میگیره؟",
+            "needs_clarification": True,
+            "clarifying_question": "منظورتان تامین‌کننده اطلاعات است یا معرفی شرکت؟",
+        }
+    )
+    assert [c["subspace"] for c in items] == ["supplier_legal", "general"]
