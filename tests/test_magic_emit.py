@@ -579,8 +579,15 @@ def test_shareholders_not_emitted_from_similarity_alone():
     assert toks == []
 
 
-def test_clarify_never_single_card_for_provider_vs_company_fork():
-    """Regression: «تامین‌کننده اطلاعات یا معرفی شرکت؟» showed ONE card (legal only)."""
+def test_clarify_cards_cover_every_l2_subspace_one_to_one():
+    from work_rag_orchestrator.magic_emit import _CLARIFY_CARDS
+    from work_rag_orchestrator.subspace_routing import L2_SUBSPACES
+
+    assert sorted(c["subspace"] for c in _CLARIFY_CARDS.values()) == sorted(L2_SUBSPACES)
+
+
+def test_clarify_provider_vs_company_offers_matching_cards():
+    """Regression: «تامین‌کننده اطلاعات یا معرفی شرکت؟» must show those two options, not a lone legal card."""
     from work_rag_orchestrator.magic_emit import _clarify_items
 
     items = _clarify_items(
@@ -588,28 +595,16 @@ def test_clarify_never_single_card_for_provider_vs_company_fork():
             "query": "اعتبارسنجی داده هاشو از کجا میگیره؟",
             "needs_clarification": True,
             "clarifying_question": "منظورتان تامین‌کننده اطلاعات است یا معرفی شرکت؟",
+            "clarify_options": ["supplier_legal", "general"],
         }
     )
-    assert len(items) >= 2
+    assert [c["subspace"] for c in items] == ["supplier_legal", "general"]
 
 
-def test_clarify_explicit_options_drive_cards():
+def test_clarify_explicit_options_keep_canonical_order():
     from work_rag_orchestrator.magic_emit import _clarify_items
 
     items = _clarify_items(
-        {
-            "query": "x",
-            "needs_clarification": True,
-            "clarifying_question": "کدام؟",
-            "clarify_options": ["cheque", "legal"],
-        }
+        {"query": "x", "clarifying_question": "q", "clarify_options": ["general", "cheque", "guarantor"]}
     )
-    assert [c["id"] for c in items] == ["legal", "cheque"]
-
-
-def test_clarify_items_always_at_least_two():
-    from work_rag_orchestrator.magic_emit import _clarify_items
-
-    for q in ("", "سلام", "گزارش چک", "کدام بخش؟"):
-        items = _clarify_items({"query": q, "needs_clarification": True, "clarifying_question": q})
-        assert len(items) >= 2, q
+    assert [c["subspace"] for c in items] == ["cheque", "guarantor", "general"]

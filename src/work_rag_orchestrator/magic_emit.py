@@ -24,32 +24,67 @@ _COLOR_HEX = {
     "قرمز": "#E53935",
 }
 
+# One clarify card per L2 subspace (keys == subspace_routing.L2_SUBSPACES).
+# ``icon`` names a PNG in brand/icons/magic/ics24/clarify/ (generated art);
+# ``subspace`` is the real L2 id the card routes to.
 _CLARIFY_CARDS: dict[str, dict[str, str]] = {
     "person": {
-        "id": "person",
+        "id": "person", "subspace": "facilities_person", "icon": "person",
         "label": "گزارش اعتبارسنجی اشخاص حقیقی",
         "subtitle": "اعتبارسنجی وضعیت مالی و اعتباری افراد حقیقی",
         "prompt": "گزارش تسهیلات اشخاص حقیقی",
-        "icon": "person",
-        "subspace": "facilities_person",
     },
     "legal": {
-        "id": "legal",
+        "id": "legal", "subspace": "facilities_legal", "icon": "legal",
         "label": "گزارش اعتبارسنجی اشخاص حقوقی",
         "subtitle": "اعتبارسنجی وضعیت مالی اشخاص حقوقی",
         "prompt": "گزارش تسهیلات اشخاص حقوقی / شرکت‌ها",
-        "icon": "legal",
-        "subspace": "facilities_company",
     },
     "cheque": {
-        "id": "cheque",
+        "id": "cheque", "subspace": "cheque", "icon": "cheque",
         "label": "گزارش اعتبارسنجی چک",
         "subtitle": "ارائه گزارش اعتبارسنجی از سوابق چک افراد",
         "prompt": "گزارش چک",
-        "icon": "cheque",
-        "subspace": "cheque",
+    },
+    "credit_ladder": {
+        "id": "credit_ladder", "subspace": "credit_ladder", "icon": "credit_ladder",
+        "label": "نردبان اعتباری اشخاص حقیقی",
+        "subtitle": "رتبه و جایگاه اعتباری در نردبان",
+        "prompt": "نردبان اعتباری",
+    },
+    "guarantor": {
+        "id": "guarantor", "subspace": "guarantor", "icon": "guarantor",
+        "label": "اعتبارسنجی کفیل",
+        "subtitle": "بررسی وضعیت اعتباری کفیل",
+        "prompt": "اعتبارسنجی کفیل",
+    },
+    "supplier_legal": {
+        "id": "supplier_legal", "subspace": "supplier_legal", "icon": "supplier_legal",
+        "label": "تامین‌کننده اطلاعات",
+        "subtitle": "اطلاعات و منابع داده‌های اعتبارسنجی",
+        "prompt": "تامین‌کننده اطلاعات",
+    },
+    "customers_person": {
+        "id": "customers_person", "subspace": "customers_person", "icon": "customers_person",
+        "label": "مشتریان من (حقیقی)",
+        "subtitle": "وضعیت اعتباری مشتریان حقیقی شما",
+        "prompt": "مشتریان من حقیقی",
+    },
+    "customers_legal": {
+        "id": "customers_legal", "subspace": "customers_legal", "icon": "customers_legal",
+        "label": "مشتریان من (حقوقی)",
+        "subtitle": "وضعیت اعتباری مشتریان حقوقی شما",
+        "prompt": "مشتریان من حقوقی",
+    },
+    "general": {
+        "id": "general", "subspace": "general", "icon": "general",
+        "label": "معرفی و سوالات کلی",
+        "subtitle": "معرفی شرکت و پرسش‌های عمومی",
+        "prompt": "معرفی شرکت",
     },
 }
+
+_CLARIFY_ORDER: tuple[str, ...] = tuple(_CLARIFY_CARDS)
 
 _MAGIC_RE = re.compile(r"<<<MAGIC:[A-Z][A-Z0-9_]*\s*[\s\S]*?>>>")
 
@@ -380,24 +415,21 @@ def _score_tokens(ent: dict, query: str, *, answer_blob: str = "") -> list[str]:
 
 
 def _clarify_items(state: dict) -> list[dict[str, str]]:
-    """Clarify cards = the options the question actually offers, never fewer than two.
+    """Clarify cards = the options the question offers (>=2, never a single card).
 
-    The clarify question is free text, so keyword-guessing its options produced
-    mismatches (question offered provider vs company, button showed only one
-    entity). ``generate_clarification`` now stores ``clarify_options`` next to the
-    question; those win. Keyword matching is only a fallback, and any result with
-    fewer than two cards is padded to the default fork.
+    ``generate_clarification`` stores ``clarify_options`` (L2 ids) next to the
+    question; those win and keep their canonical order. Keyword matching is only a
+    fallback, and an under-filled result is padded to the default fork.
     """
     explicit = state.get("clarify_options") or []
     keys_explicit = {k for k in explicit if isinstance(k, str) and k in _CLARIFY_CARDS}
     if len(keys_explicit) >= 2:
-        return [_CLARIFY_CARDS[k] for k in ("person", "legal", "cheque") if k in keys_explicit]
+        return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in keys_explicit]
 
     query = state.get("query") or ""
     clarify_q = state.get("clarifying_question") or ""
     if "<<<MAGIC:" in clarify_q:
         clarify_q = _MAGIC_RE.sub("", clarify_q)
-    available = state.get("available_subspaces") or []
 
     keys: list[str] = []
     try:
@@ -418,25 +450,13 @@ def _clarify_items(state: dict) -> list[dict[str, str]]:
         if any(k in blob for k in ("حقوقی", "شرکت", "شرکتی", "facilities_legal")):
             keys.append("legal")
 
-    if len(keys) < 2:
-        avail_blob = " ".join(str(x) for x in available)
-        for k, needles in (
-            ("cheque", ("چک", "cheque")),
-            ("person", ("حقیقی", "افراد", "facilities_person")),
-            ("legal", ("حقوقی", "شرکت", "facilities_legal")),
-        ):
-            if k not in keys and any(n in avail_blob for n in needles):
-                keys.append(k)
-
-    # Never show a single card: pad to the standard person/legal fork.
     for k in ("person", "legal"):
         if len(keys) >= 2:
             break
         if k not in keys:
             keys.append(k)
 
-    order = ["person", "legal", "cheque"]
-    return [_CLARIFY_CARDS[k] for k in order if k in keys]
+    return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in keys]
 
 
 def _history_query(query: str, answer: str = "") -> bool:
