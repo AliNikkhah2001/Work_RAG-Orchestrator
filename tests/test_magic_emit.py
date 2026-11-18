@@ -577,3 +577,39 @@ def test_shareholders_not_emitted_from_similarity_alone():
         finish_reason="stop",
     )
     assert toks == []
+
+
+def test_clarify_never_single_card_for_provider_vs_company_fork():
+    """Regression: «تامین‌کننده اطلاعات یا معرفی شرکت؟» showed ONE card (legal only)."""
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    items = _clarify_items(
+        {
+            "query": "اعتبارسنجی داده هاشو از کجا میگیره؟",
+            "needs_clarification": True,
+            "clarifying_question": "منظورتان تامین‌کننده اطلاعات است یا معرفی شرکت؟",
+        }
+    )
+    assert len(items) >= 2
+
+
+def test_clarify_explicit_options_drive_cards():
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    items = _clarify_items(
+        {
+            "query": "x",
+            "needs_clarification": True,
+            "clarifying_question": "کدام؟",
+            "clarify_options": ["cheque", "legal"],
+        }
+    )
+    assert [c["id"] for c in items] == ["legal", "cheque"]
+
+
+def test_clarify_items_always_at_least_two():
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    for q in ("", "سلام", "گزارش چک", "کدام بخش؟"):
+        items = _clarify_items({"query": q, "needs_clarification": True, "clarifying_question": q})
+        assert len(items) >= 2, q
