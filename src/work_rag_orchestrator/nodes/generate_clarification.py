@@ -67,6 +67,16 @@ async def generate_clarification(state: RAGState) -> RAGState:
             )
     state["clarifying_question"] = text
     state["needs_clarification"] = True
+    # Buttons must match the question. Derive the option keys from the final text
+    # (same mapping magic_emit uses) and store them, so cards and text share a source.
+    try:
+        from ..magic_emit import _clarify_items, _CLARIFY_CARDS
+
+        keyed = {id(v): k for k, v in _CLARIFY_CARDS.items()}
+        cards = _clarify_items({**state, "clarifying_question": text})
+        state["clarify_options"] = [keyed[id(c)] for c in cards if id(c) in keyed]
+    except Exception as e:
+        log.warning("clarify option derivation failed: %s", e)
     try:
         from ..tracing import trace_span
         trace_span(request_id, "generate_clarification", span_input=query, span_output=text)

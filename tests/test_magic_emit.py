@@ -577,3 +577,34 @@ def test_shareholders_not_emitted_from_similarity_alone():
         finish_reason="stop",
     )
     assert toks == []
+
+
+def test_clarify_cards_cover_every_l2_subspace_one_to_one():
+    from work_rag_orchestrator.magic_emit import _CLARIFY_CARDS
+    from work_rag_orchestrator.subspace_routing import L2_SUBSPACES
+
+    assert sorted(c["subspace"] for c in _CLARIFY_CARDS.values()) == sorted(L2_SUBSPACES)
+
+
+def test_clarify_provider_vs_company_offers_matching_cards():
+    """Regression: «تامین‌کننده اطلاعات یا معرفی شرکت؟» must show those two options, not a lone legal card."""
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    items = _clarify_items(
+        {
+            "query": "اعتبارسنجی داده هاشو از کجا میگیره؟",
+            "needs_clarification": True,
+            "clarifying_question": "منظورتان تامین‌کننده اطلاعات است یا معرفی شرکت؟",
+            "clarify_options": ["supplier_legal", "general"],
+        }
+    )
+    assert [c["subspace"] for c in items] == ["supplier_legal", "general"]
+
+
+def test_clarify_explicit_options_keep_canonical_order():
+    from work_rag_orchestrator.magic_emit import _clarify_items
+
+    items = _clarify_items(
+        {"query": "x", "clarifying_question": "q", "clarify_options": ["general", "cheque", "guarantor"]}
+    )
+    assert [c["subspace"] for c in items] == ["cheque", "guarantor", "general"]

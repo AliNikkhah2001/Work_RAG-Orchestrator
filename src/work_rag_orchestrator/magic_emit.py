@@ -24,32 +24,67 @@ _COLOR_HEX = {
     "قرمز": "#E53935",
 }
 
+# One clarify card per L2 subspace (keys == subspace_routing.L2_SUBSPACES).
+# ``icon`` names a PNG in brand/icons/magic/ics24/clarify/ (generated art);
+# ``subspace`` is the real L2 id the card routes to.
 _CLARIFY_CARDS: dict[str, dict[str, str]] = {
     "person": {
-        "id": "person",
+        "id": "person", "subspace": "facilities_person", "icon": "person",
         "label": "گزارش اعتبارسنجی اشخاص حقیقی",
         "subtitle": "اعتبارسنجی وضعیت مالی و اعتباری افراد حقیقی",
         "prompt": "گزارش تسهیلات اشخاص حقیقی",
-        "icon": "person",
-        "subspace": "facilities_person",
     },
     "legal": {
-        "id": "legal",
+        "id": "legal", "subspace": "facilities_legal", "icon": "legal",
         "label": "گزارش اعتبارسنجی اشخاص حقوقی",
         "subtitle": "اعتبارسنجی وضعیت مالی اشخاص حقوقی",
         "prompt": "گزارش تسهیلات اشخاص حقوقی / شرکت‌ها",
-        "icon": "legal",
-        "subspace": "facilities_company",
     },
     "cheque": {
-        "id": "cheque",
+        "id": "cheque", "subspace": "cheque", "icon": "cheque",
         "label": "گزارش اعتبارسنجی چک",
         "subtitle": "ارائه گزارش اعتبارسنجی از سوابق چک افراد",
         "prompt": "گزارش چک",
-        "icon": "cheque",
-        "subspace": "cheque",
+    },
+    "credit_ladder": {
+        "id": "credit_ladder", "subspace": "credit_ladder", "icon": "credit_ladder",
+        "label": "نردبان اعتباری اشخاص حقیقی",
+        "subtitle": "رتبه و جایگاه اعتباری در نردبان",
+        "prompt": "نردبان اعتباری",
+    },
+    "guarantor": {
+        "id": "guarantor", "subspace": "guarantor", "icon": "guarantor",
+        "label": "اعتبارسنجی کفیل",
+        "subtitle": "بررسی وضعیت اعتباری کفیل",
+        "prompt": "اعتبارسنجی کفیل",
+    },
+    "supplier_legal": {
+        "id": "supplier_legal", "subspace": "supplier_legal", "icon": "supplier_legal",
+        "label": "تامین‌کننده اطلاعات",
+        "subtitle": "اطلاعات و منابع داده‌های اعتبارسنجی",
+        "prompt": "تامین‌کننده اطلاعات",
+    },
+    "customers_person": {
+        "id": "customers_person", "subspace": "customers_person", "icon": "customers_person",
+        "label": "مشتریان من (حقیقی)",
+        "subtitle": "وضعیت اعتباری مشتریان حقیقی شما",
+        "prompt": "مشتریان من حقیقی",
+    },
+    "customers_legal": {
+        "id": "customers_legal", "subspace": "customers_legal", "icon": "customers_legal",
+        "label": "مشتریان من (حقوقی)",
+        "subtitle": "وضعیت اعتباری مشتریان حقوقی شما",
+        "prompt": "مشتریان من حقوقی",
+    },
+    "general": {
+        "id": "general", "subspace": "general", "icon": "general",
+        "label": "معرفی و سوالات کلی",
+        "subtitle": "معرفی شرکت و پرسش‌های عمومی",
+        "prompt": "معرفی شرکت",
     },
 }
+
+_CLARIFY_ORDER: tuple[str, ...] = tuple(_CLARIFY_CARDS)
 
 _MAGIC_RE = re.compile(r"<<<MAGIC:[A-Z][A-Z0-9_]*\s*[\s\S]*?>>>")
 
@@ -380,71 +415,48 @@ def _score_tokens(ent: dict, query: str, *, answer_blob: str = "") -> list[str]:
 
 
 def _clarify_items(state: dict) -> list[dict[str, str]]:
-    """ICS clarify cards must mirror the clarifying question — not dump every report type.
+    """Clarify cards = the options the question offers (>=2, never a single card).
 
-    Dumping cheque+person+legal into every clarify polluted downstream routers
-    (stress harness / sticky pickers) because the MAGIC JSON always contained «چک».
+    ``generate_clarification`` stores ``clarify_options`` (L2 ids) next to the
+    question; those win and keep their canonical order. Keyword matching is only a
+    fallback, and an under-filled result is padded to the default fork.
     """
+    explicit = state.get("clarify_options") or []
+    keys_explicit = {k for k in explicit if isinstance(k, str) and k in _CLARIFY_CARDS}
+    if len(keys_explicit) >= 2:
+        return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in keys_explicit]
+
     query = state.get("query") or ""
-    # Prefer the clean clarifying question (set before magic append).
     clarify_q = state.get("clarifying_question") or ""
     if "<<<MAGIC:" in clarify_q:
         clarify_q = _MAGIC_RE.sub("", clarify_q)
-    available = state.get("available_subspaces") or []
 
-    # Colour-rank clarify → چک vs تسهیلات (not all three report products)
+    keys: list[str] = []
     try:
         from .subspace_routing import query_has_cheque_color_rank
 
-        if query_has_cheque_color_rank(query) or (
-            "چک" in clarify_q and "تسهیلات" in clarify_q
-        ):
-            return [_CLARIFY_CARDS["cheque"], _CLARIFY_CARDS["person"]]
+        if query_has_cheque_color_rank(query) or ("چک" in clarify_q and "تسهیلات" in clarify_q):
+            keys = ["cheque", "person"]
     except Exception:
         if "چک" in clarify_q and "تسهیلات" in clarify_q:
-            return [_CLARIFY_CARDS["cheque"], _CLARIFY_CARDS["person"]]
+            keys = ["cheque", "person"]
 
-    # حقیقی vs حقوقی fork — do NOT include cheque card
-    if "حقیقی" in clarify_q and "حقوقی" in clarify_q:
-        return [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
-
-    # شخصی / شرکتی wording
-    if "شخصی" in clarify_q and ("شرکتی" in clarify_q or "حقوقی" in clarify_q):
-        return [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
-
-    keys: list[str] = []
-    # Use query + clarify text only (NOT the full available_subspaces dump —
-    # that list often contains every product label and forced all three cards).
-    blob = f"{query} {clarify_q}"
-    if any(k in blob for k in ("چک", "cheque", "صیاد")):
-        keys.append("cheque")
-    if any(k in blob for k in ("حقیقی", "افراد", "شخصی", "facilities_person")):
-        keys.append("person")
-    if any(k in blob for k in ("حقوقی", "شرکت", "شرکتی", "facilities_legal")):
-        keys.append("legal")
-
-    # Generic report-type clarify with no fork signal → all three
-    if not keys and any(
-        k in (clarify_q + query) for k in ("گزارش", "نوع", "کدام", "مایلید", "بفرمایید")
-    ):
-        keys = ["person", "legal", "cheque"]
-
-    # Fall back to available labels only when still empty
     if not keys:
-        avail_blob = " ".join(str(x) for x in available)
-        if any(k in avail_blob for k in ("چک", "cheque")):
+        blob = f"{query} {clarify_q}"
+        if any(k in blob for k in ("چک", "cheque", "صیاد")):
             keys.append("cheque")
-        if any(k in avail_blob for k in ("حقیقی", "افراد", "facilities_person")):
+        if any(k in blob for k in ("حقیقی", "افراد", "شخصی", "facilities_person")):
             keys.append("person")
-        if any(k in avail_blob for k in ("حقوقی", "شرکت", "facilities_legal")):
+        if any(k in blob for k in ("حقوقی", "شرکت", "شرکتی", "facilities_legal")):
             keys.append("legal")
 
-    if not keys:
-        keys = ["person", "legal", "cheque"]
+    for k in ("person", "legal"):
+        if len(keys) >= 2:
+            break
+        if k not in keys:
+            keys.append(k)
 
-    order = ["person", "legal", "cheque"]
-    out = [_CLARIFY_CARDS[k] for k in order if k in keys]
-    return out or [_CLARIFY_CARDS["person"], _CLARIFY_CARDS["legal"]]
+    return [_CLARIFY_CARDS[k] for k in _CLARIFY_ORDER if k in keys]
 
 
 def _history_query(query: str, answer: str = "") -> bool:
