@@ -507,41 +507,11 @@ def _ics_company_query(query: str) -> bool:
     return ("اعتبارسنجی ایران" in q) or ("شرکت اعتبارسنجی" in q) or ("ICS" in q.upper())
 
 
-def _shareholders_query(query: str) -> bool:
-    q = query or ""
-    if not any(k in q for k in ("سهامدار", "سهام‌دار", "سهام دار")):
-        return False
-    # Do not fire on generic credit-scoring asks — require ICS company context.
-    return _ics_company_query(q)
-
-
-def _creditors_query(query: str) -> bool:
-    q = query or ""
-    hit = any(
-        k in q
-        for k in (
-            "تامین‌کننده",
-            "تأمین‌کننده",
-            "تامین کننده",
-            "تأمین کننده",
-            "تامین‌کنندگان",
-            "تأمین‌کنندگان",
-            "تامین کنندگان",
-            "تأمین کنندگان",
-            "تامین‌کنندگان دیتا",
-            "تأمین‌کنندگان داده",
-            "تامین کننده اطلاعات",
-            "تأمین کننده اطلاعات",
-        )
-    )
-    if not hit:
-        if ("داده" in q or "دیتا" in q) and any(
-            k in q for k in ("بانک", "نئوبانک", "لیزینگ", "لندتک", "بیمه", "صندوق")
-        ):
-            hit = True
-    if not hit:
-        return False
-    return _ics_company_query(q)
+# NOTE: creditor / shareholder *gating* lives in ``magic_judge``
+# (``_creditors_gate`` / ``_shareholders_gate``) and is reached through
+# ``magic_precheck``. Do not reintroduce per-family keyword lists here — a
+# previous duplicate pair (``_creditors_query`` / ``_shareholders_query``) was
+# never called and drifted out of sync with the live gates.
 
 
 def _best_kind_sim(ents: list[dict], kind: str) -> float:
