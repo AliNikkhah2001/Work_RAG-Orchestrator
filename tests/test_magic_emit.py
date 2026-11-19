@@ -302,6 +302,47 @@ def test_precheck_skips_generic_and_provider_counts():
     assert magic_precheck("گزارش چک", "stop") == frozenset()
 
 
+def test_creditors_gate_natural_provider_phrasings():
+    """CREDITORS (data providers) must fire on natural «from where» phrasings.
+
+    Regression: these reached the gate with an empty family set, so the judge
+    never ran and the widget silently dropped (one even mis-fired timeline).
+    """
+    from work_rag_orchestrator.magic_judge import magic_precheck
+
+    for q in (
+        "اطلاعات را از کجا می‌آورید شرکت اعتبارسنجی ایران؟",
+        "داده‌ها را از کجا می‌گیرید شرکت اعتبارسنجی ایران؟",
+        "منبع داده شرکت اعتبارسنجی ایران چیست؟",
+        "تأمین‌کننده داده اعتبارسنجی ایران کیست؟",
+        "شرکت اعتبارسنجی ایران اطلاعات را از چه منابعی می‌گیرد؟",
+        "اطلاعات شرکت اعتبارسنجی ایران از کجا تأمین می‌شود؟",
+    ):
+        assert "creditors" in magic_precheck(q, "stop"), q
+        # End-to-end: the creditors widget wins over any co-candidated timeline
+        toks = build_magic_tokens({"query": q, "supplemental": []}, finish_reason="stop")
+        assert any(t.startswith("<<<MAGIC:CREDITORS") for t in toks), (q, toks)
+        assert not any(t.startswith("<<<MAGIC:COMPANY_TIMELINE") for t in toks), (q, toks)
+
+
+def test_creditors_gate_still_requires_ics_and_skips_other_families():
+    """Recall fix must not leak: ICS context required, no cross-family hits."""
+    from work_rag_orchestrator.magic_judge import magic_precheck
+
+    # No ICS context → no creditors widget
+    for q in (
+        "منابع داده چیست؟",
+        "اطلاعات را از کجا می‌آورید؟",
+        "تأمین‌کنندگان داده کدام‌اند؟",
+        "منبع داده بانک سامان چیست؟",
+    ):
+        assert "creditors" not in magic_precheck(q, "stop"), q
+    # Other ICS widgets must not be hijacked into creditors
+    assert "creditors" not in magic_precheck("سهامداران شرکت اعتبارسنجی ایران", "stop")
+    assert "creditors" not in magic_precheck("شرکت اعتبارسنجی ایران چیست؟", "stop")
+    assert "creditors" not in magic_precheck("امتیاز اعتباری من چقدر است؟", "stop")
+
+
 def test_magic_judge_prompt_from_registry_not_hardcoded():
     from work_rag_orchestrator.magic_judge import build_magic_judge_prompt
 
