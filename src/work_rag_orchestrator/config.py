@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     kb_base_url: str = "http://127.0.0.1:8000"
     guardrails_base_url: str = "http://127.0.0.1:8200"
 
+    # KB Manager API key gate.
+    # When non-empty, sent as Authorization: Bearer <key> on every KB call.
+    # Leave unset unless KB service also sets KB_API_KEY, otherwise the chat
+    # path gets 401s.
+    kb_api_key: str = ""
+
     # Timeouts
     request_timeout_seconds: int = 120
 
