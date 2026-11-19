@@ -25,9 +25,20 @@ class KnowledgebaseClient:
         self.base_url = settings.kb_base_url.rstrip("/")
         self.search_url = settings.kb_search_url
         self.timeout = timeout or settings.request_timeout_seconds
+        self.kb_api_key = settings.kb_api_key
         self._client: Optional[httpx.AsyncClient] = None
         # Populated by supplementary_search when a code exists in >1 model.
         self.last_reason_code_membership: List[Dict] = []
+
+    def _kb_headers(self, request_id: Optional[str] = None) -> dict:
+        """Headers for every outbound KB call. Adds Authorization: Bearer only
+        when kb_api_key is configured (matched by KB_API_KEY on the service)."""
+        headers = {}
+        if request_id:
+            headers["X-Request-ID"] = request_id
+        if self.kb_api_key:
+            headers["Authorization"] = f"Bearer {self.kb_api_key}"
+        return headers
 
     async def __aenter__(self) -> "KnowledgebaseClient":
         self._client = httpx.AsyncClient(
@@ -87,7 +98,7 @@ class KnowledgebaseClient:
             except Exception:
                 pass
 
-        headers = {"X-Request-ID": request_id}
+        headers = self._kb_headers(request_id)
 
         try:
             response = await client.post(
@@ -171,7 +182,7 @@ class KnowledgebaseClient:
         list_name + description (threshold 0.4). Pass subspace/filter_path so
         score tables stay on the matching model (cheque/person/legal).
         """
-        headers = {"X-Request-ID": request_id} if request_id else {}
+        headers = self._kb_headers(request_id)
         body = {"query": query, "threshold": threshold}
         if subspace:
             body["subspace"] = subspace
